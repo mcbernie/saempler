@@ -156,8 +156,9 @@ impl Engine {
                 EngineCommand::ClearModifiers => {
                     self.modifier_notes = [None; NOTE_COUNT];
                     self.modifiers.clear();
+                    self.retune_voices();
                 }
-                EngineCommand::Preview(spec) => self.trigger(PREVIEW_NOTE, 1.0, spec),
+                EngineCommand::Preview(spec) => self.trigger(PREVIEW_NOTE, 1.0, spec, spec),
                 EngineCommand::AllNotesOff => {
                     for voice in &mut self.voices {
                         voice.release();
@@ -203,20 +204,41 @@ impl Engine {
     pub fn note_on(&mut self, note: u8, velocity: f32) {
         if let Some((modifier, mode)) = self.modifier_note(note) {
             self.modifiers.press(modifier, mode);
+            self.retune_voices();
             self.meters.store_modifiers(self.modifiers.bits());
             return;
         }
 
-        let Some(spec) = self.cell(note) else {
+        let Some(base) = self.cell(note) else {
             return;
         };
-        let spec = self.modifiers.apply(spec, self.tempo, self.sample_rate);
+        let spec = self.modifiers.apply(base, self.tempo, self.sample_rate);
         self.meters.store_modifiers(self.modifiers.bits());
-        self.trigger(note, velocity, spec);
+        self.trigger(note, velocity, base, spec);
+    }
+
+    /// Hand every sounding voice the modifiers that are in effect now.
+    ///
+    /// Called when a modifier key moves, so that pressing one in the middle of
+    /// a note changes that note rather than only the next one.
+    fn retune_voices(&mut self) {
+        let (tempo, sample_rate) = (self.tempo, self.sample_rate);
+        for voice in &mut self.voices {
+            if !voice.is_active() {
+                continue;
+            }
+            let spec = self
+                .modifiers
+                .applied_live(voice.base(), tempo, sample_rate);
+            voice.retune(spec);
+        }
     }
 
     /// Start a voice over `spec`, stealing the oldest one if needed.
-    fn trigger(&mut self, note: u8, velocity: f32, spec: CellSpec) {
+    ///
+    /// `base` is the cell before modifiers, kept so that a modifier pressed
+    /// later can be applied to the untouched cell.
+    fn trigger(&mut self, note: u8, velocity: f32, base: CellSpec, spec: CellSpec) {
         if self.sample.is_none() || spec.bounds.is_empty() {
             return;
         }
@@ -238,13 +260,14 @@ impl Engine {
                 .unwrap_or(0),
         };
 
-        self.voices[slot].start(note, velocity, age, spec, self.sample_rate);
+        self.voices[slot].start_with_base(note, velocity, age, base, spec, self.sample_rate);
     }
 
     /// Release every voice currently holding `note`.
     pub fn note_off(&mut self, note: u8) {
         if let Some((modifier, mode)) = self.modifier_note(note) {
             self.modifiers.release(modifier, mode);
+            self.retune_voices();
             self.meters.store_modifiers(self.modifiers.bits());
             return;
         }
@@ -1139,6 +1162,156 @@ mod tests {
         render(&mut h.engine, 96_000 + 4_800);
 
         assert_eq!(h.engine.active_voices(), 0, "the brake must come to rest");
+    }
+
+    #[test]
+    fn a_modifier_pressed_mid_note_turns_that_note_round() {
+        let mut h = harness();
+        load(&mut h, 48_000);
+        map_modifiers(&mut h, ModifierMode::Hold);
+
+        h.engine.note_on(60, 1.0);
+        render(&mut h.engine, 9_600);
+        let before = h.meters.playheads().next().expect("sounding");
+
+        h.engine.note_on(modifier_note(Modifier::Reverse), 1.0);
+        render(&mut h.engine, 4_800);
+        let after = h.meters.playheads().next().expect("still sounding");
+
+        assert!(
+            after < before,
+            "reverse engaged mid-note must play backwards from where it was: \
+             {before} -> {after}"
+        );
+    }
+
+    #[test]
+    fn a_stutter_pressed_mid_note_loops_under_the_playhead() {
+        let mut h = harness();
+        load(&mut h, 48_000);
+        map_modifiers(&mut h, ModifierMode::Hold);
+        h.engine.set_tempo(120.0);
+
+        h.engine.note_on(60, 1.0);
+        render(&mut h.engine, 12_000);
+        let caught = h.meters.playheads().next().expect("sounding");
+
+        h.engine.note_on(modifier_note(Modifier::Stutter), 1.0);
+        for _ in 0..30 {
+            render(&mut h.engine, 1_024);
+            let playhead = h.meters.playheads().next().expect("still sounding");
+            assert!(
+                playhead >= caught && playhead <= caught + 6_100,
+                "the loop must stay where it was engaged: {caught} vs {playhead}"
+            );
+        }
+    }
+
+    #[test]
+    fn releasing_a_stutter_lets_the_note_carry_on() {
+        let mut h = harness();
+        load(&mut h, 48_000);
+        map_modifiers(&mut h, ModifierMode::Hold);
+        h.engine.set_tempo(120.0);
+        let note = modifier_note(Modifier::Stutter);
+
+        h.engine.note_on(60, 1.0);
+        render(&mut h.engine, 2_000);
+        h.engine.note_on(note, 1.0);
+        render(&mut h.engine, 12_000);
+        let looped = h.meters.playheads().next().expect("sounding");
+
+        h.engine.note_off(note);
+        render(&mut h.engine, 6_000);
+        let freed = h.meters.playheads().next().expect("still sounding");
+
+        assert!(
+            freed > looped,
+            "the voice must move on again: {looped} -> {freed}"
+        );
+    }
+
+    #[test]
+    fn a_brake_pressed_mid_note_stops_that_note() {
+        let mut h = harness();
+        load(&mut h, 480_000);
+        map_modifiers(&mut h, ModifierMode::Hold);
+        h.engine.set_tempo(120.0);
+
+        h.engine.note_on(60, 1.0);
+        render(&mut h.engine, 4_800);
+        assert_eq!(h.engine.active_voices(), 1);
+
+        h.engine.note_on(modifier_note(Modifier::Brake), 1.0);
+        render(&mut h.engine, 96_000 + 4_800);
+
+        assert_eq!(h.engine.active_voices(), 0);
+    }
+
+    #[test]
+    fn releasing_a_brake_winds_the_note_back_up() {
+        let mut h = harness();
+        load(&mut h, 480_000);
+        map_modifiers(&mut h, ModifierMode::Hold);
+        h.engine.set_tempo(120.0);
+        let note = modifier_note(Modifier::Brake);
+
+        h.engine.note_on(60, 1.0);
+        render(&mut h.engine, 2_400);
+        h.engine.note_on(note, 1.0);
+        render(&mut h.engine, 24_000);
+        let braked_start = h.meters.playheads().next().expect("sounding");
+        render(&mut h.engine, 4_800);
+        let braked_end = h.meters.playheads().next().expect("sounding");
+        let braked_step = braked_end - braked_start;
+
+        h.engine.note_off(note);
+        render(&mut h.engine, 12_000);
+        let freed_start = h.meters.playheads().next().expect("sounding");
+        render(&mut h.engine, 4_800);
+        let freed_step = h.meters.playheads().next().expect("sounding") - freed_start;
+
+        assert!(
+            freed_step > braked_step,
+            "the tape must come back up to speed: {braked_step} -> {freed_step}"
+        );
+    }
+
+    #[test]
+    fn an_armed_one_shot_leaves_sounding_notes_alone() {
+        let mut h = harness();
+        load(&mut h, 48_000);
+        map_modifiers(&mut h, ModifierMode::OneShot);
+
+        h.engine.note_on(60, 1.0);
+        render(&mut h.engine, 4_800);
+        let before = h.meters.playheads().next().expect("sounding");
+
+        h.engine.note_on(modifier_note(Modifier::Reverse), 1.0);
+        render(&mut h.engine, 2_400);
+        let after = h.meters.playheads().next().expect("still sounding");
+
+        assert!(after > before, "the sounding note must keep going forwards");
+    }
+
+    #[test]
+    fn a_modifier_change_does_not_disturb_the_cell_it_came_from() {
+        let mut h = harness();
+        load(&mut h, 48_000);
+        map_modifiers(&mut h, ModifierMode::Hold);
+        let note = modifier_note(Modifier::Reverse);
+
+        h.engine.note_on(60, 1.0);
+        h.engine.note_on(note, 1.0);
+        h.engine.note_off(note);
+        h.engine.note_off(60);
+        render(&mut h.engine, 9_600);
+
+        // Playing it again must behave exactly as the cell says.
+        h.engine.note_on(60, 1.0);
+        render(&mut h.engine, 1_024);
+        let playhead = h.meters.playheads().next().expect("sounding");
+        assert!(playhead < 10_000, "the cell was left modified: {playhead}");
     }
 
     #[test]

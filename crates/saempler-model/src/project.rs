@@ -320,6 +320,11 @@ impl Project {
         // silently dead.
         self.slice(slice)?;
 
+        // A modifier key is not available for playing.
+        if self.modifier_for_note(note).is_some() {
+            return None;
+        }
+
         if let Some(cell) = self.cells.iter_mut().find(|cell| cell.midi_note == note) {
             cell.slice = slice;
             return Some(cell.id);
@@ -368,13 +373,55 @@ impl Project {
         self.modifiers.iter().find(|entry| entry.note == note)
     }
 
-    /// Change how a modifier responds to its key.
-    pub fn set_modifier_mode(&mut self, modifier: Modifier, mode: ModifierMode) -> bool {
-        match self
-            .modifiers
-            .iter_mut()
-            .find(|entry| entry.modifier == modifier)
-        {
+    /// Whether a note is already doing something.
+    ///
+    /// One key, one job: a note cannot be both a modifier and a cell, and two
+    /// modifiers cannot share a key.
+    pub fn note_is_taken(&self, note: u8) -> bool {
+        self.modifiers.iter().any(|entry| entry.note == note)
+            || self.cells.iter().any(|cell| cell.midi_note == note)
+    }
+
+    /// Put a modifier on a free note.
+    ///
+    /// The same modifier may sit on several notes, each with its own mode:
+    /// stutter held on one key and armed as a one shot on the next is a
+    /// combination worth playing.
+    pub fn add_modifier(&mut self, note: u8, modifier: Modifier, mode: ModifierMode) -> bool {
+        if self.note_is_taken(note) {
+            return false;
+        }
+
+        self.modifiers.push(ModifierAssignment {
+            note,
+            modifier,
+            mode,
+        });
+        self.modifiers.sort_by_key(|entry| entry.note);
+        true
+    }
+
+    /// Take the modifier off a note.
+    pub fn remove_modifier(&mut self, note: u8) -> bool {
+        let before = self.modifiers.len();
+        self.modifiers.retain(|entry| entry.note != note);
+        self.modifiers.len() != before
+    }
+
+    /// Change what the modifier on a note does.
+    pub fn set_modifier(&mut self, note: u8, modifier: Modifier) -> bool {
+        match self.modifiers.iter_mut().find(|entry| entry.note == note) {
+            Some(entry) => {
+                entry.modifier = modifier;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Change how the modifier on a note responds to its key.
+    pub fn set_modifier_mode(&mut self, note: u8, mode: ModifierMode) -> bool {
+        match self.modifiers.iter_mut().find(|entry| entry.note == note) {
             Some(entry) => {
                 entry.mode = mode;
                 true
@@ -383,32 +430,30 @@ impl Project {
         }
     }
 
-    /// Move a modifier to another note.
-    ///
-    /// Refused when the note already carries a performance cell or another
-    /// modifier: one key, one job.
-    pub fn set_modifier_note(&mut self, modifier: Modifier, note: u8) -> bool {
-        let taken = self
-            .modifiers
-            .iter()
-            .any(|entry| entry.note == note && entry.modifier != modifier)
-            || self.cells.iter().any(|cell| cell.midi_note == note);
-        if taken {
+    /// Move a modifier to another note, if that note is free.
+    pub fn move_modifier(&mut self, from: u8, to: u8) -> bool {
+        if from == to || self.note_is_taken(to) {
             return false;
         }
 
-        match self
-            .modifiers
-            .iter_mut()
-            .find(|entry| entry.modifier == modifier)
-        {
+        match self.modifiers.iter_mut().find(|entry| entry.note == from) {
             Some(entry) => {
-                entry.note = note;
+                entry.note = to;
                 self.modifiers.sort_by_key(|entry| entry.note);
                 true
             }
             None => false,
         }
+    }
+
+    /// Put the starting layout back.
+    pub fn reset_modifiers(&mut self) {
+        self.modifiers = default_layout();
+    }
+
+    /// The lowest free note at or above `from`, for placing a new modifier.
+    pub fn first_free_note(&self, from: u8) -> Option<u8> {
+        (from..=127).find(|note| !self.note_is_taken(*note))
     }
 
     /// Take every cell off the keyboard.
@@ -426,17 +471,21 @@ impl Project {
         self.cell_selection = None;
 
         let ids: Vec<SliceId> = self.slices.iter().map(|slice| slice.id).collect();
-        for (offset, slice) in ids.into_iter().enumerate() {
-            let Ok(offset) = u8::try_from(offset) else {
-                break;
-            };
-            let Some(note) = base_note.checked_add(offset) else {
-                break;
-            };
+        let mut note = base_note;
+        for slice in ids {
+            // Step over anything a modifier already owns, rather than losing
+            // that slice to a key it could never be played from.
+            while note <= 127 && self.modifier_for_note(note).is_some() {
+                note += 1;
+            }
             if note > 127 {
                 break;
             }
             self.assign(note, slice);
+            match note.checked_add(1) {
+                Some(next) => note = next,
+                None => break,
+            }
         }
     }
 
@@ -1088,11 +1137,11 @@ mod tests {
         project.slice_evenly(4);
         project.map_slices_from(60);
 
-        project.map_slices_from(36);
+        project.map_slices_from(72);
 
         assert_eq!(project.cells().len(), 4);
         assert!(project.cell_for_note(60).is_none());
-        assert!(project.cell_for_note(36).is_some());
+        assert!(project.cell_for_note(72).is_some());
     }
 
     #[test]
@@ -1196,51 +1245,139 @@ mod tests {
     #[test]
     fn a_modifier_mode_can_be_changed() {
         let mut project = Project::default();
+        let note = project.modifiers()[0].note;
 
-        assert!(project.set_modifier_mode(Modifier::Stutter, ModifierMode::OneShot));
+        assert!(project.set_modifier_mode(note, ModifierMode::OneShot));
 
-        let entry = project
-            .modifiers()
-            .iter()
-            .find(|entry| entry.modifier == Modifier::Stutter)
-            .expect("stutter is in the layout");
-        assert_eq!(entry.mode, ModifierMode::OneShot);
+        assert_eq!(
+            project.modifier_for_note(note).map(|e| e.mode),
+            Some(ModifierMode::OneShot)
+        );
     }
 
     #[test]
     fn a_modifier_can_be_moved_to_a_free_note() {
         let mut project = Project::default();
+        let note = project.modifiers()[0].note;
 
-        assert!(project.set_modifier_note(Modifier::Brake, 30));
+        assert!(project.move_modifier(note, 30));
+
+        assert!(project.modifier_for_note(note).is_none());
+        assert!(project.modifier_for_note(30).is_some());
+    }
+
+    #[test]
+    fn a_modifier_cannot_take_an_occupied_note() {
+        let mut project = project_with_sample(1_000);
+        let slice = project.add_slice(0, 500);
+        project.assign(72, slice);
+        let first = project.modifiers()[0].note;
+        let second = project.modifiers()[1].note;
+
+        assert!(!project.move_modifier(first, second), "another modifier");
+        assert!(!project.move_modifier(first, 72), "a performance cell");
+    }
+
+    #[test]
+    fn a_cell_cannot_take_a_modifier_note() {
+        let mut project = project_with_sample(1_000);
+        let slice = project.add_slice(0, 500);
+        let note = project.modifiers()[0].note;
+
+        assert_eq!(project.assign(note, slice), None);
+    }
+
+    #[test]
+    fn the_automatic_mapping_steps_over_modifier_keys() {
+        let mut project = project_with_sample(8_000);
+        project.slice_evenly(4);
+        // Put a modifier right in the middle of where the slices would land.
+        project.add_modifier(61, Modifier::Stutter, ModifierMode::Hold);
+
+        project.map_slices_from(60);
+
+        assert_eq!(project.cells().len(), 4, "no slice may be lost");
+        assert!(project.cell_for_note(61).is_none());
+        let notes: Vec<u8> = project.cells().iter().map(|c| c.midi_note).collect();
+        assert_eq!(notes, vec![60, 62, 63, 64]);
+    }
+
+    #[test]
+    fn a_modifier_can_be_added_and_removed() {
+        let mut project = Project::default();
+        let before = project.modifiers().len();
+
+        assert!(project.add_modifier(24, Modifier::Brake, ModifierMode::Toggle));
+        assert_eq!(project.modifiers().len(), before + 1);
+
+        assert!(project.remove_modifier(24));
+        assert_eq!(project.modifiers().len(), before);
+        assert!(!project.remove_modifier(24));
+    }
+
+    #[test]
+    fn the_same_modifier_may_sit_on_several_notes() {
+        let mut project = Project::default();
+        let stutter = project
+            .modifiers()
+            .iter()
+            .find(|entry| entry.modifier == Modifier::Stutter)
+            .copied()
+            .expect("stutter is in the layout");
+
+        assert!(project.add_modifier(25, Modifier::Stutter, ModifierMode::OneShot));
 
         assert_eq!(
-            project.modifier_for_note(30).map(|e| e.modifier),
-            Some(Modifier::Brake)
+            project.modifier_for_note(25).map(|e| e.mode),
+            Some(ModifierMode::OneShot)
+        );
+        assert_eq!(
+            project.modifier_for_note(stutter.note).map(|e| e.mode),
+            Some(ModifierMode::Hold),
+            "the original keeps its own mode"
         );
     }
 
     #[test]
-    fn a_modifier_cannot_take_another_modifiers_note() {
+    fn modifiers_stay_in_keyboard_order() {
         let mut project = Project::default();
-        let occupied = project.modifiers()[0].note;
+        project.add_modifier(20, Modifier::Brake, ModifierMode::Hold);
+        project.add_modifier(100, Modifier::Reverse, ModifierMode::Hold);
 
-        assert!(!project.set_modifier_note(Modifier::Brake, occupied));
+        let notes: Vec<u8> = project.modifiers().iter().map(|e| e.note).collect();
+        let mut sorted = notes.clone();
+        sorted.sort_unstable();
+
+        assert_eq!(notes, sorted);
     }
 
     #[test]
-    fn a_modifier_cannot_take_a_note_a_cell_plays() {
+    fn the_layout_can_be_put_back() {
+        let mut project = Project::default();
+        project.remove_modifier(project.modifiers()[0].note);
+        project.add_modifier(20, Modifier::Brake, ModifierMode::Hold);
+
+        project.reset_modifiers();
+
+        assert_eq!(project.modifiers(), crate::default_layout().as_slice());
+    }
+
+    #[test]
+    fn a_free_note_is_found_above_whatever_is_taken() {
         let mut project = project_with_sample(1_000);
         let slice = project.add_slice(0, 500);
-        project.assign(72, slice);
+        project.assign(20, slice);
+        project.add_modifier(21, Modifier::Brake, ModifierMode::Hold);
 
-        assert!(!project.set_modifier_note(Modifier::Brake, 72));
+        assert_eq!(project.first_free_note(20), Some(22));
     }
 
     #[test]
     fn modifiers_survive_a_round_trip() {
         let mut project = Project::default();
-        project.set_modifier_mode(Modifier::Reverse, ModifierMode::Toggle);
-        project.set_modifier_note(Modifier::Reverse, 24);
+        let note = project.modifiers()[0].note;
+        project.set_modifier_mode(note, ModifierMode::Toggle);
+        project.move_modifier(note, 24);
         let original = ProjectFile {
             version: PROJECT_VERSION,
             project,

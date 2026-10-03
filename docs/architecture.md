@@ -185,7 +185,12 @@ than a set of fixed playback buttons.
 
 A note is either a modifier or a performance cell, never both: the engine
 checks the modifier table first, so a mistaken mapping cannot make a modifier
-audible.
+audible, and the project refuses to put a cell on a modifier key. Laying slices
+out across the keyboard steps over the modifier keys rather than losing those
+slices to keys they could never be played from.
+
+The layout is editable: any modifier on any free note, several notes carrying
+the same modifier in different modes, and the starting layout a button away.
 
 The three modes differ only in when the state clears:
 
@@ -197,6 +202,21 @@ OneShot   until a performance note has actually used it
 
 One shot is consumed by the trigger rather than by the key release. That is
 what makes it mean "the next note" however long that takes.
+
+## Modifiers reach notes already sounding
+
+Pressing a modifier retunes every voice that is playing, not only the next one
+to start. Engaging a stutter loops the audio under the playhead, engaging
+reverse turns the voice round on the spot, and engaging a brake slows that
+voice to a stop. A brake let go of winds back up to speed rather than snapping.
+
+Each voice keeps the cell as the keyboard maps it alongside its live
+parameters, so a modifier engaged and released mid-note is applied to the
+untouched cell rather than to whatever the previous one left behind.
+
+An armed one shot is explicitly excluded here: it belongs to a note that has
+not been played yet and must not reach into notes already sounding. That is the
+difference between `ModifierState::applied` and `applied_live`.
 
 Modifiers are applied to the flattened `CellSpec` at trigger time, so a cell
 is never modified in place and the same cell can be played plainly and

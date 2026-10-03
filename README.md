@@ -34,7 +34,9 @@ What works today:
 - performance cells: slices laid out across the keyboard, several notes able to
   share one slice, each with its own reverse, speed, pitch, gain and envelope
 - modifier keys below the playing range: reverse, stutter, repeat, half-time
-  and brake, each in hold, toggle or one-shot mode
+  and brake, each in hold, toggle or one-shot mode, on freely chosen notes
+- modifiers take effect on notes already sounding, so a phrase can be turned
+  round, stuttered and braked while it plays
 - polyphonic playback with a playhead per voice on the waveform and the pads
 - master gain as a host parameter; sample reference, slices, cells and the
   modifier layout as versioned plugin state, reloaded when a project is opened
@@ -67,7 +69,7 @@ the device quirks and how to load the plugin in a DAW.
 crates/saempler-model    serializable project state
 crates/saempler-audio    realtime engine, voices, sample buffers, queues
 crates/saempler-core     sample import and the waveform peak cache
-crates/saempler-ui       theme, custom widgets, screens
+crates/saempler-ui       theme, custom widgets, the four editor pages
 crates/saempler-plugin   host parameters and the VST3/CLAP/standalone exports
 xtask                    bundler entry point
 ```

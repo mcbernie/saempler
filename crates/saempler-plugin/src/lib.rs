@@ -15,7 +15,7 @@ use saempler_audio::{
 };
 use saempler_core::{cell_spec, load_sample};
 use saempler_model::{Modifier, ModifierMode};
-use saempler_ui::{SampleView, ViewState};
+use saempler_ui::{EditorState, ViewState};
 
 mod params;
 
@@ -55,7 +55,7 @@ pub struct Saempler {
     /// import, so that freeing them never happens on the audio thread.
     disposal: Arc<Mutex<DisposalConsumer>>,
     /// Peaks and import status for the interface.
-    sample_view: Arc<Mutex<SampleView>>,
+    sample_view: Arc<Mutex<EditorState>>,
 }
 
 impl Default for Saempler {
@@ -70,7 +70,7 @@ impl Default for Saempler {
             meters,
             commands: Arc::new(Mutex::new(command_producer)),
             disposal: Arc::new(Mutex::new(disposal_consumer)),
-            sample_view: Arc::new(Mutex::new(SampleView::default())),
+            sample_view: Arc::new(Mutex::new(EditorState::default())),
         }
     }
 }
@@ -214,6 +214,7 @@ impl Plugin for Saempler {
                         commands: &commands,
                         meters: &meters,
                         gain: &params.gain,
+                        editor_state: &params.editor_state,
                     },
                 );
 

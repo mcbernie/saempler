@@ -49,7 +49,10 @@ pub fn segmented(ui: &mut Ui, theme: &Theme, labels: &[&str], selected: usize) -
             vec2(acc.x.max(size.x), acc.y.max(size.y))
         });
     let total = vec2(segment.x * labels.len() as f32, segment.y);
-    let (rect, _response) = ui.allocate_exact_size(total, Sense::hover());
+    // The id comes from the allocated area rather than from the enclosing Ui,
+    // so several selectors in one row do not collide.
+    let (rect, response) = ui.allocate_exact_size(total, Sense::hover());
+    let id = response.id;
 
     // The track is the recessed surface the segments sit in.
     ui.painter()
@@ -61,7 +64,7 @@ pub fn segmented(ui: &mut Ui, theme: &Theme, labels: &[&str], selected: usize) -
             pos2(rect.min.x + segment.x * index as f32, rect.min.y),
             segment,
         );
-        let response = ui.interact(bounds, ui.id().with(("segment", index)), Sense::click());
+        let response = ui.interact(bounds, id.with(("segment", index)), Sense::click());
         if response.clicked() {
             clicked = Some(index);
         }

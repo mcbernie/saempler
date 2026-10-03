@@ -138,7 +138,18 @@ and release. Speed and pitch both change the read rate, so a transposed cell is
 also shorter. Duplicating a cell and changing only the copy is the quickest way
 to the idea the instrument is built on.
 
-The modifier keys, an octave below the pads:
+The editor has four pages. The output meters and the modifier lamps stay
+visible under all of them, because you need to see what the modifiers are doing
+whichever page is open. The window resizes from the corner.
+
+```
+SAMPLE      load, slice and navigate the waveform
+PERFORM     the pads: which note plays which slice
+CELL        how the selected pad plays its slice
+MODIFIERS   which key does what, and how it responds
+```
+
+The modifier keys, by default an octave below the pads:
 
 ```
 C1   Reverse      play the slice backwards
@@ -155,6 +166,15 @@ Hold       in effect while the key is down
 Toggle     in effect until the key is pressed again
 One Shot   in effect for the next performance note, then cleared
 ```
+
+Modifiers work on notes that are already sounding. Hold a chop, press reverse
+and it turns round where it is; press stutter and it loops under the playhead;
+press brake and it slows to a stop. Let the brake go and it winds back up.
+
+On the MODIFIERS page every key can be changed: drag a note to move it, right
+click it to remove the row, pick what it does and how it responds, or add
+another row. The same modifier may sit on several keys with different modes —
+stutter held on one and armed as a one shot on the next.
 
 Stutter, repeat and brake follow the host tempo. In the standalone that is the
 `--tempo` option, which defaults to 120.
@@ -242,8 +262,8 @@ breaks the restore, and the error appears under the waveform.
 
 ## What you are actually testing right now
 
-This is phase 4: modifier keys that change the performance as it happens. Hold
-C1 and play a run of pads; set D1 to one shot and arm a single stutter in the
-middle of a phrase; hold G1 and let a chop brake to a stop.
+This is phase 4: modifier keys that change the performance as it happens, both
+for the next note and for the notes already ringing. Play a chop, and while it
+sounds press reverse, then stutter, then brake. That sequence is the instrument.
 
-Effects and gestures come next.
+Envelopes, LFOs, a modulation matrix and the advanced playback modes come next.

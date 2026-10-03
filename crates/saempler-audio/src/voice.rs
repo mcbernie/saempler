@@ -1,6 +1,9 @@
 use crate::command::CellSpec;
 use crate::sample::SampleBuffer;
 
+/// Output frames a released brake takes to reach full speed again.
+const SPIN_UP_FRAMES: f64 = 6_000.0;
+
 /// Stage of a voice's amplitude envelope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Stage {
@@ -37,15 +40,24 @@ pub struct Voice {
     /// Frames advanced per output frame. Always positive; direction is
     /// carried by `reverse`.
     rate: f64,
+    /// Kept so that a modifier engaged mid-note can work out envelope steps.
+    sample_rate: f32,
     /// Multiplier a tape stop applies to the rate, falling from 1 to 0.
     rate_scale: f64,
-    /// How much `rate_scale` falls per output frame. Zero means no tape stop.
+    /// Change in `rate_scale` per output frame. Positive brakes, negative
+    /// winds back up to speed, zero holds. A brake that is let go of spins
+    /// back up rather than snapping, which is how the gesture is played.
     rate_decay: f64,
     reverse: bool,
     /// Frame playback jumps back to while looping, and the length of that
     /// loop. Zero means the voice plays straight through.
     loop_start: u64,
     loop_frames: u64,
+    /// The cell as the keyboard maps it, before any modifier.
+    ///
+    /// Kept so that a modifier engaged or released mid-note can be applied to
+    /// the untouched cell rather than to whatever the last one left behind.
+    base: CellSpec,
     spec: CellSpec,
 }
 
@@ -61,11 +73,13 @@ impl Default for Voice {
             release_step: 1.0,
             position: 0.0,
             rate: 1.0,
+            sample_rate: 48_000.0,
             rate_scale: 1.0,
             rate_decay: 0.0,
             reverse: false,
             loop_start: 0,
             loop_frames: 0,
+            base: CellSpec::default(),
             spec: CellSpec::default(),
         }
     }
@@ -97,8 +111,33 @@ impl Voice {
         self.is_active().then(|| self.position())
     }
 
+    /// The cell this voice plays, before modifiers.
+    pub fn base(&self) -> CellSpec {
+        self.base
+    }
+
+    /// Start this voice, replacing whatever it was playing before.
+    ///
+    /// `base` is the cell as mapped, `spec` the same cell with the modifiers
+    /// that were engaged at the moment of the trigger.
+    #[allow(clippy::too_many_arguments)]
+    pub fn start_with_base(
+        &mut self,
+        note: u8,
+        velocity: f32,
+        age: u64,
+        base: CellSpec,
+        spec: CellSpec,
+        sample_rate: f32,
+    ) {
+        self.base = base;
+        self.start(note, velocity, age, spec, sample_rate);
+        self.base = base;
+    }
+
     /// Start this voice, replacing whatever it was playing before.
     pub fn start(&mut self, note: u8, velocity: f32, age: u64, spec: CellSpec, sample_rate: f32) {
+        self.base = spec;
         self.stage = Stage::Attack;
         self.note = note;
         self.age = age;
@@ -143,6 +182,51 @@ impl Voice {
             spec.bounds.start_frame as f64
         };
         self.loop_start = self.position as u64;
+        self.sample_rate = sample_rate;
+    }
+
+    /// Apply a changed set of modifiers to a voice that is already sounding.
+    ///
+    /// The changes take effect from where the voice is, not from the start of
+    /// the slice: engaging a stutter loops the audio under the playhead, and
+    /// engaging reverse turns the voice round on the spot. That is what makes
+    /// modifiers playable rather than merely configurable.
+    pub fn retune(&mut self, spec: CellSpec) {
+        if self.stage == Stage::Idle {
+            return;
+        }
+
+        self.rate = spec.rate.max(f32::MIN_POSITIVE) as f64;
+        self.sustain_level = (self.sustain_level / self.spec.gain.max(1e-6)) * spec.gain;
+
+        if spec.reverse != self.reverse {
+            self.reverse = spec.reverse;
+        }
+
+        // A loop that has just been engaged starts under the playhead; one
+        // that was already running keeps its place so the rhythm does not jump.
+        let loop_frames = if spec.loop_frames > 0 && spec.loop_frames < spec.bounds.len_frames() {
+            spec.loop_frames
+        } else {
+            0
+        };
+        if loop_frames > 0 && self.loop_frames == 0 {
+            self.loop_start = self.position.max(0.0) as u64;
+        }
+        self.loop_frames = loop_frames;
+
+        if spec.tape_stop_frames > 0 {
+            if self.rate_decay <= 0.0 {
+                self.rate_decay = 1.0 / spec.tape_stop_frames as f64;
+            }
+        } else if self.rate_scale < 1.0 {
+            // Letting go of the brake winds the tape back up to speed.
+            self.rate_decay = -(1.0 / SPIN_UP_FRAMES);
+        } else {
+            self.rate_decay = 0.0;
+        }
+
+        self.spec = spec;
     }
 
     /// Move the voice into its release stage.
@@ -170,12 +254,16 @@ impl Voice {
             return (0.0, 0.0);
         }
 
-        if self.rate_decay > 0.0 {
+        if self.rate_decay != 0.0 {
             self.rate_scale -= self.rate_decay;
             if self.rate_scale <= 0.0 {
                 // The tape has come to rest; there is nothing left to read.
                 self.kill();
                 return (0.0, 0.0);
+            }
+            if self.rate_scale >= 1.0 {
+                self.rate_scale = 1.0;
+                self.rate_decay = 0.0;
             }
         }
 

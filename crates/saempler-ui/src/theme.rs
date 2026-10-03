@@ -23,6 +23,8 @@ pub struct Theme {
     pub window_bg: Color32,
     /// Background of a framed section.
     pub panel_bg: Color32,
+    /// Lighter upper edge of a panel, the lit side of its bevel.
+    pub panel_top: Color32,
     /// Background of an interactive control at rest.
     pub control_bg: Color32,
     /// Lighter upper half of a control at rest.
@@ -47,6 +49,8 @@ pub struct Theme {
 
     /// Selection and primary interaction colour.
     pub accent: Color32,
+    /// Something armed and waiting, as opposed to in effect.
+    pub armed: Color32,
     /// Running/active state.
     pub active: Color32,
     /// Reserved for clipping and errors only.
@@ -75,60 +79,64 @@ pub struct Theme {
 impl Theme {
     /// The product's dark theme.
     ///
-    /// Surfaces are layered greys rather than pure black so that panels stay
-    /// distinguishable on the kind of displays these plugins are used on.
+    /// The greys carry a little warmth rather than being neutral or blue, and
+    /// every surface has a lit top edge over a dark outline. That reads as a
+    /// panel with depth, the way a performance instrument should, while the
+    /// accent colours stay flat and modern.
     pub const fn dark() -> Self {
         Self {
             spacing_sm: 4.0,
             spacing_md: 8.0,
-            spacing_lg: 16.0,
+            spacing_lg: 14.0,
 
             radius_sm: CornerRadius::same(3),
-            radius_md: CornerRadius::same(6),
+            radius_md: CornerRadius::same(5),
 
             stroke_thin: 1.0,
             stroke_thick: 2.0,
 
             font_sm: 11.0,
             font_md: 13.0,
-            font_lg: 17.0,
+            font_lg: 18.0,
 
-            window_bg: Color32::from_rgb(0x15, 0x17, 0x1a),
-            panel_bg: Color32::from_rgb(0x1d, 0x20, 0x24),
-            control_bg: Color32::from_rgb(0x25, 0x29, 0x2f),
-            control_top: Color32::from_rgb(0x2e, 0x33, 0x3a),
-            control_hover_bg: Color32::from_rgb(0x30, 0x35, 0x3d),
-            control_hover_top: Color32::from_rgb(0x3a, 0x40, 0x49),
-            control_pressed_bg: Color32::from_rgb(0x16, 0x19, 0x1d),
-            control_selected_bg: Color32::from_rgb(0x1c, 0x2e, 0x30),
-            control_selected_top: Color32::from_rgb(0x22, 0x38, 0x3a),
-            control_highlight: Color32::from_rgb(0x45, 0x4c, 0x56),
-            outline: Color32::from_rgb(0x3a, 0x3f, 0x47),
+            window_bg: Color32::from_rgb(0x14, 0x13, 0x11),
+            panel_bg: Color32::from_rgb(0x21, 0x1f, 0x1c),
+            panel_top: Color32::from_rgb(0x28, 0x26, 0x22),
+            control_bg: Color32::from_rgb(0x2b, 0x28, 0x24),
+            control_top: Color32::from_rgb(0x34, 0x31, 0x2c),
+            control_hover_bg: Color32::from_rgb(0x38, 0x34, 0x2e),
+            control_hover_top: Color32::from_rgb(0x43, 0x3e, 0x37),
+            control_pressed_bg: Color32::from_rgb(0x16, 0x15, 0x13),
+            control_selected_bg: Color32::from_rgb(0x1d, 0x32, 0x33),
+            control_selected_top: Color32::from_rgb(0x24, 0x3d, 0x3e),
+            control_highlight: Color32::from_rgb(0x4e, 0x48, 0x40),
+            outline: Color32::from_rgb(0x0d, 0x0c, 0x0b),
 
-            text: Color32::from_rgb(0xe2, 0xe6, 0xeb),
-            text_dim: Color32::from_rgb(0x8c, 0x95, 0xa1),
+            text: Color32::from_rgb(0xe8, 0xe3, 0xd8),
+            text_dim: Color32::from_rgb(0x95, 0x8d, 0x80),
 
-            accent: Color32::from_rgb(0x2d, 0xd4, 0xbf),
-            active: Color32::from_rgb(0x4a, 0xde, 0x80),
-            danger: Color32::from_rgb(0xef, 0x44, 0x44),
+            accent: Color32::from_rgb(0x3a, 0xd9, 0xc4),
+            armed: Color32::from_rgb(0xf5, 0xa5, 0x24),
+            active: Color32::from_rgb(0x63, 0xe2, 0x8a),
+            danger: Color32::from_rgb(0xf0, 0x5c, 0x4a),
 
-            waveform_bg: Color32::from_rgb(0x13, 0x16, 0x1a),
+            waveform_bg: Color32::from_rgb(0x0f, 0x0e, 0x0d),
             waveform: Color32::from_rgb(0x5e, 0xea, 0xd4),
-            waveform_axis: Color32::from_rgb(0x30, 0x36, 0x3e),
-            marker: Color32::from_rgb(0x64, 0x6d, 0x7a),
-            playhead: Color32::from_rgb(0xf4, 0x72, 0xb6),
+            waveform_axis: Color32::from_rgb(0x33, 0x30, 0x2b),
+            marker: Color32::from_rgb(0x6e, 0x67, 0x5c),
+            playhead: Color32::from_rgb(0xf5, 0xa5, 0x24),
             // Slice shading sits behind the trace, so it stays very low
             // contrast; the markers carry the actual division.
-            slice_fill: Color32::from_rgb(0x19, 0x1d, 0x22),
-            slice_fill_alternate: Color32::from_rgb(0x1e, 0x23, 0x29),
-            slice_selected_fill: Color32::from_rgb(0x24, 0x33, 0x36),
+            slice_fill: Color32::from_rgb(0x16, 0x15, 0x13),
+            slice_fill_alternate: Color32::from_rgb(0x1c, 0x1a, 0x18),
+            slice_selected_fill: Color32::from_rgb(0x1c, 0x2d, 0x2c),
             slice_palette: [
-                Color32::from_rgb(0x2d, 0xd4, 0xbf),
+                Color32::from_rgb(0x3a, 0xd9, 0xc4),
                 Color32::from_rgb(0xf4, 0x72, 0xb6),
-                Color32::from_rgb(0xfb, 0x92, 0x3c),
+                Color32::from_rgb(0xf5, 0xa5, 0x24),
                 Color32::from_rgb(0x60, 0xa5, 0xfa),
                 Color32::from_rgb(0xa7, 0x8b, 0xfa),
-                Color32::from_rgb(0x4a, 0xde, 0x80),
+                Color32::from_rgb(0x63, 0xe2, 0x8a),
             ],
         }
     }

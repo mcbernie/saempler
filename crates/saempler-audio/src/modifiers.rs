@@ -28,6 +28,14 @@ impl ModifierState {
         self.active[index] || self.armed[index]
     }
 
+    /// Whether a modifier is in effect right now.
+    ///
+    /// A one shot is armed but not in effect: it belongs to a note that has
+    /// not been played yet, and must not reach into notes already sounding.
+    pub fn is_live(&self, modifier: Modifier) -> bool {
+        self.active[modifier.index()]
+    }
+
     /// Bit per modifier, for publishing the state to the interface.
     pub fn bits(&self) -> u32 {
         let mut bits = 0;
@@ -75,22 +83,46 @@ impl ModifierState {
     }
 
     /// The result of applying the engaged modifiers, without consuming them.
-    pub fn applied(&self, mut spec: CellSpec, tempo: f64, sample_rate: f32) -> CellSpec {
-        if self.is_engaged(Modifier::Reverse) {
+    ///
+    /// Used when a note is triggered, so a one shot counts.
+    pub fn applied(&self, spec: CellSpec, tempo: f64, sample_rate: f32) -> CellSpec {
+        self.apply_with(spec, tempo, sample_rate, |state, modifier| {
+            state.is_engaged(modifier)
+        })
+    }
+
+    /// The result of applying only the modifiers in effect right now.
+    ///
+    /// Used for notes that are already sounding, so an armed one shot stays
+    /// waiting for the note it was meant for.
+    pub fn applied_live(&self, spec: CellSpec, tempo: f64, sample_rate: f32) -> CellSpec {
+        self.apply_with(spec, tempo, sample_rate, |state, modifier| {
+            state.is_live(modifier)
+        })
+    }
+
+    fn apply_with(
+        &self,
+        mut spec: CellSpec,
+        tempo: f64,
+        sample_rate: f32,
+        engaged: impl Fn(&Self, Modifier) -> bool,
+    ) -> CellSpec {
+        if engaged(self, Modifier::Reverse) {
             spec.reverse = !spec.reverse;
         }
-        if self.is_engaged(Modifier::HalfTime) {
+        if engaged(self, Modifier::HalfTime) {
             spec.rate *= 0.5;
         }
         // Stutter and repeat are the same mechanism at different lengths: a
         // loop taken from the trigger point. Only the shorter one survives if
         // both are engaged, because that is the one you can still hear.
-        if self.is_engaged(Modifier::Stutter) {
+        if engaged(self, Modifier::Stutter) {
             spec.loop_frames = division_frames(tempo, sample_rate, 16);
-        } else if self.is_engaged(Modifier::Repeat) {
+        } else if engaged(self, Modifier::Repeat) {
             spec.loop_frames = division_frames(tempo, sample_rate, 8);
         }
-        if self.is_engaged(Modifier::Brake) {
+        if engaged(self, Modifier::Brake) {
             spec.tape_stop_frames = division_frames(tempo, sample_rate, 1);
         }
 
@@ -295,6 +327,29 @@ mod tests {
             let frames = division_frames(tempo, SAMPLE_RATE, 16);
             assert!(frames > 0, "tempo {tempo} produced {frames}");
         }
+    }
+
+    #[test]
+    fn an_armed_one_shot_does_not_reach_notes_already_sounding() {
+        let mut state = ModifierState::new();
+        state.press(Modifier::Reverse, ModifierMode::OneShot);
+
+        assert!(
+            !state.applied_live(spec(), 120.0, SAMPLE_RATE).reverse,
+            "an armed one shot belongs to the next note, not this one"
+        );
+        assert!(
+            state.applied(spec(), 120.0, SAMPLE_RATE).reverse,
+            "but it must still apply when that note arrives"
+        );
+    }
+
+    #[test]
+    fn a_held_modifier_reaches_notes_already_sounding() {
+        let mut state = ModifierState::new();
+        state.press(Modifier::Stutter, ModifierMode::Hold);
+
+        assert!(state.applied_live(spec(), 120.0, SAMPLE_RATE).loop_frames > 0);
     }
 
     #[test]

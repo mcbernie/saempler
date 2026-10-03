@@ -9,7 +9,7 @@ pub mod screens;
 pub mod theme;
 pub mod widgets;
 
-pub use screens::main::{draw, SampleView, ViewState};
+pub use screens::main::{draw, EditorState, Tab, ViewState, MIN_EDITOR_SIZE};
 pub use screens::modifiers::sync_modifiers;
 pub use theme::Theme;
 pub use widgets::ViewRange;

@@ -1,15 +1,16 @@
-use nih_plug_egui::egui::{
-    pos2, vec2, Align2, FontId, PointerButton, Sense, Stroke, StrokeKind, Ui,
-};
+use nih_plug_egui::egui::{pos2, vec2, Align2, FontId, PointerButton, Sense, Ui};
 use saempler_audio::EngineCommand;
 use saempler_model::{note_name, Modifier, ModifierMode, ProjectFile};
 
-use crate::screens::main::{section, ViewState, THEME};
-use crate::widgets::surface::{control_surface, SurfaceState};
+use crate::screens::main::{hint, placeholder, section, ViewState, THEME};
+use crate::widgets::{button, led, segmented};
 
-/// Size of one modifier pad.
-const PAD_WIDTH: f32 = 112.0;
-const PAD_HEIGHT: f32 = 62.0;
+/// Width of the note column in a modifier row.
+const NOTE_WIDTH: f32 = 72.0;
+/// Height of a row.
+const ROW_HEIGHT: f32 = 34.0;
+/// How many notes one pixel of a note drag is worth.
+const NOTE_DRAG_SENSITIVITY: f32 = 0.08;
 
 /// Push the modifier layout to the engine.
 pub fn sync_modifiers(state: &ViewState<'_>, project: &ProjectFile) {
@@ -26,124 +27,173 @@ pub fn sync_modifiers(state: &ViewState<'_>, project: &ProjectFile) {
     }
 }
 
-/// The modifier keys and what they are set to do.
+/// What a row asked for this frame.
+enum RowEdit {
+    Mode(u8, ModifierMode),
+    Kind(u8, Modifier),
+    Move(u8, u8),
+    Remove(u8),
+}
+
+/// The modifier keys: which note, what it does, and how it responds.
 pub fn modifier_section(ui: &mut Ui, state: &ViewState<'_>) {
-    section(ui, "MODIFIERS", |ui| {
+    section(ui, "MODIFIER KEYS", |ui| {
+        toolbar(ui, state);
+        ui.add_space(THEME.spacing_sm);
+
         let engaged = state.meters.modifiers();
-        let mut cycled: Option<(Modifier, ModifierMode)> = None;
+        let mut edit: Option<RowEdit> = None;
 
         {
             let Ok(project) = state.project.lock() else {
                 return;
             };
 
-            ui.horizontal(|ui| {
-                for entry in project.project.modifiers() {
-                    let is_engaged = engaged & (1 << entry.modifier.index()) != 0;
-                    if modifier_pad(ui, entry.modifier, entry.note, entry.mode, is_engaged) {
-                        cycled = Some((entry.modifier, entry.mode.next()));
-                    }
+            if project.project.modifiers().is_empty() {
+                placeholder(ui, "Keine Modifier belegt");
+            }
+
+            for entry in project.project.modifiers() {
+                let lit = engaged & (1 << entry.modifier.index()) != 0;
+                if let Some(row) = modifier_row(ui, entry.note, entry.modifier, entry.mode, lit) {
+                    edit = Some(row);
                 }
-            });
+            }
         }
 
-        if let Some((modifier, mode)) = cycled {
+        if let Some(edit) = edit {
             if let Ok(mut project) = state.project.lock() {
-                project.project.set_modifier_mode(modifier, mode);
-                sync_modifiers(state, &project);
+                let changed = match edit {
+                    RowEdit::Mode(note, mode) => project.project.set_modifier_mode(note, mode),
+                    RowEdit::Kind(note, modifier) => project.project.set_modifier(note, modifier),
+                    RowEdit::Move(from, to) => project.project.move_modifier(from, to),
+                    RowEdit::Remove(note) => project.project.remove_modifier(note),
+                };
+                if changed {
+                    sync_modifiers(state, &project);
+                }
             }
         }
 
         hint(
             ui,
-            "Klick wechselt den Modus  ·  Hold: solange gehalten  ·  \
-             Toggle: bis zum nächsten Druck  ·  One Shot: nur die nächste Note",
+            "Note ziehen verschiebt die Taste  ·  Rechtsklick auf die Note entfernt die Zeile",
         );
     });
 }
 
-/// Draw one modifier pad. Returns true when it was clicked.
-fn modifier_pad(
-    ui: &mut Ui,
-    modifier: Modifier,
-    note: u8,
-    mode: ModifierMode,
-    engaged: bool,
-) -> bool {
-    let (rect, response) =
-        ui.allocate_exact_size(vec2(PAD_WIDTH, PAD_HEIGHT), Sense::click_and_drag());
+/// Buttons above the list.
+fn toolbar(ui: &mut Ui, state: &ViewState<'_>) {
+    ui.horizontal(|ui| {
+        if button(ui, &THEME, "Modifier hinzufügen") {
+            if let Ok(mut project) = state.project.lock() {
+                // Below the playing range, next to whatever is already there.
+                let from = project
+                    .project
+                    .modifiers()
+                    .last()
+                    .map(|entry| entry.note.saturating_add(1))
+                    .unwrap_or(saempler_model::MODIFIER_BASE_NOTE);
+                if let Some(note) = project.project.first_free_note(from) {
+                    project
+                        .project
+                        .add_modifier(note, Modifier::Reverse, ModifierMode::Hold);
+                    sync_modifiers(state, &project);
+                }
+            }
+        }
 
-    let state = if engaged {
-        SurfaceState::Selected
-    } else if response.is_pointer_button_down_on() {
-        SurfaceState::Pressed
-    } else if response.hovered() {
-        SurfaceState::Hover
-    } else {
-        SurfaceState::Rest
-    };
-    control_surface(ui, &THEME, rect, state);
+        if button(ui, &THEME, "Standardbelegung") {
+            if let Ok(mut project) = state.project.lock() {
+                project.project.reset_modifiers();
+                sync_modifiers(state, &project);
+            }
+        }
 
-    let painter = ui.painter();
-    painter.text(
-        pos2(rect.min.x + THEME.spacing_md, rect.min.y + THEME.spacing_md),
-        Align2::LEFT_TOP,
-        modifier.label(),
-        FontId::proportional(THEME.font_md),
-        if engaged { THEME.accent } else { THEME.text },
-    );
-    painter.text(
-        pos2(rect.min.x + THEME.spacing_md, rect.max.y - THEME.spacing_md),
-        Align2::LEFT_BOTTOM,
-        mode.label(),
-        FontId::proportional(THEME.font_sm),
-        THEME.text_dim,
-    );
-    painter.text(
-        pos2(rect.max.x - THEME.spacing_md, rect.max.y - THEME.spacing_md),
-        Align2::RIGHT_BOTTOM,
-        note_name(note),
-        FontId::proportional(THEME.font_sm),
-        THEME.text_dim,
-    );
-
-    // A lamp is easier to read at a glance than a change of fill alone.
-    let lamp = pos2(
-        rect.max.x - THEME.spacing_md - 4.0,
-        rect.min.y + THEME.spacing_md + 4.0,
-    );
-    painter.circle_filled(
-        lamp,
-        4.0,
-        if engaged {
-            THEME.active
-        } else {
-            THEME.control_pressed_bg
-        },
-    );
-    if engaged {
-        painter.rect_stroke(
-            rect,
-            THEME.radius_sm,
-            Stroke::new(THEME.stroke_thick, THEME.active),
-            StrokeKind::Inside,
-        );
-    }
-
-    response.clicked() && !response.clicked_by(PointerButton::Secondary)
+        let count = state
+            .project
+            .lock()
+            .map(|project| project.project.modifiers().len())
+            .unwrap_or(0);
+        ui.add_space(THEME.spacing_md);
+        hint(ui, &format!("{count} Tasten belegt"));
+    });
 }
 
-/// A dimmed line of explanatory text.
-fn hint(ui: &mut Ui, text: &str) {
-    let (rect, _) = ui.allocate_exact_size(
-        vec2(ui.available_width(), THEME.font_sm * 1.6),
-        Sense::hover(),
-    );
-    ui.painter().text(
-        rect.left_center(),
-        Align2::LEFT_CENTER,
-        text,
-        FontId::proportional(THEME.font_sm),
-        THEME.text_dim,
-    );
+/// One row: lamp, note, what it does, how it responds.
+fn modifier_row(
+    ui: &mut Ui,
+    note: u8,
+    modifier: Modifier,
+    mode: ModifierMode,
+    engaged: bool,
+) -> Option<RowEdit> {
+    let mut edit = None;
+
+    ui.horizontal(|ui| {
+        let (lamp, _) = ui.allocate_exact_size(vec2(18.0, ROW_HEIGHT), Sense::hover());
+        led(
+            ui,
+            &THEME,
+            pos2(lamp.center().x, lamp.center().y),
+            engaged.then_some(THEME.active),
+        );
+
+        // Dragging the note is the quickest way to move a key, and it needs
+        // no second interaction mode for picking one.
+        let (note_rect, response) =
+            ui.allocate_exact_size(vec2(NOTE_WIDTH, ROW_HEIGHT), Sense::click_and_drag());
+        let hovered = response.hovered() || response.dragged();
+        ui.painter().rect_filled(
+            note_rect.shrink(2.0),
+            THEME.radius_sm,
+            if hovered {
+                THEME.control_hover_bg
+            } else {
+                THEME.control_pressed_bg
+            },
+        );
+        ui.painter().text(
+            note_rect.center(),
+            Align2::CENTER_CENTER,
+            note_name(note),
+            FontId::proportional(THEME.font_md),
+            if engaged { THEME.accent } else { THEME.text },
+        );
+
+        if response.dragged() {
+            let steps = -response.drag_delta().y * NOTE_DRAG_SENSITIVITY;
+            let target = (note as f32 + steps).round().clamp(0.0, 127.0) as u8;
+            if target != note {
+                edit = Some(RowEdit::Move(note, target));
+            }
+        }
+        if response.clicked_by(PointerButton::Secondary) {
+            edit = Some(RowEdit::Remove(note));
+        }
+
+        ui.add_space(THEME.spacing_sm);
+
+        let names: Vec<&str> = Modifier::ALL.iter().map(|m| m.label()).collect();
+        let selected = Modifier::ALL
+            .iter()
+            .position(|m| *m == modifier)
+            .unwrap_or(0);
+        if let Some(index) = segmented(ui, &THEME, &names, selected) {
+            edit = Some(RowEdit::Kind(note, Modifier::ALL[index]));
+        }
+
+        ui.add_space(THEME.spacing_sm);
+
+        let modes: Vec<&str> = ModifierMode::ALL.iter().map(|m| m.label()).collect();
+        let selected = ModifierMode::ALL
+            .iter()
+            .position(|m| *m == mode)
+            .unwrap_or(0);
+        if let Some(index) = segmented(ui, &THEME, &modes, selected) {
+            edit = Some(RowEdit::Mode(note, ModifierMode::ALL[index]));
+        }
+    });
+
+    edit
 }

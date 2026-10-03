@@ -1,34 +1,56 @@
 use std::sync::{Arc, Mutex};
 
 use nih_plug::prelude::{FloatParam, ParamSetter};
-use nih_plug_egui::egui::{self, Align2, CentralPanel, FontId, Frame, Ui};
+use nih_plug_egui::egui::{self, pos2, vec2, Align2, FontId, Frame, Sense, Stroke, Ui};
+use nih_plug_egui::{resizable_window::ResizableWindow, EguiState};
 use saempler_audio::{CellSpec, CommandProducer, EngineCommand, Meters, SampleBuffer, SliceBounds};
 use saempler_core::PeakCache;
-use saempler_model::ProjectFile;
+use saempler_model::{Modifier, ProjectFile};
 
 use crate::screens::modifiers::modifier_section;
-use crate::screens::performance::{cell_section, performance_section, sync_cells};
+use crate::screens::performance::{cell_section, performance_section};
+use crate::screens::source::source_section;
 use crate::theme::Theme;
-use crate::widgets::{
-    button, knob, readout, segmented, stereo_meter, waveform, ViewRange, WaveformSource,
-};
+use crate::widgets::{knob, led, readout, stereo_meter, tab_bar, ViewRange};
 
 pub(crate) const THEME: Theme = Theme::dark();
 
-const KNOB_DIAMETER: f32 = 52.0;
-const METER_WIDTH: f32 = 170.0;
-const WAVEFORM_HEIGHT: f32 = 170.0;
+const KNOB_DIAMETER: f32 = 48.0;
+const METER_WIDTH: f32 = 150.0;
 
-/// Slice counts offered by the quick division buttons.
-const EVEN_DIVISIONS: [u32; 4] = [4, 8, 16, 32];
+/// Smallest the editor window may be dragged to.
+pub const MIN_EDITOR_SIZE: (f32, f32) = (720.0, 470.0);
 
-/// What the interface knows about the sample currently loaded.
+/// The pages of the editor.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Tab {
+    #[default]
+    Sample,
+    Perform,
+    Cell,
+    Modifiers,
+}
+
+impl Tab {
+    pub const ALL: [Tab; 4] = [Tab::Sample, Tab::Perform, Tab::Cell, Tab::Modifiers];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Tab::Sample => "SAMPLE",
+            Tab::Perform => "PERFORM",
+            Tab::Cell => "CELL",
+            Tab::Modifiers => "MODIFIERS",
+        }
+    }
+}
+
+/// What the editor keeps between frames.
 ///
-/// Owned by the plugin and filled in by the import task. The peaks drive the
-/// overview; the buffer is only read when the view is zoomed in past the
-/// resolution of the peak cache.
+/// Owned by the plugin, so it survives the window being closed and reopened.
+/// The peaks drive the waveform overview; the buffer is only read when the
+/// view is zoomed in past the resolution of the peak cache.
 #[derive(Default)]
-pub struct SampleView {
+pub struct EditorState {
     pub peaks: PeakCache,
     /// The decoded audio, shared with the engine.
     pub buffer: Option<Arc<SampleBuffer>>,
@@ -38,9 +60,11 @@ pub struct SampleView {
     pub status: Option<String>,
     /// Whether an import is running right now.
     pub loading: bool,
+    /// The page being shown.
+    pub tab: Tab,
 }
 
-impl SampleView {
+impl EditorState {
     /// Show the whole sample again.
     pub fn reset_view(&mut self) {
         self.view = ViewRange::full(self.peaks.frames());
@@ -54,8 +78,8 @@ impl SampleView {
 pub struct ViewState<'a> {
     /// Persisted project state. Locked on the UI thread only.
     pub project: &'a Mutex<ProjectFile>,
-    /// Peaks, audio and import status. Written by the import task, read here.
-    pub sample: &'a Mutex<SampleView>,
+    /// Peaks, audio, import status and the current page.
+    pub sample: &'a Mutex<EditorState>,
     /// Producing end of the engine command queue. Locked on the UI thread
     /// only; the audio thread owns the consumer and never blocks on this.
     pub commands: &'a Mutex<CommandProducer>,
@@ -63,6 +87,8 @@ pub struct ViewState<'a> {
     pub meters: &'a Meters,
     /// Master output gain, exposed to the host as an automatable parameter.
     pub gain: &'a FloatParam,
+    /// Window size, which the resize corner writes back to.
+    pub editor_state: &'a EguiState,
 }
 
 impl ViewState<'_> {
@@ -78,13 +104,25 @@ impl ViewState<'_> {
     }
 }
 
+/// A one-shot audition of a region, with the cell's own settings left out.
+pub(crate) fn preview_spec(start_frame: u64, end_frame: u64) -> CellSpec {
+    CellSpec {
+        bounds: SliceBounds {
+            start_frame,
+            end_frame,
+        },
+        ..CellSpec::default()
+    }
+}
+
 /// Apply the product theme to egui's own surfaces.
 pub fn apply_style(ctx: &egui::Context, theme: &Theme) {
     let mut visuals = egui::Visuals::dark();
     visuals.panel_fill = theme.window_bg;
     visuals.window_fill = theme.window_bg;
-    visuals.extreme_bg_color = theme.control_bg;
+    visuals.extreme_bg_color = theme.control_pressed_bg;
     visuals.override_text_color = Some(theme.text);
+    visuals.resize_corner_size = 14.0;
     ctx.set_visuals(visuals);
 }
 
@@ -99,38 +137,64 @@ pub fn draw(ctx: &egui::Context, setter: &ParamSetter, state: &ViewState<'_>) ->
         ctx.request_repaint();
     }
 
-    CentralPanel::default()
-        .frame(
+    ResizableWindow::new("saempler-window")
+        .min_size(vec2(MIN_EDITOR_SIZE.0, MIN_EDITOR_SIZE.1))
+        .show(ctx, state.editor_state, |ui| {
             Frame::new()
                 .fill(THEME.window_bg)
-                .inner_margin(THEME.spacing_lg),
-        )
-        .show(ctx, |ui| {
-            ui.spacing_mut().item_spacing = egui::vec2(THEME.spacing_md, THEME.spacing_md);
+                .inner_margin(THEME.spacing_lg)
+                .show(ui, |ui| {
+                    ui.spacing_mut().item_spacing = vec2(THEME.spacing_md, THEME.spacing_md);
+                    header(ui, state);
 
-            egui::ScrollArea::vertical().show(ui, |ui| {
-                header(ui, state);
-                ui.add_space(THEME.spacing_md);
-                import_requested = source_section(ui, state);
-                ui.add_space(THEME.spacing_md);
-                performance_section(ui, state);
-                ui.add_space(THEME.spacing_md);
-                cell_section(ui, state);
-                ui.add_space(THEME.spacing_md);
-                modifier_section(ui, state);
-                ui.add_space(THEME.spacing_md);
-                output_section(ui, setter, state);
-            });
+                    let tab = current_tab(state);
+                    let labels: Vec<&str> = Tab::ALL.iter().map(|tab| tab.label()).collect();
+                    if let Some(index) = tab_bar(ui, &THEME, &labels, tab as usize) {
+                        set_tab(state, Tab::ALL[index]);
+                    }
+                    ui.add_space(THEME.spacing_md);
+
+                    // The page scrolls; the header and the footer stay put, so
+                    // the meters and modifier lamps are always in view.
+                    let footer = KNOB_DIAMETER + THEME.font_sm * 10.0 + THEME.spacing_lg * 2.0;
+                    egui::ScrollArea::vertical()
+                        .max_height((ui.available_height() - footer).max(140.0))
+                        .auto_shrink([false, false])
+                        .show(ui, |ui| match tab {
+                            Tab::Sample => import_requested = source_section(ui, state),
+                            Tab::Perform => performance_section(ui, state),
+                            Tab::Cell => cell_section(ui, state),
+                            Tab::Modifiers => modifier_section(ui, state),
+                        });
+
+                    ui.add_space(THEME.spacing_sm);
+                    footer_section(ui, setter, state);
+                });
         });
 
     import_requested
 }
 
+/// The page currently being shown.
+fn current_tab(state: &ViewState<'_>) -> Tab {
+    state
+        .sample
+        .lock()
+        .map(|sample| sample.tab)
+        .unwrap_or_default()
+}
+
+fn set_tab(state: &ViewState<'_>, tab: Tab) {
+    if let Ok(mut sample) = state.sample.lock() {
+        sample.tab = tab;
+    }
+}
+
 /// Product name and the sample currently loaded.
 fn header(ui: &mut Ui, state: &ViewState<'_>) {
     let (rect, _) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), THEME.font_lg * 1.6),
-        egui::Sense::hover(),
+        vec2(ui.available_width(), THEME.font_lg * 1.5),
+        Sense::hover(),
     );
     let painter = ui.painter();
 
@@ -164,241 +228,11 @@ fn header(ui: &mut Ui, state: &ViewState<'_>) {
     );
 }
 
-/// Waveform, slicing controls and selection. Returns true on an import request.
-fn source_section(ui: &mut Ui, state: &ViewState<'_>) -> bool {
-    let mut import_requested = false;
-
-    section(ui, "SOURCE SAMPLE", |ui| {
-        import_requested = toolbar(ui, state);
-        ui.add_space(THEME.spacing_sm);
-
-        let Ok(mut project) = state.project.lock() else {
-            return;
-        };
-        let Ok(mut sample) = state.sample.lock() else {
-            return;
-        };
-
-        let total = sample.peaks.frames();
-        if sample.view.is_empty() && total > 0 {
-            sample.view = ViewRange::full(total);
-        }
-
-        // Collected once per frame: the widget reads the positions several
-        // times while drawing, and they must not change underneath it.
-        let playheads: Vec<u64> = state.meters.playheads().collect();
-        let action = waveform(
-            ui,
-            &THEME,
-            &WaveformSource {
-                peaks: &sample.peaks,
-                buffer: sample.buffer.as_deref(),
-                slices: project.project.slices(),
-                selected: project.project.selection(),
-                playheads: &playheads,
-                view: sample.view,
-            },
-            WAVEFORM_HEIGHT,
-        );
-
-        if let Some(view) = action.view {
-            sample.view = view;
-        }
-
-        let mut selection_changed = false;
-
-        if let Some(id) = action.select {
-            project.project.select(Some(id));
-            selection_changed = true;
-            // A click auditions what it selected; the voice ends by itself at
-            // the end of the slice, so nothing has to release it.
-            if let Some(slice) = project.project.slice(id) {
-                state.send(EngineCommand::Preview(CellSpec {
-                    bounds: SliceBounds {
-                        start_frame: slice.start_frame,
-                        end_frame: slice.end_frame,
-                    },
-                    ..CellSpec::default()
-                }));
-            }
-        }
-
-        if let Some((id, frame)) = action.split {
-            if project.project.split_slice(id, frame).is_some() {
-                selection_changed = true;
-            }
-        }
-
-        if let Some((from, to)) = action.move_boundary {
-            if project.project.move_boundary(from, to, total) {
-                selection_changed = true;
-            }
-        }
-
-        if let Some(frame) = action.remove_boundary {
-            if project.project.remove_boundary(frame) {
-                selection_changed = true;
-            }
-        }
-
-        // Editing slices can move or remove what the cells play, so the
-        // keyboard mapping is pushed again.
-        if selection_changed {
-            sync_cells(state, &project);
-        }
-
-        ui.add_space(THEME.spacing_sm);
-        status_line(ui, &project, &sample, action.hovered_frame, total);
-    });
-
-    import_requested
-}
-
-/// Import button, quick divisions, zoom and the selected slice controls.
-fn toolbar(ui: &mut Ui, state: &ViewState<'_>) -> bool {
-    let mut import_requested = false;
-    let loading = state
-        .sample
-        .lock()
-        .map(|sample| sample.loading)
-        .unwrap_or(false);
-
-    ui.horizontal(|ui| {
-        let label = if loading {
-            "Lädt …"
-        } else {
-            "Sample laden …"
-        };
-        if button(ui, &THEME, label) && !loading {
-            import_requested = true;
-        }
-
-        ui.add_space(THEME.spacing_md);
-
-        let has_sample = state
-            .project
-            .lock()
-            .map(|project| project.project.sample.is_some())
-            .unwrap_or(false);
-        if !has_sample {
-            return;
-        }
-
-        let labels: Vec<String> = EVEN_DIVISIONS
-            .iter()
-            .map(|count| format!("{count}"))
-            .collect();
-        let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
-
-        // No division is "current", so the selector is drawn without one.
-        if let Some(index) = segmented(ui, &THEME, &refs, usize::MAX) {
-            divide_evenly(state, EVEN_DIVISIONS[index]);
-        }
-
-        ui.add_space(THEME.spacing_md);
-        if button(ui, &THEME, "Slice löschen") {
-            remove_selected(state);
-        }
-        if button(ui, &THEME, "All Notes Off") {
-            state.send(EngineCommand::AllNotesOff);
-        }
-    });
-
-    import_requested
-}
-
-/// Replace the slices with `count` equal divisions and select the first.
-fn divide_evenly(state: &ViewState<'_>, count: u32) {
-    let Ok(mut project) = state.project.lock() else {
-        return;
-    };
-    project.project.slice_evenly(count);
-    let first = project.project.slices().first().map(|slice| slice.id);
-    project.project.select(first);
-    // Dividing replaces every slice, so whatever the notes played is gone.
-    project.project.clear_cells();
-    sync_cells(state, &project);
-}
-
-/// Remove the selected slice and clear what the engine plays.
-fn remove_selected(state: &ViewState<'_>) {
-    let Ok(mut project) = state.project.lock() else {
-        return;
-    };
-    let Some(id) = project.project.selection() else {
-        return;
-    };
-    project.project.remove_slice(id);
-    sync_cells(state, &project);
-}
-
-/// One line of context under the waveform.
-fn status_line(
-    ui: &mut Ui,
-    project: &ProjectFile,
-    sample: &SampleView,
-    hovered_frame: Option<u64>,
-    total: u64,
-) {
-    let slices = project.project.slices().len();
-    let selection = project
-        .project
-        .selected()
-        .map(|slice| {
-            let index = project
-                .project
-                .slices()
-                .iter()
-                .position(|candidate| candidate.id == slice.id)
-                .map(|index| index + 1)
-                .unwrap_or(0);
-            format!("Slice {index}  ·  {} Frames", slice.len_frames())
-        })
-        .unwrap_or_else(|| "kein Slice gewählt".to_owned());
-
-    let position = hovered_frame
-        .map(|frame| format!("  ·  Frame {frame}"))
-        .unwrap_or_default();
-    let zoom = if total == 0 || sample.view.is_full(total) {
-        String::new()
-    } else {
-        format!(
-            "  ·  Zoom {:.0} %",
-            total as f64 / sample.view.len_frames().max(1) as f64 * 100.0
-        )
-    };
-    let gestures = if total == 0 {
-        String::new()
-    } else {
-        "   |   Rad: Zoom  ·  ziehen: verschieben  ·  Marker ziehen: Grenze  ·  Rechtsklick auf Marker: entfernen  ·  Doppelklick: teilen"
-            .to_owned()
-    };
-
-    let text = match sample.status.as_deref() {
-        Some(status) => status.to_owned(),
-        None => format!("{slices} Slices  ·  {selection}{position}{zoom}{gestures}"),
-    };
-    let color = if sample.status.is_some() {
-        THEME.danger
-    } else {
-        THEME.text_dim
-    };
-
-    let (rect, _) = ui.allocate_exact_size(
-        egui::vec2(ui.available_width(), THEME.font_sm * 1.6),
-        egui::Sense::hover(),
-    );
-    ui.painter().text(
-        rect.left_center(),
-        Align2::LEFT_CENTER,
-        text,
-        FontId::proportional(THEME.font_sm),
-        color,
-    );
-}
-
-/// Master gain plus the values published by the engine.
-fn output_section(ui: &mut Ui, setter: &ParamSetter, state: &ViewState<'_>) {
+/// Output level, voice count and the modifier lamps.
+///
+/// Kept out of the tabs on purpose: while performing you need to see what the
+/// modifiers are doing whichever page is open.
+fn footer_section(ui: &mut Ui, setter: &ParamSetter, state: &ViewState<'_>) {
     section(ui, "OUTPUT", |ui| {
         ui.horizontal(|ui| {
             knob(ui, &THEME, state.gain, setter, KNOB_DIAMETER);
@@ -414,7 +248,36 @@ fn output_section(ui: &mut Ui, setter: &ParamSetter, state: &ViewState<'_>) {
                     METER_WIDTH,
                 );
             });
+
+            ui.add_space(THEME.spacing_lg);
+            modifier_lamps(ui, state);
         });
+    });
+}
+
+/// One lamp per modifier, lit while it is in effect.
+fn modifier_lamps(ui: &mut Ui, state: &ViewState<'_>) {
+    let engaged = state.meters.modifiers();
+
+    ui.horizontal(|ui| {
+        for modifier in Modifier::ALL {
+            let lit = engaged & (1 << modifier.index()) != 0;
+            let (rect, _) = ui.allocate_exact_size(vec2(78.0, 36.0), Sense::hover());
+
+            led(
+                ui,
+                &THEME,
+                pos2(rect.center().x, rect.min.y + 8.0),
+                lit.then_some(THEME.active),
+            );
+            ui.painter().text(
+                pos2(rect.center().x, rect.max.y - 2.0),
+                Align2::CENTER_BOTTOM,
+                modifier.label(),
+                FontId::proportional(THEME.font_sm),
+                if lit { THEME.text } else { THEME.text_dim },
+            );
+        }
     });
 }
 
@@ -427,17 +290,60 @@ pub(crate) fn section(ui: &mut Ui, title: &str, contents: impl FnOnce(&mut Ui)) 
         .inner_margin(THEME.spacing_md)
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
+
             let (rect, _) = ui.allocate_exact_size(
-                egui::vec2(ui.available_width(), THEME.font_sm + THEME.spacing_sm),
-                egui::Sense::hover(),
+                vec2(ui.available_width(), THEME.font_sm + THEME.spacing_sm),
+                Sense::hover(),
             );
-            ui.painter().text(
+            let painter = ui.painter();
+
+            painter.text(
                 rect.left_center(),
                 Align2::LEFT_CENTER,
                 title,
                 FontId::proportional(THEME.font_sm),
                 THEME.text_dim,
             );
+
+            // A rule from the title to the right edge, like a panel legend.
+            let text_width = title.chars().count() as f32 * THEME.font_sm * 0.68 + THEME.spacing_md;
+            if rect.width() > text_width {
+                painter.line_segment(
+                    [
+                        pos2(rect.min.x + text_width, rect.center().y),
+                        pos2(rect.max.x, rect.center().y),
+                    ],
+                    Stroke::new(1.0, THEME.outline),
+                );
+            }
+
             contents(ui);
         });
+}
+
+/// A dimmed line of explanatory text.
+pub(crate) fn hint(ui: &mut Ui, text: &str) {
+    let (rect, _) = ui.allocate_exact_size(
+        vec2(ui.available_width(), THEME.font_sm * 1.7),
+        Sense::hover(),
+    );
+    ui.painter().text(
+        rect.left_center(),
+        Align2::LEFT_CENTER,
+        text,
+        FontId::proportional(THEME.font_sm),
+        THEME.text_dim,
+    );
+}
+
+/// Text standing in for a page that has nothing to show yet.
+pub(crate) fn placeholder(ui: &mut Ui, text: &str) {
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 72.0), Sense::hover());
+    ui.painter().text(
+        rect.center(),
+        Align2::CENTER_CENTER,
+        text,
+        FontId::proportional(THEME.font_md),
+        THEME.text_dim,
+    );
 }
