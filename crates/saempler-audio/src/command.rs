@@ -4,9 +4,9 @@ use crate::sample::SampleBuffer;
 
 /// Number of commands the queue can hold between two audio callbacks.
 ///
-/// The queue is drained once per processing block. The capacity only needs to
-/// absorb a burst of UI edits; pushes beyond it are dropped rather than
-/// blocking the UI thread.
+/// The queue is drained once per processing block. The capacity has to absorb
+/// a full remapping of the keyboard in one go, so it is sized above the 128
+/// MIDI notes.
 pub const QUEUE_CAPACITY: usize = 256;
 
 /// Number of buffers the disposal queue can hold.
@@ -25,7 +25,7 @@ pub type DisposalProducer = rtrb::Producer<Arc<SampleBuffer>>;
 /// Consuming end of the disposal queue, owned by the UI/main thread.
 pub type DisposalConsumer = rtrb::Consumer<Arc<SampleBuffer>>;
 
-/// The region of the sample that triggered voices play.
+/// The region of the sample a voice plays.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub struct SliceBounds {
     pub start_frame: u64,
@@ -42,6 +42,35 @@ impl SliceBounds {
     }
 }
 
+/// Everything the engine needs to play one performance cell.
+///
+/// This is the flattened, realtime-ready form of the cell in the project: the
+/// slice has already been resolved to frame bounds, and speed and pitch have
+/// been folded into a single read rate. The engine never looks anything up.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct CellSpec {
+    pub bounds: SliceBounds,
+    /// Frames advanced per output frame.
+    pub rate: f32,
+    pub reverse: bool,
+    pub gain: f32,
+    pub attack_ms: f32,
+    pub release_ms: f32,
+}
+
+impl Default for CellSpec {
+    fn default() -> Self {
+        Self {
+            bounds: SliceBounds::default(),
+            rate: 1.0,
+            reverse: false,
+            gain: 1.0,
+            attack_ms: 3.0,
+            release_ms: 30.0,
+        }
+    }
+}
+
 /// A state change requested by the UI and applied by the engine.
 ///
 /// Sending an `Arc` through the queue is cheap: the clone happens on the
@@ -53,13 +82,15 @@ pub enum EngineCommand {
     SetSample(Arc<SampleBuffer>),
     /// Forget the current buffer; nothing will sound afterwards.
     ClearSample,
-    /// Set the region that newly triggered voices play.
-    SetSlice(SliceBounds),
+    /// Put a cell on a MIDI note, or take one off with `None`.
+    SetCell { note: u8, spec: Option<CellSpec> },
+    /// Take every cell off the keyboard.
+    ClearCells,
     /// Play this region once, without a note.
     ///
     /// Used by the interface to audition a slice on click. The voice ends by
     /// itself at the end of the region, so no release command follows.
-    Preview(SliceBounds),
+    Preview(CellSpec),
     /// Release every sounding voice immediately.
     AllNotesOff,
 }
@@ -101,5 +132,14 @@ mod tests {
 
         assert_eq!(bounds.len_frames(), 0);
         assert!(bounds.is_empty());
+    }
+
+    #[test]
+    fn the_default_spec_plays_as_recorded() {
+        let spec = CellSpec::default();
+
+        assert_eq!(spec.rate, 1.0);
+        assert!(!spec.reverse);
+        assert_eq!(spec.gain, 1.0);
     }
 }

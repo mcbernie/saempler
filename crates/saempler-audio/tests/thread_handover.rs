@@ -10,7 +10,8 @@ use std::sync::Arc;
 use std::thread;
 
 use saempler_audio::{
-    command_queue, disposal_queue, Engine, EngineCommand, Meters, SampleBuffer, SliceBounds,
+    command_queue, disposal_queue, CellSpec, Engine, EngineCommand, Meters, SampleBuffer,
+    SliceBounds,
 };
 
 const BLOCK_SIZE: usize = 128;
@@ -44,10 +45,16 @@ fn commands_meters_and_disposal_cross_the_thread_boundary() {
                 .push(EngineCommand::SetSample(dc_sample()))
                 .expect("the queue has capacity");
             commands
-                .push(EngineCommand::SetSlice(SliceBounds {
-                    start_frame: 0,
-                    end_frame: SAMPLE_FRAMES as u64,
-                }))
+                .push(EngineCommand::SetCell {
+                    note: 60,
+                    spec: Some(CellSpec {
+                        bounds: SliceBounds {
+                            start_frame: 0,
+                            end_frame: SAMPLE_FRAMES as u64,
+                        },
+                        ..CellSpec::default()
+                    }),
+                })
                 .expect("the queue has capacity");
             loaded.store(true, Ordering::Release);
 

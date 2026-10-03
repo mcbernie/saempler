@@ -1,12 +1,15 @@
 use std::sync::Arc;
 
-use crate::command::{CommandConsumer, DisposalProducer, EngineCommand, SliceBounds};
+use crate::command::{CellSpec, CommandConsumer, DisposalProducer, EngineCommand};
 use crate::meters::Meters;
 use crate::sample::SampleBuffer;
 use crate::voice::Voice;
 
 /// Number of preallocated voices. Notes beyond this steal the oldest voice.
 pub const MAX_VOICES: usize = 16;
+
+/// Number of MIDI notes a cell can sit on.
+pub const NOTE_COUNT: usize = 128;
 
 /// Fallback sample rate used before the host reports the real one.
 const DEFAULT_SAMPLE_RATE: f32 = 44_100.0;
@@ -19,13 +22,15 @@ const PREVIEW_NOTE: u8 = u8::MAX;
 
 /// The realtime engine.
 ///
-/// All state is preallocated. [`Engine::render`] performs no allocation, takes
-/// no locks and does no I/O, so it is safe to call from an audio callback.
+/// All state is preallocated, including the note table. [`Engine::render`]
+/// performs no allocation, takes no locks and does no I/O, so it is safe to
+/// call from an audio callback.
 pub struct Engine {
     sample_rate: f32,
     sample: Option<Arc<SampleBuffer>>,
-    /// Region that newly triggered voices play.
-    bounds: SliceBounds,
+    /// What each MIDI note plays. A fixed array rather than a map, so that a
+    /// note on is a single index instead of a lookup.
+    cells: [Option<CellSpec>; NOTE_COUNT],
     voices: [Voice; MAX_VOICES],
     /// Monotonic counter assigning an age to each started voice.
     next_age: u64,
@@ -40,7 +45,7 @@ impl Engine {
         Self {
             sample_rate: DEFAULT_SAMPLE_RATE,
             sample: None,
-            bounds: SliceBounds::default(),
+            cells: [None; NOTE_COUNT],
             voices: [Voice::default(); MAX_VOICES],
             next_age: 0,
             commands,
@@ -72,9 +77,14 @@ impl Engine {
         self.sample.is_some()
     }
 
-    /// Region newly triggered voices will play.
-    pub fn bounds(&self) -> SliceBounds {
-        self.bounds
+    /// What `note` currently plays.
+    pub fn cell(&self, note: u8) -> Option<CellSpec> {
+        self.cells.get(note as usize).copied().flatten()
+    }
+
+    /// How many notes carry a cell.
+    pub fn mapped_notes(&self) -> usize {
+        self.cells.iter().filter(|cell| cell.is_some()).count()
     }
 
     /// Drain the command queue. Call once at the start of a processing block.
@@ -99,8 +109,13 @@ impl Engine {
             match command {
                 EngineCommand::SetSample(sample) => self.swap_sample(Some(sample)),
                 EngineCommand::ClearSample => self.swap_sample(None),
-                EngineCommand::SetSlice(bounds) => self.bounds = bounds,
-                EngineCommand::Preview(bounds) => self.trigger(PREVIEW_NOTE, 1.0, bounds),
+                EngineCommand::SetCell { note, spec } => {
+                    if let Some(slot) = self.cells.get_mut(note as usize) {
+                        *slot = spec;
+                    }
+                }
+                EngineCommand::ClearCells => self.cells = [None; NOTE_COUNT],
+                EngineCommand::Preview(spec) => self.trigger(PREVIEW_NOTE, 1.0, spec),
                 EngineCommand::AllNotesOff => {
                     for voice in &mut self.voices {
                         voice.release();
@@ -138,17 +153,17 @@ impl Engine {
         }
     }
 
-    /// Start a voice. Steals the oldest voice when all are in use.
-    ///
-    /// Does nothing without a loaded sample or an empty slice, so a trigger
-    /// can never produce a voice that has nothing to play.
+    /// Start the cell sitting on `note`, if there is one.
     pub fn note_on(&mut self, note: u8, velocity: f32) {
-        self.trigger(note, velocity, self.bounds);
+        let Some(spec) = self.cell(note) else {
+            return;
+        };
+        self.trigger(note, velocity, spec);
     }
 
-    /// Start a voice over `bounds`, stealing the oldest one if needed.
-    fn trigger(&mut self, note: u8, velocity: f32, bounds: SliceBounds) {
-        if self.sample.is_none() || bounds.is_empty() {
+    /// Start a voice over `spec`, stealing the oldest one if needed.
+    fn trigger(&mut self, note: u8, velocity: f32, spec: CellSpec) {
+        if self.sample.is_none() || spec.bounds.is_empty() {
             return;
         }
 
@@ -169,7 +184,7 @@ impl Engine {
                 .unwrap_or(0),
         };
 
-        self.voices[slot].start(note, velocity, age, bounds, self.sample_rate);
+        self.voices[slot].start(note, velocity, age, spec, self.sample_rate);
     }
 
     /// Release every voice currently holding `note`.
@@ -256,7 +271,9 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::command::{command_queue, disposal_queue, CommandProducer, DisposalConsumer};
+    use crate::command::{
+        command_queue, disposal_queue, CommandProducer, DisposalConsumer, SliceBounds,
+    };
 
     const SAMPLE_RATE: f32 = 48_000.0;
 
@@ -291,6 +308,16 @@ mod tests {
         ))
     }
 
+    fn spec(start: u64, end: u64) -> CellSpec {
+        CellSpec {
+            bounds: SliceBounds {
+                start_frame: start,
+                end_frame: end,
+            },
+            ..CellSpec::default()
+        }
+    }
+
     fn render(engine: &mut Engine, frames: usize) -> Vec<f32> {
         let mut left = vec![0.0; frames];
         let mut right = vec![0.0; frames];
@@ -298,7 +325,7 @@ mod tests {
         left
     }
 
-    /// Load a sample covering the whole buffer and select it as the slice.
+    /// Load a sample and put one cell covering all of it on note 60.
     fn load(harness: &mut Harness, frames: usize) {
         harness
             .commands
@@ -306,10 +333,10 @@ mod tests {
             .expect("the queue is empty and has capacity");
         harness
             .commands
-            .push(EngineCommand::SetSlice(SliceBounds {
-                start_frame: 0,
-                end_frame: frames as u64,
-            }))
+            .push(EngineCommand::SetCell {
+                note: 60,
+                spec: Some(spec(0, frames as u64)),
+            })
             .expect("the queue is empty and has capacity");
         harness.engine.apply_commands();
     }
@@ -327,20 +354,17 @@ mod tests {
     }
 
     #[test]
-    fn triggering_without_a_slice_starts_no_voice() {
+    fn an_unmapped_note_starts_no_voice() {
         let mut h = harness();
-        h.commands
-            .push(EngineCommand::SetSample(dc_sample(1_000)))
-            .expect("the queue is empty and has capacity");
-        h.engine.apply_commands();
+        load(&mut h, 48_000);
 
-        h.engine.note_on(60, 1.0);
+        h.engine.note_on(61, 1.0);
 
         assert_eq!(h.engine.active_voices(), 0);
     }
 
     #[test]
-    fn note_on_plays_the_selected_slice() {
+    fn a_mapped_note_plays_its_cell() {
         let mut h = harness();
         load(&mut h, 48_000);
 
@@ -349,6 +373,121 @@ mod tests {
 
         assert!(output.iter().any(|sample| sample.abs() > 0.5));
         assert_eq!(h.meters.active_voices(), 1);
+    }
+
+    #[test]
+    fn different_notes_play_their_own_regions() {
+        let mut h = harness();
+        h.commands
+            .push(EngineCommand::SetSample(dc_sample(48_000)))
+            .expect("the queue has capacity");
+        h.commands
+            .push(EngineCommand::SetCell {
+                note: 60,
+                spec: Some(spec(0, 1_000)),
+            })
+            .expect("the queue has capacity");
+        h.commands
+            .push(EngineCommand::SetCell {
+                note: 62,
+                spec: Some(spec(30_000, 31_000)),
+            })
+            .expect("the queue has capacity");
+        h.engine.apply_commands();
+
+        h.engine.note_on(62, 1.0);
+        render(&mut h.engine, 256);
+
+        let playhead = h.meters.playhead().expect("a voice is sounding");
+        assert!(
+            (30_000..31_000).contains(&playhead),
+            "note 62 must play its own region, got {playhead}"
+        );
+    }
+
+    #[test]
+    fn two_notes_may_share_one_region_with_different_settings() {
+        let mut h = harness();
+        h.commands
+            .push(EngineCommand::SetSample(dc_sample(48_000)))
+            .expect("the queue has capacity");
+        h.commands
+            .push(EngineCommand::SetCell {
+                note: 60,
+                spec: Some(spec(0, 10_000)),
+            })
+            .expect("the queue has capacity");
+        h.commands
+            .push(EngineCommand::SetCell {
+                note: 61,
+                spec: Some(CellSpec {
+                    reverse: true,
+                    gain: 0.25,
+                    ..spec(0, 10_000)
+                }),
+            })
+            .expect("the queue has capacity");
+        h.engine.apply_commands();
+
+        let forward = h.engine.cell(60).expect("note 60 is mapped");
+        let reversed = h.engine.cell(61).expect("note 61 is mapped");
+
+        assert_eq!(forward.bounds, reversed.bounds);
+        assert!(!forward.reverse);
+        assert!(reversed.reverse);
+        assert_eq!(reversed.gain, 0.25);
+    }
+
+    #[test]
+    fn taking_a_cell_off_a_note_silences_it() {
+        let mut h = harness();
+        load(&mut h, 48_000);
+
+        h.commands
+            .push(EngineCommand::SetCell {
+                note: 60,
+                spec: None,
+            })
+            .expect("the queue has capacity");
+        h.engine.apply_commands();
+        h.engine.note_on(60, 1.0);
+
+        assert_eq!(h.engine.active_voices(), 0);
+        assert_eq!(h.engine.cell(60), None);
+    }
+
+    #[test]
+    fn clearing_takes_every_cell_off() {
+        let mut h = harness();
+        load(&mut h, 48_000);
+        assert_eq!(h.engine.mapped_notes(), 1);
+
+        h.commands
+            .push(EngineCommand::ClearCells)
+            .expect("the queue has capacity");
+        h.engine.apply_commands();
+
+        assert_eq!(h.engine.mapped_notes(), 0);
+    }
+
+    #[test]
+    fn a_whole_keyboard_can_be_mapped_in_one_block() {
+        let mut h = harness();
+        h.commands
+            .push(EngineCommand::SetSample(dc_sample(48_000)))
+            .expect("the queue has capacity");
+        for note in 0..NOTE_COUNT as u8 {
+            h.commands
+                .push(EngineCommand::SetCell {
+                    note,
+                    spec: Some(spec(0, 1_000)),
+                })
+                .expect("the queue must hold a full remap");
+        }
+
+        h.engine.apply_commands();
+
+        assert_eq!(h.engine.mapped_notes(), NOTE_COUNT);
     }
 
     #[test]
@@ -367,17 +506,17 @@ mod tests {
     }
 
     #[test]
-    fn a_short_slice_stops_on_its_own() {
+    fn a_short_cell_stops_on_its_own() {
         let mut h = harness();
         h.commands
             .push(EngineCommand::SetSample(dc_sample(48_000)))
-            .expect("the queue is empty and has capacity");
+            .expect("the queue has capacity");
         h.commands
-            .push(EngineCommand::SetSlice(SliceBounds {
-                start_frame: 0,
-                end_frame: 480,
-            }))
-            .expect("the queue is empty and has capacity");
+            .push(EngineCommand::SetCell {
+                note: 60,
+                spec: Some(spec(0, 480)),
+            })
+            .expect("the queue has capacity");
         h.engine.apply_commands();
 
         h.engine.note_on(60, 1.0);
@@ -386,14 +525,25 @@ mod tests {
         assert_eq!(
             h.engine.active_voices(),
             0,
-            "a voice must end when its slice does, without a note off"
+            "a voice must end when its cell does, without a note off"
         );
     }
 
     #[test]
     fn output_stays_finite_with_every_voice_sounding() {
         let mut h = harness();
-        load(&mut h, 48_000);
+        h.commands
+            .push(EngineCommand::SetSample(dc_sample(48_000)))
+            .expect("the queue has capacity");
+        for note in 36..60u8 {
+            h.commands
+                .push(EngineCommand::SetCell {
+                    note,
+                    spec: Some(spec(0, 48_000)),
+                })
+                .expect("the queue has capacity");
+        }
+        h.engine.apply_commands();
         for note in 36..60 {
             h.engine.note_on(note, 1.0);
         }
@@ -406,7 +556,18 @@ mod tests {
     #[test]
     fn voices_are_stolen_instead_of_growing() {
         let mut h = harness();
-        load(&mut h, 48_000);
+        h.commands
+            .push(EngineCommand::SetSample(dc_sample(48_000)))
+            .expect("the queue has capacity");
+        for note in 0..(MAX_VOICES as u8 + 8) {
+            h.commands
+                .push(EngineCommand::SetCell {
+                    note,
+                    spec: Some(spec(0, 48_000)),
+                })
+                .expect("the queue has capacity");
+        }
+        h.engine.apply_commands();
 
         for note in 0..(MAX_VOICES as u8 + 8) {
             h.engine.note_on(note, 1.0);
@@ -484,10 +645,10 @@ mod tests {
         h.engine.apply_commands();
 
         h.commands
-            .push(EngineCommand::SetSlice(SliceBounds {
-                start_frame: 0,
-                end_frame: 9_999,
-            }))
+            .push(EngineCommand::SetCell {
+                note: 60,
+                spec: Some(spec(0, 9_999)),
+            })
             .expect("the queue has capacity");
         h.engine.apply_commands();
         h.engine.note_on(60, 1.0);
@@ -496,39 +657,12 @@ mod tests {
     }
 
     #[test]
-    fn switching_slices_moves_newly_triggered_voices() {
-        let mut h = harness();
-        load(&mut h, 48_000);
-
-        h.commands
-            .push(EngineCommand::SetSlice(SliceBounds {
-                start_frame: 1_000,
-                end_frame: 2_000,
-            }))
-            .expect("the queue is empty and has capacity");
-        h.engine.apply_commands();
-
-        assert_eq!(h.engine.bounds().start_frame, 1_000);
-    }
-
-    #[test]
     fn a_preview_plays_its_own_region_without_a_note() {
         let mut h = harness();
         load(&mut h, 48_000);
-        // The engine's selected region is deliberately somewhere else.
-        h.commands
-            .push(EngineCommand::SetSlice(SliceBounds {
-                start_frame: 0,
-                end_frame: 100,
-            }))
-            .expect("the queue has capacity");
-        h.engine.apply_commands();
 
         h.commands
-            .push(EngineCommand::Preview(SliceBounds {
-                start_frame: 10_000,
-                end_frame: 20_000,
-            }))
+            .push(EngineCommand::Preview(spec(10_000, 20_000)))
             .expect("the queue has capacity");
         h.engine.apply_commands();
 
@@ -546,15 +680,11 @@ mod tests {
         let mut h = harness();
         load(&mut h, 48_000);
         h.commands
-            .push(EngineCommand::Preview(SliceBounds {
-                start_frame: 0,
-                end_frame: 48_000,
-            }))
+            .push(EngineCommand::Preview(spec(0, 48_000)))
             .expect("the queue has capacity");
         h.engine.apply_commands();
         render(&mut h.engine, 256);
 
-        // Every MIDI note number, including the extremes.
         for note in [0u8, 60, 127] {
             h.engine.note_off(note);
         }
@@ -568,10 +698,7 @@ mod tests {
         let mut h = harness();
 
         h.commands
-            .push(EngineCommand::Preview(SliceBounds {
-                start_frame: 0,
-                end_frame: 1_000,
-            }))
+            .push(EngineCommand::Preview(spec(0, 1_000)))
             .expect("the queue has capacity");
         h.engine.apply_commands();
 
@@ -581,7 +708,18 @@ mod tests {
     #[test]
     fn all_notes_off_releases_every_voice() {
         let mut h = harness();
-        load(&mut h, 48_000);
+        h.commands
+            .push(EngineCommand::SetSample(dc_sample(48_000)))
+            .expect("the queue has capacity");
+        for note in [60u8, 64] {
+            h.commands
+                .push(EngineCommand::SetCell {
+                    note,
+                    spec: Some(spec(0, 48_000)),
+                })
+                .expect("the queue has capacity");
+        }
+        h.engine.apply_commands();
         h.engine.note_on(60, 1.0);
         h.engine.note_on(64, 1.0);
         render(&mut h.engine, 256);
@@ -624,10 +762,10 @@ mod tests {
             .push(EngineCommand::SetSample(dc_sample(48_000)))
             .expect("the queue has capacity");
         h.commands
-            .push(EngineCommand::SetSlice(SliceBounds {
-                start_frame: 10_000,
-                end_frame: 20_000,
-            }))
+            .push(EngineCommand::SetCell {
+                note: 60,
+                spec: Some(spec(10_000, 20_000)),
+            })
             .expect("the queue has capacity");
         h.engine.apply_commands();
         assert_eq!(h.meters.playhead(), None);
@@ -641,7 +779,7 @@ mod tests {
             .expect("a sounding voice has a position");
         assert!(
             (10_000..=10_600).contains(&first),
-            "the playhead should start inside the slice, got {first}"
+            "the playhead should start inside the cell, got {first}"
         );
 
         render(&mut h.engine, 512);

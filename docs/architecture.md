@@ -144,12 +144,35 @@ to a slice rather than to a position in a list.
 There is no `SampleId` yet: a project has exactly one source sample, which is
 what the product is built around. It arrives when more than one does.
 
-## Note to slice mapping
+## Performance cells
 
-Every incoming note currently triggers the selected slice. Mapping individual
-notes to their own slices, with their own playback settings, is what
-performance cells introduce; a provisional mapping now would be replaced
-immediately.
+A cell is a slice on a MIDI note together with how that note plays it. Several
+cells may reference one slice, which is the whole point: one chop, performed
+many ways.
+
+A note holds exactly one cell, so assigning to an occupied note takes that cell
+over. Removing a slice removes the cells that played it, because a cell without
+a slice is a note that silently does nothing.
+
+The engine holds a fixed `[Option<CellSpec>; 128]` indexed by note, so a note on
+is one index rather than a lookup. The interface pushes the whole mapping again
+after any edit: 128 notes plus the clearing command fit in one queue, and the
+mapping only changes on a user action, so tracking differences would buy
+nothing.
+
+`CellSpec` is the flattened form: the slice is already resolved to frame
+bounds, and speed and pitch are already folded into one read rate. The audio
+thread does no arithmetic that could have been done ahead of it.
+
+## Speed and pitch are the same control underneath
+
+Both change how fast the slice is read, so transposing a cell up also shortens
+it. Separating them needs time stretching, which does not exist yet.
+
+The read position is fractional and the samples either side are mixed linearly.
+Linear interpolation dulls the top end and adds a little distortion at large
+transpositions; a better interpolator is the first thing `saempler-dsp` will
+hold when it exists.
 
 ## Voice model
 

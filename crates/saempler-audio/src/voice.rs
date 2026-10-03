@@ -1,11 +1,5 @@
-use crate::command::SliceBounds;
+use crate::command::CellSpec;
 use crate::sample::SampleBuffer;
-
-/// Attack time of the amplitude envelope. Long enough to avoid a click at the
-/// slice boundary, short enough that the hit still feels immediate.
-const ATTACK_MS: f32 = 3.0;
-/// Release time of the amplitude envelope.
-const RELEASE_MS: f32 = 30.0;
 
 /// Stage of a voice's amplitude envelope.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -31,13 +25,20 @@ pub struct Voice {
     /// Monotonic counter used to pick the oldest voice when stealing.
     age: u64,
     level: f32,
-    /// Target level while the key is held, derived from note velocity.
+    /// Target level while the key is held, from velocity and cell gain.
     sustain_level: f32,
     attack_step: f32,
     release_step: f32,
-    /// Next frame to read from the sample buffer.
-    position: u64,
-    bounds: SliceBounds,
+    /// Fractional read position in the sample, in frames.
+    ///
+    /// Fractional because speed and pitch change how fast the slice is read;
+    /// the sample values either side are interpolated.
+    position: f64,
+    /// Frames advanced per output frame. Always positive; direction is
+    /// carried by `reverse`.
+    rate: f64,
+    reverse: bool,
+    spec: CellSpec,
 }
 
 impl Default for Voice {
@@ -50,8 +51,10 @@ impl Default for Voice {
             sustain_level: 0.0,
             attack_step: 1.0,
             release_step: 1.0,
-            position: 0,
-            bounds: SliceBounds::default(),
+            position: 0.0,
+            rate: 1.0,
+            reverse: false,
+            spec: CellSpec::default(),
         }
     }
 }
@@ -72,22 +75,29 @@ impl Voice {
         self.age
     }
 
-    /// Frame this voice will read next, for the playhead display.
+    /// Frame this voice is reading, for the playhead display.
     pub fn position(&self) -> u64 {
-        self.position
+        self.position.max(0.0) as u64
     }
 
     /// Start this voice, replacing whatever it was playing before.
-    pub fn start(&mut self, note: u8, velocity: f32, age: u64, bounds: SliceBounds, rate: f32) {
+    pub fn start(&mut self, note: u8, velocity: f32, age: u64, spec: CellSpec, sample_rate: f32) {
         self.stage = Stage::Attack;
         self.note = note;
         self.age = age;
         self.level = 0.0;
-        self.sustain_level = velocity.clamp(0.0, 1.0);
-        self.attack_step = envelope_step(ATTACK_MS, rate);
-        self.release_step = envelope_step(RELEASE_MS, rate);
-        self.bounds = bounds;
-        self.position = bounds.start_frame;
+        self.sustain_level = (velocity.clamp(0.0, 1.0) * spec.gain).clamp(0.0, 4.0);
+        self.attack_step = envelope_step(spec.attack_ms, sample_rate);
+        self.release_step = envelope_step(spec.release_ms, sample_rate);
+        self.rate = spec.rate.max(f32::MIN_POSITIVE) as f64;
+        self.reverse = spec.reverse;
+        self.spec = spec;
+        // Backwards playback starts at the last frame of the slice.
+        self.position = if spec.reverse {
+            spec.bounds.end_frame.saturating_sub(1) as f64
+        } else {
+            spec.bounds.start_frame as f64
+        };
     }
 
     /// Move the voice into its release stage.
@@ -101,7 +111,7 @@ impl Voice {
     pub fn kill(&mut self) {
         self.stage = Stage::Idle;
         self.level = 0.0;
-        self.position = 0;
+        self.position = 0.0;
     }
 
     /// Render the next frame, advancing both playback position and envelope.
@@ -113,7 +123,7 @@ impl Voice {
             return (0.0, 0.0);
         }
 
-        if self.position >= self.bounds.end_frame {
+        if self.past_the_end() {
             self.release();
         }
 
@@ -135,13 +145,48 @@ impl Voice {
             Stage::Idle | Stage::Sustain => {}
         }
 
-        // The position may run past the slice end while the release envelope
-        // is still active; `SampleBuffer::frame` reads those as silence.
-        let (left, right) = sample.frame(self.position as usize);
-        self.position += 1;
+        // The position may run outside the slice while the release envelope is
+        // still active; reads past the buffer come back as silence.
+        let (left, right) = interpolated(sample, self.position);
+
+        if self.reverse {
+            self.position -= self.rate;
+        } else {
+            self.position += self.rate;
+        }
 
         (left * self.level, right * self.level)
     }
+
+    /// Whether playback has left the slice in its direction of travel.
+    fn past_the_end(&self) -> bool {
+        if self.reverse {
+            self.position < self.spec.bounds.start_frame as f64
+        } else {
+            self.position >= self.spec.bounds.end_frame as f64
+        }
+    }
+}
+
+/// Read a frame between two samples, weighting them by the fraction.
+///
+/// Linear interpolation. It adds some high-frequency dullness and a little
+/// distortion at large transpositions, which is the accepted cost until a
+/// proper interpolator exists.
+fn interpolated(sample: &SampleBuffer, position: f64) -> (f32, f32) {
+    if position < 0.0 {
+        return (0.0, 0.0);
+    }
+
+    let index = position as usize;
+    let fraction = (position - index as f64) as f32;
+    let (left_a, right_a) = sample.frame(index);
+    let (left_b, right_b) = sample.frame(index + 1);
+
+    (
+        left_a + (left_b - left_a) * fraction,
+        right_a + (right_b - right_a) * fraction,
+    )
 }
 
 /// Per-sample increment that traverses the full envelope range in `time_ms`.
@@ -150,7 +195,8 @@ fn envelope_step(time_ms: f32, sample_rate: f32) -> f32 {
     if samples >= 1.0 {
         1.0 / samples
     } else {
-        // Degenerate sample rates must not stall the envelope forever.
+        // A zero-length stage, or a degenerate sample rate, must not stall the
+        // envelope forever.
         1.0
     }
 }
@@ -158,6 +204,7 @@ fn envelope_step(time_ms: f32, sample_rate: f32) -> f32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::command::SliceBounds;
 
     const SAMPLE_RATE: f32 = 48_000.0;
 
@@ -167,10 +214,22 @@ mod tests {
         SampleBuffer::new(vec![vec![1.0; frames], vec![1.0; frames]], 48_000)
     }
 
-    fn bounds(start: u64, end: u64) -> SliceBounds {
-        SliceBounds {
-            start_frame: start,
-            end_frame: end,
+    /// A buffer whose sample value equals its frame index divided by `frames`,
+    /// so the output says which frame was read.
+    fn ramp_buffer(frames: usize) -> SampleBuffer {
+        let data: Vec<f32> = (0..frames)
+            .map(|index| index as f32 / frames as f32)
+            .collect();
+        SampleBuffer::new(vec![data], 48_000)
+    }
+
+    fn spec(start: u64, end: u64) -> CellSpec {
+        CellSpec {
+            bounds: SliceBounds {
+                start_frame: start,
+                end_frame: end,
+            },
+            ..CellSpec::default()
         }
     }
 
@@ -185,19 +244,18 @@ mod tests {
 
     #[test]
     fn playback_starts_at_the_slice_start() {
-        // Only the second half of the buffer carries audio.
         let mut data = vec![0.0f32; 1_000];
         data[500..].fill(1.0);
         let buffer = SampleBuffer::new(vec![data], 48_000);
 
         let mut inside = Voice::default();
-        inside.start(60, 1.0, 0, bounds(500, 700), SAMPLE_RATE);
+        inside.start(60, 1.0, 0, spec(500, 700), SAMPLE_RATE);
         let heard = (0..100)
             .map(|_| inside.next_frame(&buffer).0.abs())
             .fold(0.0f32, f32::max);
 
         let mut before = Voice::default();
-        before.start(60, 1.0, 0, bounds(0, 200), SAMPLE_RATE);
+        before.start(60, 1.0, 0, spec(0, 200), SAMPLE_RATE);
         let silent = (0..100)
             .map(|_| before.next_frame(&buffer).0.abs())
             .fold(0.0f32, f32::max);
@@ -207,63 +265,182 @@ mod tests {
     }
 
     #[test]
-    fn a_voice_reaching_the_slice_end_stops_on_its_own() {
+    fn reverse_reads_the_slice_from_the_other_end() {
+        let buffer = ramp_buffer(1_000);
+        let bounds = spec(100, 900);
+
+        let mut forward = Voice::default();
+        forward.start(60, 1.0, 0, bounds, SAMPLE_RATE);
+        let mut backward = Voice::default();
+        backward.start(
+            60,
+            1.0,
+            0,
+            CellSpec {
+                reverse: true,
+                ..bounds
+            },
+            SAMPLE_RATE,
+        );
+
+        // Skip the attack so the envelope is not what is being compared.
+        for _ in 0..200 {
+            forward.next_frame(&buffer);
+            backward.next_frame(&buffer);
+        }
+
+        assert_eq!(forward.position(), 300);
+        assert_eq!(backward.position(), 699);
+    }
+
+    #[test]
+    fn a_reversed_voice_ends_at_the_slice_start() {
         let buffer = dc_buffer(10_000);
         let mut voice = Voice::default();
-        voice.start(60, 1.0, 0, bounds(0, 500), SAMPLE_RATE);
+        voice.start(
+            60,
+            1.0,
+            0,
+            CellSpec {
+                reverse: true,
+                ..spec(1_000, 1_500)
+            },
+            SAMPLE_RATE,
+        );
 
-        // 500 frames of slice plus the release stage.
-        let release_frames = (RELEASE_MS / 1000.0 * SAMPLE_RATE) as usize;
-        for _ in 0..(500 + release_frames * 2) {
+        // 500 frames of slice plus a generous release.
+        for _ in 0..5_000 {
             voice.next_frame(&buffer);
         }
 
         assert!(!voice.is_active());
-        assert_eq!(voice.next_frame(&buffer), (0.0, 0.0));
     }
 
     #[test]
-    fn the_end_frame_marks_the_start_of_the_release() {
-        let buffer = dc_buffer(10_000);
-        let mut voice = Voice::default();
-        voice.start(60, 1.0, 0, bounds(0, 2), SAMPLE_RATE);
+    fn a_higher_rate_reads_further_in_the_same_time() {
+        let buffer = ramp_buffer(10_000);
 
-        // The two frames inside the slice are played as held.
-        voice.next_frame(&buffer);
-        voice.next_frame(&buffer);
-        assert!(voice.is_playing_note(60));
-
-        // The next call finds the position at the end frame and releases.
-        voice.next_frame(&buffer);
-        assert!(
-            !voice.is_playing_note(60),
-            "reaching the end frame must release the voice"
+        let mut normal = Voice::default();
+        normal.start(60, 1.0, 0, spec(0, 10_000), SAMPLE_RATE);
+        let mut doubled = Voice::default();
+        doubled.start(
+            60,
+            1.0,
+            0,
+            CellSpec {
+                rate: 2.0,
+                ..spec(0, 10_000)
+            },
+            SAMPLE_RATE,
         );
+
+        for _ in 0..1_000 {
+            normal.next_frame(&buffer);
+            doubled.next_frame(&buffer);
+        }
+
+        assert_eq!(normal.position(), 1_000);
+        assert_eq!(doubled.position(), 2_000);
     }
 
     #[test]
-    fn the_release_reads_on_past_the_slice_end() {
-        // Deliberate: cutting playback at the slice boundary would click. The
-        // envelope fades out over the audio that follows the slice instead.
-        let buffer = SampleBuffer::new(vec![vec![0.0, 0.0, 1.0, 1.0, 1.0]], 48_000);
+    fn a_half_rate_voice_lasts_twice_as_long() {
+        let buffer = dc_buffer(100_000);
         let mut voice = Voice::default();
-        voice.start(60, 1.0, 0, bounds(0, 2), SAMPLE_RATE);
+        voice.start(
+            60,
+            1.0,
+            0,
+            CellSpec {
+                rate: 0.5,
+                release_ms: 0.0,
+                ..spec(0, 1_000)
+            },
+            SAMPLE_RATE,
+        );
 
-        let peak = (0..5)
-            .map(|_| voice.next_frame(&buffer).0.abs())
+        for _ in 0..1_500 {
+            voice.next_frame(&buffer);
+        }
+        assert!(
+            voice.is_active(),
+            "half speed must still be inside 1000 frames"
+        );
+
+        for _ in 0..1_500 {
+            voice.next_frame(&buffer);
+        }
+        assert!(!voice.is_active());
+    }
+
+    #[test]
+    fn interpolation_lands_between_the_neighbouring_samples() {
+        let buffer = SampleBuffer::new(vec![vec![0.0, 1.0]], 48_000);
+
+        let (left, _) = interpolated(&buffer, 0.5);
+
+        assert!((left - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_fractional_rate_produces_no_steps_or_spikes() {
+        let buffer = ramp_buffer(10_000);
+        let mut voice = Voice::default();
+        voice.start(
+            60,
+            1.0,
+            0,
+            CellSpec {
+                rate: 1.0 / 3.0,
+                attack_ms: 0.0,
+                ..spec(0, 10_000)
+            },
+            SAMPLE_RATE,
+        );
+
+        let mut previous = voice.next_frame(&buffer).0;
+        for _ in 0..2_000 {
+            let current = voice.next_frame(&buffer).0;
+            assert!(current.is_finite());
+            // The ramp rises by 1/10000 per frame, so a third of that per step.
+            assert!(
+                (current - previous).abs() < 0.001,
+                "{previous} -> {current} is not a smooth step"
+            );
+            previous = current;
+        }
+    }
+
+    #[test]
+    fn cell_gain_scales_the_output() {
+        let buffer = dc_buffer(10_000);
+        let mut quiet = Voice::default();
+        quiet.start(
+            60,
+            1.0,
+            0,
+            CellSpec {
+                gain: 0.25,
+                ..spec(0, 10_000)
+            },
+            SAMPLE_RATE,
+        );
+
+        let peak = (0..4_800)
+            .map(|_| quiet.next_frame(&buffer).0.abs())
             .fold(0.0f32, f32::max);
 
-        assert!(peak > 0.0);
-        assert!(peak < 1.0, "the audio past the end must already be fading");
+        assert!(peak <= 0.25 + 1e-6);
+        assert!(peak > 0.2);
     }
 
     #[test]
     fn velocity_scales_the_sustain_level() {
         let buffer = dc_buffer(10_000);
         let mut quiet = Voice::default();
-        quiet.start(60, 0.25, 0, bounds(0, 10_000), SAMPLE_RATE);
+        quiet.start(60, 0.25, 0, spec(0, 10_000), SAMPLE_RATE);
         let mut loud = Voice::default();
-        loud.start(60, 1.0, 0, bounds(0, 10_000), SAMPLE_RATE);
+        loud.start(60, 1.0, 0, spec(0, 10_000), SAMPLE_RATE);
 
         let quiet_peak = (0..4_800)
             .map(|_| quiet.next_frame(&buffer).0.abs())
@@ -277,40 +454,108 @@ mod tests {
     }
 
     #[test]
-    fn output_never_exceeds_the_source_level() {
-        let buffer = dc_buffer(5_000);
-        let mut voice = Voice::default();
-        voice.start(60, 1.0, 0, bounds(0, 5_000), SAMPLE_RATE);
+    fn a_longer_attack_reaches_full_level_later() {
+        let buffer = dc_buffer(100_000);
+        let mut quick = Voice::default();
+        quick.start(
+            60,
+            1.0,
+            0,
+            CellSpec {
+                attack_ms: 1.0,
+                ..spec(0, 100_000)
+            },
+            SAMPLE_RATE,
+        );
+        let mut slow = Voice::default();
+        slow.start(
+            60,
+            1.0,
+            0,
+            CellSpec {
+                attack_ms: 200.0,
+                ..spec(0, 100_000)
+            },
+            SAMPLE_RATE,
+        );
 
-        for _ in 0..5_000 {
-            let (left, right) = voice.next_frame(&buffer);
-            assert!(left.is_finite() && right.is_finite());
-            assert!(left.abs() <= 1.0 + 1e-6);
+        // 10 ms in: the short attack is done, the long one is far from it.
+        for _ in 0..480 {
+            quick.next_frame(&buffer);
+            slow.next_frame(&buffer);
         }
+
+        let quick_level = quick.next_frame(&buffer).0;
+        let slow_level = slow.next_frame(&buffer).0;
+        assert!(
+            quick_level > 0.9,
+            "short attack should be open: {quick_level}"
+        );
+        assert!(
+            slow_level < 0.2,
+            "long attack should still be rising: {slow_level}"
+        );
     }
 
     #[test]
-    fn release_fades_out_rather_than_cutting_off() {
-        let buffer = dc_buffer(10_000);
+    fn a_longer_release_takes_longer_to_fall_silent() {
+        let buffer = dc_buffer(100_000);
         let mut voice = Voice::default();
-        voice.start(60, 1.0, 0, bounds(0, 10_000), SAMPLE_RATE);
+        voice.start(
+            60,
+            1.0,
+            0,
+            CellSpec {
+                release_ms: 500.0,
+                ..spec(0, 100_000)
+            },
+            SAMPLE_RATE,
+        );
         for _ in 0..1_000 {
             voice.next_frame(&buffer);
         }
 
         voice.release();
-        let first = voice.next_frame(&buffer).0;
-        let second = voice.next_frame(&buffer).0;
+        for _ in 0..4_800 {
+            voice.next_frame(&buffer);
+        }
 
-        assert!(second < first, "level should decrease during release");
-        assert!(second > 0.0, "release must not jump straight to silence");
+        assert!(
+            voice.is_active(),
+            "a 500 ms release is not over after 100 ms"
+        );
+    }
+
+    #[test]
+    fn output_stays_finite_across_the_rate_range() {
+        let buffer = ramp_buffer(10_000);
+
+        for rate in [0.0625f32, 0.5, 1.0, 2.0, 16.0] {
+            let mut voice = Voice::default();
+            voice.start(
+                60,
+                1.0,
+                0,
+                CellSpec {
+                    rate,
+                    ..spec(0, 10_000)
+                },
+                SAMPLE_RATE,
+            );
+
+            for _ in 0..5_000 {
+                let (left, right) = voice.next_frame(&buffer);
+                assert!(left.is_finite() && right.is_finite(), "rate {rate}");
+                assert!(left.abs() <= 1.5, "rate {rate} produced {left}");
+            }
+        }
     }
 
     #[test]
     fn kill_silences_without_release() {
         let buffer = dc_buffer(100);
         let mut voice = Voice::default();
-        voice.start(60, 1.0, 0, bounds(0, 100), SAMPLE_RATE);
+        voice.start(60, 1.0, 0, spec(0, 100), SAMPLE_RATE);
 
         voice.kill();
 
@@ -322,7 +567,7 @@ mod tests {
     fn reaching_the_end_of_the_buffer_is_silent_rather_than_a_panic() {
         let buffer = dc_buffer(10);
         let mut voice = Voice::default();
-        voice.start(60, 1.0, 0, bounds(1_000, 2_000), SAMPLE_RATE);
+        voice.start(60, 1.0, 0, spec(1_000, 2_000), SAMPLE_RATE);
 
         for _ in 0..64 {
             assert_eq!(voice.next_frame(&buffer), (0.0, 0.0));

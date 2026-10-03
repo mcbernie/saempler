@@ -123,6 +123,21 @@ Zoomed in past about 256 frames per pixel the waveform stops reading the peak
 cache and draws the audio itself; closer still, individual samples get a dot.
 A pink line marks the frame the engine is playing.
 
+The pads:
+
+```
+Slices auf Noten legen      lay every slice across the keyboard from C3
+click a pad                 select it and play it once
+right click a pad           take the cell off that note
+Kopie auf naechste Note     duplicate the selected cell one semitone up
+play that note              the cell sounds, polyphonically
+```
+
+The CELL section edits the selected pad: reverse, speed, pitch, gain, attack
+and release. Speed and pitch both change the read rate, so a transposed cell is
+also shorter. Duplicating a cell and changing only the copy is the quickest way
+to the idea the instrument is built on.
+
 The gain knob:
 
 ```
@@ -206,7 +221,8 @@ breaks the restore, and the error appears under the waveform.
 
 ## What you are actually testing right now
 
-This is phase 2: loading, slicing and playing a sample. Every note triggers the
-*selected* slice — mapping individual notes to their own slices, with their own
-playback settings, is what performance cells add in the next phase. Transforms,
-effects and modifier notes come after that.
+This is phase 3: slices on notes, each played its own way. The thing worth
+trying is the one the instrument exists for — put one slice on two notes, set
+one of them to reverse or half speed, and play them against each other.
+
+Modifier notes, stutter, tape stop and the effects come next.

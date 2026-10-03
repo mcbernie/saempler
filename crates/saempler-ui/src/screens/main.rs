@@ -2,16 +2,17 @@ use std::sync::{Arc, Mutex};
 
 use nih_plug::prelude::{FloatParam, ParamSetter};
 use nih_plug_egui::egui::{self, Align2, CentralPanel, FontId, Frame, Ui};
-use saempler_audio::{CommandProducer, EngineCommand, Meters, SampleBuffer, SliceBounds};
+use saempler_audio::{CellSpec, CommandProducer, EngineCommand, Meters, SampleBuffer, SliceBounds};
 use saempler_core::PeakCache;
 use saempler_model::ProjectFile;
 
+use crate::screens::performance::{cell_section, performance_section, sync_cells};
 use crate::theme::Theme;
 use crate::widgets::{
     button, knob, readout, segmented, stereo_meter, waveform, ViewRange, WaveformSource,
 };
 
-const THEME: Theme = Theme::dark();
+pub(crate) const THEME: Theme = Theme::dark();
 
 const KNOB_DIAMETER: f32 = 52.0;
 const METER_WIDTH: f32 = 170.0;
@@ -69,24 +70,11 @@ impl ViewState<'_> {
     /// A full queue means the engine has not run since the last few hundred
     /// edits, which in practice only happens while audio is stopped. Dropping
     /// the command is preferable to blocking the interface.
-    fn send(&self, command: EngineCommand) {
+    pub(crate) fn send(&self, command: EngineCommand) {
         if let Ok(mut producer) = self.commands.lock() {
             let _ = producer.push(command);
         }
     }
-
-    /// Tell the engine which slice newly triggered notes should play.
-    fn send_selection(&self, bounds: Option<SliceBounds>) {
-        self.send(EngineCommand::SetSlice(bounds.unwrap_or_default()));
-    }
-}
-
-/// Bounds of the project's selected slice, for the engine.
-fn selected_bounds(project: &ProjectFile) -> Option<SliceBounds> {
-    project.project.selected().map(|slice| SliceBounds {
-        start_frame: slice.start_frame,
-        end_frame: slice.end_frame,
-    })
 }
 
 /// Apply the product theme to egui's own surfaces.
@@ -119,11 +107,17 @@ pub fn draw(ctx: &egui::Context, setter: &ParamSetter, state: &ViewState<'_>) ->
         .show(ctx, |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(THEME.spacing_md, THEME.spacing_md);
 
-            header(ui, state);
-            ui.add_space(THEME.spacing_md);
-            import_requested = source_section(ui, state);
-            ui.add_space(THEME.spacing_md);
-            output_section(ui, setter, state);
+            egui::ScrollArea::vertical().show(ui, |ui| {
+                header(ui, state);
+                ui.add_space(THEME.spacing_md);
+                import_requested = source_section(ui, state);
+                ui.add_space(THEME.spacing_md);
+                performance_section(ui, state);
+                ui.add_space(THEME.spacing_md);
+                cell_section(ui, state);
+                ui.add_space(THEME.spacing_md);
+                output_section(ui, setter, state);
+            });
         });
 
     import_requested
@@ -213,9 +207,12 @@ fn source_section(ui: &mut Ui, state: &ViewState<'_>) -> bool {
             // A click auditions what it selected; the voice ends by itself at
             // the end of the slice, so nothing has to release it.
             if let Some(slice) = project.project.slice(id) {
-                state.send(EngineCommand::Preview(SliceBounds {
-                    start_frame: slice.start_frame,
-                    end_frame: slice.end_frame,
+                state.send(EngineCommand::Preview(CellSpec {
+                    bounds: SliceBounds {
+                        start_frame: slice.start_frame,
+                        end_frame: slice.end_frame,
+                    },
+                    ..CellSpec::default()
                 }));
             }
         }
@@ -238,9 +235,10 @@ fn source_section(ui: &mut Ui, state: &ViewState<'_>) -> bool {
             }
         }
 
+        // Editing slices can move or remove what the cells play, so the
+        // keyboard mapping is pushed again.
         if selection_changed {
-            let bounds = selected_bounds(&project);
-            state.send_selection(bounds);
+            sync_cells(state, &project);
         }
 
         ui.add_space(THEME.spacing_sm);
@@ -311,10 +309,9 @@ fn divide_evenly(state: &ViewState<'_>, count: u32) {
     project.project.slice_evenly(count);
     let first = project.project.slices().first().map(|slice| slice.id);
     project.project.select(first);
-
-    let bounds = selected_bounds(&project);
-    drop(project);
-    state.send_selection(bounds);
+    // Dividing replaces every slice, so whatever the notes played is gone.
+    project.project.clear_cells();
+    sync_cells(state, &project);
 }
 
 /// Remove the selected slice and clear what the engine plays.
@@ -326,8 +323,7 @@ fn remove_selected(state: &ViewState<'_>) {
         return;
     };
     project.project.remove_slice(id);
-    drop(project);
-    state.send_selection(None);
+    sync_cells(state, &project);
 }
 
 /// One line of context under the waveform.
@@ -417,7 +413,7 @@ fn output_section(ui: &mut Ui, setter: &ParamSetter, state: &ViewState<'_>) {
 }
 
 /// A titled, framed group of controls.
-fn section(ui: &mut Ui, title: &str, contents: impl FnOnce(&mut Ui)) {
+pub(crate) fn section(ui: &mut Ui, title: &str, contents: impl FnOnce(&mut Ui)) {
     Frame::new()
         .fill(THEME.panel_bg)
         .stroke(THEME.outline_stroke())

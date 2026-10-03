@@ -8,6 +8,8 @@
 
 mod loader;
 mod peaks;
+mod spec;
 
 pub use loader::{load_sample, LoadError, LoadedSample, MAX_FRAMES};
 pub use peaks::{Peak, PeakCache, BASE_FRAMES_PER_PEAK};
+pub use spec::cell_spec;

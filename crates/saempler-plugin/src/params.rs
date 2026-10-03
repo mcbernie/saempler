@@ -5,7 +5,7 @@ use nih_plug_egui::EguiState;
 use saempler_model::ProjectFile;
 
 /// Initial editor size in logical pixels.
-pub const EDITOR_SIZE: (u32, u32) = (780, 520);
+pub const EDITOR_SIZE: (u32, u32) = (900, 760);
 
 /// Host-visible parameters plus the persisted project state.
 ///

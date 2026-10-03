@@ -10,10 +10,10 @@ use std::sync::{Arc, Mutex};
 use nih_plug::prelude::*;
 use nih_plug_egui::create_egui_editor;
 use saempler_audio::{
-    command_queue, disposal_queue, CommandProducer, DisposalConsumer, Engine, EngineCommand,
-    Meters, SliceBounds,
+    command_queue, disposal_queue, CellSpec, CommandProducer, DisposalConsumer, Engine,
+    EngineCommand, Meters,
 };
-use saempler_core::load_sample;
+use saempler_core::{cell_spec, load_sample};
 use saempler_ui::{SampleView, ViewState};
 
 mod params;
@@ -144,7 +144,10 @@ impl Plugin for Saempler {
             view.buffer = Some(Arc::clone(&loaded.buffer));
             view.reset_view();
 
-            let bounds = {
+            // The keyboard mapping is rebuilt from the project: a restored
+            // project brings its own cells, a fresh import has none yet.
+            let mut specs: Vec<(u8, CellSpec)> = Vec::new();
+            {
                 let mut project = match project.lock() {
                     Ok(project) => project,
                     Err(_) => return,
@@ -154,15 +157,22 @@ impl Plugin for Saempler {
                 } else {
                     project.project.set_sample(Some(loaded.source));
                 }
-                project.project.selected().map(|slice| SliceBounds {
-                    start_frame: slice.start_frame,
-                    end_frame: slice.end_frame,
-                })
-            };
+                for cell in project.project.cells() {
+                    if let Some(spec) = cell_spec(&project.project, cell) {
+                        specs.push((cell.midi_note, spec));
+                    }
+                }
+            }
 
             if let Ok(mut commands) = commands.lock() {
                 let _ = commands.push(EngineCommand::SetSample(loaded.buffer));
-                let _ = commands.push(EngineCommand::SetSlice(bounds.unwrap_or_default()));
+                let _ = commands.push(EngineCommand::ClearCells);
+                for (note, spec) in specs {
+                    let _ = commands.push(EngineCommand::SetCell {
+                        note,
+                        spec: Some(spec),
+                    });
+                }
             }
         })
     }
@@ -370,7 +380,7 @@ nih_export_vst3!(Saempler);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use saempler_audio::SampleBuffer;
+    use saempler_audio::{SampleBuffer, SliceBounds};
 
     const SAMPLE_RATE: f32 = 48_000.0;
 
@@ -388,12 +398,22 @@ mod tests {
                 48_000,
             ))))
             .expect("the queue has capacity");
-        commands
-            .push(EngineCommand::SetSlice(SliceBounds {
-                start_frame: 0,
-                end_frame: frames as u64,
-            }))
-            .expect("the queue has capacity");
+        // The notes these tests play all need a cell, otherwise a note on
+        // would be silent for a reason that has nothing to do with mapping.
+        for note in [60u8, 64, 72] {
+            commands
+                .push(EngineCommand::SetCell {
+                    note,
+                    spec: Some(CellSpec {
+                        bounds: SliceBounds {
+                            start_frame: 0,
+                            end_frame: frames as u64,
+                        },
+                        ..CellSpec::default()
+                    }),
+                })
+                .expect("the queue has capacity");
+        }
         engine.apply_commands();
         // The producer is dropped here on purpose: these tests only cover the
         // note event mapping.
@@ -532,8 +552,8 @@ mod tests {
         let _cleanup = TempFile(path.clone());
 
         let mut plugin = Saempler::default();
-        // Stand in for state the host restored: a sample reference plus the
-        // slices the user had made, with the second one selected.
+        // Stand in for state the host restored: a sample reference, the slices
+        // the user had made, and the notes they were mapped to.
         {
             let mut project = plugin.params.project.lock().expect("fresh mutex");
             project.project.sample = Some(saempler_model::SampleRef {
@@ -544,8 +564,16 @@ mod tests {
             });
             let first = project.project.add_slice(0, 24_000);
             let second = project.project.add_slice(24_000, 48_000);
-            project.project.select(Some(second));
             assert_ne!(first, second);
+            project.project.assign(60, first);
+            let cell = project.project.assign(62, second).expect("slice exists");
+            project.project.set_playback(
+                cell,
+                saempler_model::PlaybackSettings {
+                    reverse: true,
+                    ..Default::default()
+                },
+            );
         }
 
         let executor = plugin.task_executor();
@@ -559,27 +587,35 @@ mod tests {
             assert_eq!(view.peaks.frames(), 48_000);
         }
 
-        // The project kept its slices and its selection.
+        // The project kept its slices and its note mapping.
         {
             let project = plugin.params.project.lock().expect("fresh mutex");
             assert_eq!(project.project.slices().len(), 2);
-            let selected = project.project.selected().expect("selection survived");
-            assert_eq!((selected.start_frame, selected.end_frame), (24_000, 48_000));
+            assert_eq!(project.project.cells().len(), 2);
         }
 
-        // The engine received the audio and the selected region.
+        // The engine received the audio and the whole keyboard mapping.
         plugin.engine.apply_commands();
         assert!(plugin.engine.has_sample());
-        assert_eq!(
-            plugin.engine.bounds(),
-            SliceBounds {
-                start_frame: 24_000,
-                end_frame: 48_000,
-            }
-        );
+        assert_eq!(plugin.engine.mapped_notes(), 2);
+
+        let first = plugin.engine.cell(60).expect("note 60 was restored");
+        assert_eq!(first.bounds.start_frame, 0);
+        assert_eq!(first.bounds.end_frame, 24_000);
+        assert!(!first.reverse);
+
+        let second = plugin.engine.cell(62).expect("note 62 was restored");
+        assert_eq!(second.bounds.start_frame, 24_000);
+        assert!(second.reverse, "the cell settings came back too");
 
         plugin.engine.note_on(60, 1.0);
         assert_eq!(plugin.engine.active_voices(), 1);
+        plugin.engine.note_on(61, 1.0);
+        assert_eq!(
+            plugin.engine.active_voices(),
+            1,
+            "an unmapped note must stay silent"
+        );
     }
 
     #[test]

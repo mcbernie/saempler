@@ -23,19 +23,22 @@ themselves.
 
 ## Status
 
-Phase 2 of the plan: samples can be loaded, sliced and played.
+Phase 3 of the plan: slices sit on notes, and each note plays its slice its
+own way.
 
 What works today:
 
 - VST3, CLAP and standalone builds
 - sample import for WAV, AIFF, FLAC, MP3 and OGG, decoded off the audio thread
-- waveform display backed by a multi-level peak cache
-- slices: equal divisions, split by double click, drag the markers, select
-- MIDI notes play the selected slice, polyphonically
-- master gain as a host parameter; sample reference, slices and selection as
+- waveform with zoom, panning and a detailed view that reads the audio itself
+- slices: equal divisions, split by double click, drag or remove the markers
+- performance cells: slices laid out across the keyboard, several notes able to
+  share one slice, each with its own reverse, speed, pitch, gain and envelope
+- polyphonic playback with a playhead shown on the waveform and the pads
+- master gain as a host parameter; sample reference, slices and cells as
   versioned plugin state, reloaded when a project is opened
 
-Not there yet: performance cells, transforms, effects and modifier notes.
+Not there yet: modifier notes, stutter, tape stop and effects.
 
 See `docs/architecture.md` for the decisions behind this and
 `docs/realtime.md` for the rules the audio thread follows.

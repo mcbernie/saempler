@@ -19,9 +19,9 @@ mod sample;
 mod voice;
 
 pub use command::{
-    command_queue, disposal_queue, CommandConsumer, CommandProducer, DisposalConsumer,
+    command_queue, disposal_queue, CellSpec, CommandConsumer, CommandProducer, DisposalConsumer,
     DisposalProducer, EngineCommand, SliceBounds, DISPOSAL_CAPACITY, QUEUE_CAPACITY,
 };
-pub use engine::{Engine, MAX_VOICES};
+pub use engine::{Engine, MAX_VOICES, NOTE_COUNT};
 pub use meters::Meters;
 pub use sample::SampleBuffer;
