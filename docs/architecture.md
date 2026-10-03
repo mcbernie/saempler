@@ -276,6 +276,27 @@ A release trigger turns the key coming up into the start of the effect rather
 than the end of the note. The loop then runs for as long as the release stage
 of whatever is routed to volume.
 
+## Showing the engine running
+
+The meters publish where the newest voice's modulation stands: both envelope
+levels, both LFO outputs and the amount reaching each destination. The audio
+thread stores them as atomics once per block, not per frame, because the
+interface redraws far more slowly than the audio runs.
+
+One voice rather than all of them. Averaging several would produce a reading
+that matches none of the notes being played, and the newest is the one the
+player just triggered.
+
+With that, a panel lamp lights while its module is doing something, a marker
+rides the envelope and LFO curves, and a knob whose destination is being
+modulated shows a second arc running out from where it is set. None of it is
+recomputed in the interface: a second copy of the modulation would be a second
+place for it to be wrong.
+
+An audition is held for two seconds and then released, so a loop, a repeat and
+a collapse can all be heard doing what they do from a click on a pad, and
+still end.
+
 ## Modulation
 
 A cell owns two envelopes, two LFOs and a list of routes. None of the sources

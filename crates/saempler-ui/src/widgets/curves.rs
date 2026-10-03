@@ -18,6 +18,7 @@ pub fn envelope_display(
     theme: &Theme,
     name: &str,
     envelope: EnvelopeDefinition,
+    level: Option<f32>,
     size: (f32, f32),
 ) {
     let (rect, _response) = ui.allocate_exact_size(vec2(size.0, size.1), Sense::hover());
@@ -49,11 +50,30 @@ pub fn envelope_display(
         points,
         Stroke::new(theme.stroke_thick, theme.accent),
     ));
+
+    // A bar at the level the envelope has reached, so the module is seen to
+    // run rather than only to be configured.
+    if let Some(level) = level.filter(|level| *level > 0.001) {
+        let y = level_y(level);
+        painter.line_segment(
+            [pos2(inner.min.x, y), pos2(inner.max.x, y)],
+            Stroke::new(1.0, theme.active.gamma_multiply(0.5)),
+        );
+        painter.circle_filled(pos2(inner.max.x, y), 3.0, theme.active);
+    }
+
     name_plate(ui, theme, rect, name);
 }
 
 /// Draw one cycle of an LFO shape.
-pub fn lfo_display(ui: &mut Ui, theme: &Theme, name: &str, shape: LfoShape, size: (f32, f32)) {
+pub fn lfo_display(
+    ui: &mut Ui,
+    theme: &Theme,
+    name: &str,
+    shape: LfoShape,
+    value: Option<f32>,
+    size: (f32, f32),
+) {
     let (rect, _response) = ui.allocate_exact_size(vec2(size.0, size.1), Sense::hover());
     frame(ui, theme, rect);
 
@@ -83,6 +103,18 @@ pub fn lfo_display(ui: &mut Ui, theme: &Theme, name: &str, shape: LfoShape, size
         points,
         Stroke::new(theme.stroke_thick, theme.accent),
     ));
+
+    // The LFO's own phase is not published, only its output, so the marker
+    // rides the right edge at the height the oscillator currently reads.
+    if let Some(value) = value {
+        let y = inner.center().y - value.clamp(-1.0, 1.0) * half;
+        painter.line_segment(
+            [pos2(inner.min.x, y), pos2(inner.max.x, y)],
+            Stroke::new(1.0, theme.active.gamma_multiply(0.5)),
+        );
+        painter.circle_filled(pos2(inner.max.x, y), 3.0, theme.active);
+    }
+
     name_plate(ui, theme, rect, name);
 }
 

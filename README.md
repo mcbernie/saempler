@@ -41,6 +41,8 @@ What works today:
   what is being edited are never on separate pages
 - panel lamps, lit pads and a readout of the notes and slices currently
   sounding, so the state of a performance is readable at a glance
+- the modulation shown running: markers riding the envelope and LFO curves and
+  a second arc on every knob the engine is moving
 - two envelopes and two LFOs per cell, free running or locked to the host
   tempo, none of them wired to a fixed parameter
 - a modulation matrix of up to eight routes, from envelopes, LFOs or velocity

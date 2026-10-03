@@ -1,18 +1,12 @@
-use nih_plug_egui::egui::{epaint::PathShape, vec2, Align2, FontId, Pos2, Sense, Stroke, Ui, Vec2};
+use nih_plug_egui::egui::{vec2, Align2, FontId, Pos2, Sense, Ui};
 
 use crate::theme::Theme;
+use crate::widgets::dial::{dial, DialState};
 
 /// Value change per dragged pixel, as a fraction of the control's range.
 const DRAG_SENSITIVITY: f32 = 0.005;
 /// Multiplier applied while shift is held, for fine adjustment.
 const FINE_DRAG_FACTOR: f32 = 0.15;
-
-/// Angle of the knob's minimum position, measured clockwise from straight up.
-const START_ANGLE: f32 = -0.75 * std::f32::consts::PI;
-/// Angle of the knob's maximum position.
-const END_ANGLE: f32 = 0.75 * std::f32::consts::PI;
-/// Number of line segments used to draw the value arc.
-const ARC_SEGMENTS: usize = 48;
 
 /// Unit a knob's readout is written in.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -61,6 +55,11 @@ pub struct KnobSpec<'a> {
     pub taper: Taper,
     pub unit: Unit,
     pub diameter: f32,
+    /// Where the engine has pushed this value, when it is being modulated.
+    ///
+    /// Given in the same units as the value itself; the knob maps it through
+    /// its own taper, so a caller never has to know how the dial is scaled.
+    pub modulated: Option<f32>,
 }
 
 /// A rotary control over a plain value, not a host parameter.
@@ -78,6 +77,7 @@ pub fn value_knob(ui: &mut Ui, theme: &Theme, spec: KnobSpec<'_>, value: &mut f3
         taper,
         unit,
         diameter,
+        modulated,
     } = spec;
 
     let label_height = theme.font_sm * 2.6;
@@ -86,8 +86,8 @@ pub fn value_knob(ui: &mut Ui, theme: &Theme, spec: KnobSpec<'_>, value: &mut f3
         Sense::click_and_drag(),
     );
 
-    let dial = rect.with_max_y(rect.min.y + diameter);
-    let centre = dial.center();
+    let dial_rect = rect.with_max_y(rect.min.y + diameter);
+    let centre = dial_rect.center();
     let radius = diameter * 0.5 - theme.stroke_thick;
     let mut changed = false;
 
@@ -111,53 +111,29 @@ pub fn value_knob(ui: &mut Ui, theme: &Theme, spec: KnobSpec<'_>, value: &mut f3
     }
 
     let normalized = to_normalized(*value, range, taper);
-    let painter = ui.painter();
-
-    let body = if response.hovered() || response.dragged() {
-        theme.control_hover_bg
-    } else {
-        theme.control_bg
-    };
-    painter.circle_filled(centre, radius, body);
-    painter.circle_stroke(centre, radius, theme.outline_stroke());
-
-    let track_radius = radius - theme.stroke_thick;
-    painter.add(arc(
+    dial(
+        ui.painter(),
+        theme,
         centre,
-        track_radius,
-        START_ANGLE,
-        END_ANGLE,
-        Stroke::new(theme.stroke_thick, theme.outline),
-    ));
-
-    let value_angle = START_ANGLE + (END_ANGLE - START_ANGLE) * normalized;
-    if normalized > 0.0 {
-        painter.add(arc(
-            centre,
-            track_radius,
-            START_ANGLE,
-            value_angle,
-            Stroke::new(theme.stroke_thick, theme.accent),
-        ));
-    }
-
-    painter.line_segment(
-        [
-            centre + angle_vec(value_angle) * (track_radius * 0.35),
-            centre + angle_vec(value_angle) * (track_radius - theme.spacing_sm),
-        ],
-        Stroke::new(theme.stroke_thick, theme.text),
+        radius,
+        DialState {
+            normalized,
+            modulated: modulated.map(|value| to_normalized(value, range, taper)),
+            hovered: response.hovered(),
+            dragged: response.dragged(),
+        },
     );
 
+    let painter = ui.painter();
     painter.text(
-        Pos2::new(centre.x, dial.max.y + theme.spacing_sm * 0.5),
+        Pos2::new(centre.x, dial_rect.max.y + theme.spacing_sm * 0.5),
         Align2::CENTER_TOP,
         label,
         FontId::proportional(theme.font_sm),
         theme.label,
     );
     painter.text(
-        Pos2::new(centre.x, dial.max.y + theme.font_sm + theme.spacing_sm),
+        Pos2::new(centre.x, dial_rect.max.y + theme.font_sm + theme.spacing_sm),
         Align2::CENTER_TOP,
         format_value(*value, unit),
         FontId::proportional(theme.font_sm),
@@ -239,23 +215,6 @@ pub(crate) fn format_value(value: f32, unit: Unit) -> String {
             }
         }
     }
-}
-
-/// Build a stroked arc as a polyline.
-fn arc(centre: Pos2, radius: f32, from: f32, to: f32, stroke: Stroke) -> PathShape {
-    let points = (0..=ARC_SEGMENTS)
-        .map(|step| {
-            let t = step as f32 / ARC_SEGMENTS as f32;
-            centre + angle_vec(from + (to - from) * t) * radius
-        })
-        .collect();
-
-    PathShape::line(points, stroke)
-}
-
-/// Unit vector for an angle measured clockwise from straight up.
-fn angle_vec(angle: f32) -> Vec2 {
-    vec2(angle.sin(), -angle.cos())
 }
 
 #[cfg(test)]

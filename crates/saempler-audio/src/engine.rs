@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use saempler_model::{Modifier, ModifierMode, PlaybackMode};
+use saempler_model::{Modifier, ModifierMode};
 
 use crate::command::{CellSpec, CommandConsumer, DisposalProducer, EngineCommand};
 use crate::meters::Meters;
@@ -26,6 +26,13 @@ const DEFAULT_SAMPLE_RATE: f32 = 44_100.0;
 /// never cut an audition short.
 const PREVIEW_NOTE: u8 = u8::MAX;
 
+/// How long an audition is held before the key is let go for it, in seconds.
+///
+/// An audition has no key to release, so a looping cell would sound until
+/// something else stopped it. Holding it for a couple of seconds lets a loop,
+/// a repeat and a collapse be heard doing what they do, and then ends.
+const PREVIEW_SECONDS: f32 = 2.0;
+
 /// The realtime engine.
 ///
 /// All state is preallocated, including the note table. [`Engine::render`]
@@ -33,6 +40,8 @@ const PREVIEW_NOTE: u8 = u8::MAX;
 /// call from an audio callback.
 pub struct Engine {
     sample_rate: f32,
+    /// Output frames until the audition is released. Zero means none is held.
+    preview_left: u64,
     sample: Option<Arc<SampleBuffer>>,
     /// What each MIDI note plays. A fixed array rather than a map, so that a
     /// note on is a single index instead of a lookup.
@@ -55,6 +64,7 @@ impl Engine {
     pub fn new(commands: CommandConsumer, disposal: DisposalProducer, meters: Arc<Meters>) -> Self {
         Self {
             sample_rate: DEFAULT_SAMPLE_RATE,
+            preview_left: 0,
             sample: None,
             cells: [None; NOTE_COUNT],
             modifier_notes: [None; NOTE_COUNT],
@@ -81,10 +91,12 @@ impl Engine {
             voice.kill();
         }
         self.next_age = 0;
+        self.preview_left = 0;
         self.modifiers.clear();
         self.meters.store_peaks(0.0, 0.0);
         self.meters.store_active_voices(0);
         self.meters.clear_playheads();
+        self.meters.clear_modulation();
         self.meters.store_modifiers(0);
     }
 
@@ -168,15 +180,10 @@ impl Engine {
                     self.retune_voices();
                 }
                 EngineCommand::Preview(spec) => {
-                    // An audition has no key to let go of, so it always plays
-                    // the slice once: a looping cell previewed as it is set up
-                    // would sound until something else stopped it.
-                    let spec = CellSpec {
-                        mode: PlaybackMode::Gate,
-                        release_trigger: false,
-                        ..spec
-                    };
                     self.trigger(PREVIEW_NOTE, 1.0, spec, spec);
+                    // A release trigger would never fire without this, and a
+                    // loop would never end.
+                    self.preview_left = (PREVIEW_SECONDS * self.sample_rate) as u64;
                 }
                 EngineCommand::AllNotesOff => {
                     for voice in &mut self.voices {
@@ -311,10 +318,48 @@ impl Engine {
         self.voices.iter().filter(|voice| voice.is_active()).count()
     }
 
+    /// Count down the audition and let go of its key when the time is up.
+    fn advance_preview(&mut self, frames: u64) {
+        if self.preview_left == 0 {
+            return;
+        }
+
+        self.preview_left = self.preview_left.saturating_sub(frames);
+        if self.preview_left == 0 {
+            for voice in &mut self.voices {
+                if voice.is_playing_note(PREVIEW_NOTE) {
+                    voice.release();
+                }
+            }
+        }
+    }
+
     /// Publish where every voice is reading.
     fn publish_playheads(&self) {
         for (slot, voice) in self.voices.iter().enumerate() {
             self.meters.store_playhead(slot, voice.active_position());
+        }
+    }
+
+    /// Publish the modulation of the voice that started most recently.
+    ///
+    /// One voice rather than all of them: averaging several would produce a
+    /// reading that matches none of the notes being played, and the newest is
+    /// the one the player just triggered.
+    fn publish_modulation(&self) {
+        let newest = self
+            .voices
+            .iter()
+            .filter(|voice| voice.is_active())
+            .max_by_key(|voice| voice.age());
+
+        match newest {
+            Some(voice) => {
+                let monitor = voice.monitor();
+                self.meters
+                    .store_modulation(monitor.envelopes, monitor.lfos, monitor.destinations);
+            }
+            None => self.meters.clear_modulation(),
         }
     }
 
@@ -332,6 +377,10 @@ impl Engine {
             return;
         }
 
+        // Before the block is rendered, so a released audition fades inside it
+        // rather than a block later.
+        self.advance_preview(frames as u64);
+
         // Borrowed rather than cloned: an `Arc` clone here would add atomic
         // traffic to every block for no benefit.
         let Some(sample) = self.sample.as_ref() else {
@@ -340,6 +389,7 @@ impl Engine {
             self.meters.store_peaks(0.0, 0.0);
             self.meters.store_active_voices(0);
             self.meters.clear_playheads();
+            self.meters.clear_modulation();
             return;
         };
 
@@ -370,6 +420,7 @@ impl Engine {
         self.meters.store_peaks(peak_left, peak_right);
         self.meters.store_active_voices(self.active_voices() as u32);
         self.publish_playheads();
+        self.publish_modulation();
     }
 }
 
@@ -470,6 +521,8 @@ mod tests {
 
     #[test]
     fn previewing_a_looping_cell_still_ends() {
+        use saempler_model::PlaybackMode;
+
         let mut h = harness();
         load(&mut h, 48_000);
 
@@ -482,7 +535,8 @@ mod tests {
         h.engine.apply_commands();
         assert_eq!(h.engine.active_voices(), 1);
 
-        render(&mut h.engine, 48_000);
+        // Long enough to outlast the hold plus the release that follows it.
+        render(&mut h.engine, 48_000 * 4);
 
         assert_eq!(
             h.engine.active_voices(),

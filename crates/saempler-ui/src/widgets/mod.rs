@@ -4,6 +4,7 @@
 //! value from or performs with is drawn here.
 
 mod curves;
+pub(crate) mod dial;
 mod dropdown;
 mod knob;
 mod meter;
@@ -18,11 +19,14 @@ mod view_range;
 pub(crate) mod waveform;
 
 pub use curves::{envelope_display, lfo_display};
+pub use dial::{dial, DialState};
 pub use dropdown::dropdown;
 pub use knob::knob;
 pub use meter::{readout, stereo_meter};
 pub use pad::{performance_pad, PadAction, PadView, PAD_SIZE};
-pub use panel::{inset, lamp, metal_panel, panel_header, HEADER_HEIGHT};
+pub use panel::{
+    inset, lamp, metal_panel, panel_header, raised_body, vertical_gradient, HEADER_HEIGHT,
+};
 pub use segmented::{button, segmented, toggle};
 pub use tabs::{led, tab_bar};
 pub use value_knob::{value_knob, KnobSpec, Taper, Unit};

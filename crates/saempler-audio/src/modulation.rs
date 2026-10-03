@@ -289,7 +289,7 @@ pub fn division_hz(division: Division, tempo: f64) -> f32 {
 /// How much each destination is being modulated this frame.
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ModulationFrame {
-    amounts: [f32; DESTINATION_COUNT],
+    pub(crate) amounts: [f32; DESTINATION_COUNT],
 }
 
 impl ModulationFrame {
@@ -309,6 +309,20 @@ pub struct Modulation {
     envelopes: [EnvelopeState; ENVELOPE_COUNT],
     lfos: [LfoState; LFO_COUNT],
     velocity: f32,
+    /// What the sources read on the last frame, kept for the meters.
+    ///
+    /// Two small arrays of floats, copied once per frame: the interface has to
+    /// be able to show the modules running, and recomputing this outside the
+    /// voice would mean running the envelopes twice.
+    monitor: ModulationMonitor,
+}
+
+/// Where a voice's modulation stood on its last frame.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ModulationMonitor {
+    pub envelopes: [f32; ENVELOPE_COUNT],
+    pub lfos: [f32; LFO_COUNT],
+    pub destinations: [f32; DESTINATION_COUNT],
 }
 
 impl Modulation {
@@ -389,7 +403,24 @@ impl Modulation {
             );
         }
 
+        self.monitor = ModulationMonitor {
+            envelopes: [
+                sources[source_index(ModSource::EnvelopeA)],
+                sources[source_index(ModSource::EnvelopeB)],
+            ],
+            lfos: [
+                sources[source_index(ModSource::Lfo1)],
+                sources[source_index(ModSource::Lfo2)],
+            ],
+            destinations: frame.amounts,
+        };
+
         frame
+    }
+
+    /// Where the sources stood on the last rendered frame.
+    pub fn monitor(&self) -> ModulationMonitor {
+        self.monitor
     }
 }
 

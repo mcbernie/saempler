@@ -1,21 +1,13 @@
 use nih_plug::prelude::{Param, ParamSetter};
-use nih_plug_egui::egui::{
-    epaint::PathShape, vec2, Align2, FontId, Pos2, Response, Sense, Stroke, Ui, Vec2,
-};
+use nih_plug_egui::egui::{vec2, Align2, FontId, Pos2, Response, Sense, Ui};
 
 use crate::theme::Theme;
+use crate::widgets::dial::{dial, DialState};
 
 /// Normalized value change per dragged pixel.
 const DRAG_SENSITIVITY: f32 = 0.005;
 /// Multiplier applied while shift is held, for fine adjustment.
 const FINE_DRAG_FACTOR: f32 = 0.15;
-
-/// Angle of the knob's minimum position, measured clockwise from straight up.
-const START_ANGLE: f32 = -0.75 * std::f32::consts::PI;
-/// Angle of the knob's maximum position.
-const END_ANGLE: f32 = 0.75 * std::f32::consts::PI;
-/// Number of line segments used to draw the value arc.
-const ARC_SEGMENTS: usize = 48;
 
 /// A rotary control bound to a plugin parameter.
 ///
@@ -41,44 +33,20 @@ pub fn knob<P: Param>(
     handle_input(&response, ui, param, setter);
 
     let normalized = param.modulated_normalized_value().clamp(0.0, 1.0);
-    let painter = ui.painter();
-
-    let body = if response.hovered() || response.dragged() {
-        theme.control_hover_bg
-    } else {
-        theme.control_bg
-    };
-    painter.circle_filled(center, radius, body);
-    painter.circle_stroke(center, radius, theme.outline_stroke());
-
-    // The track shows the full travel, the arc on top shows the current value.
-    let track_radius = radius - theme.stroke_thick;
-    painter.add(arc(
+    dial(
+        ui.painter(),
+        theme,
         center,
-        track_radius,
-        START_ANGLE,
-        END_ANGLE,
-        Stroke::new(theme.stroke_thick, theme.outline),
-    ));
-
-    let value_angle = START_ANGLE + (END_ANGLE - START_ANGLE) * normalized;
-    if normalized > 0.0 {
-        painter.add(arc(
-            center,
-            track_radius,
-            START_ANGLE,
-            value_angle,
-            Stroke::new(theme.stroke_thick, theme.accent),
-        ));
-    }
-
-    let pointer_outer = center + angle_vec(value_angle) * (track_radius - theme.spacing_sm);
-    let pointer_inner = center + angle_vec(value_angle) * (track_radius * 0.35);
-    painter.line_segment(
-        [pointer_inner, pointer_outer],
-        Stroke::new(theme.stroke_thick, theme.text),
+        radius,
+        DialState {
+            normalized,
+            modulated: None,
+            hovered: response.hovered(),
+            dragged: response.dragged(),
+        },
     );
 
+    let painter = ui.painter();
     let text_color = if response.hovered() {
         theme.value
     } else {
@@ -134,21 +102,4 @@ fn handle_input<P: Param>(response: &Response, ui: &Ui, param: &P, setter: &Para
     if response.drag_stopped() {
         setter.end_set_parameter(param);
     }
-}
-
-/// Build a stroked arc as a polyline.
-fn arc(center: Pos2, radius: f32, from: f32, to: f32, stroke: Stroke) -> PathShape {
-    let points = (0..=ARC_SEGMENTS)
-        .map(|step| {
-            let t = step as f32 / ARC_SEGMENTS as f32;
-            center + angle_vec(from + (to - from) * t) * radius
-        })
-        .collect();
-
-    PathShape::line(points, stroke)
-}
-
-/// Unit vector for an angle measured clockwise from straight up.
-fn angle_vec(angle: f32) -> Vec2 {
-    vec2(angle.sin(), -angle.cos())
 }

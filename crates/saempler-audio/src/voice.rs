@@ -1,7 +1,7 @@
 use saempler_model::{ModDestination, PlaybackMode};
 
 use crate::command::CellSpec;
-use crate::modulation::{Modulation, PITCH_RANGE_SEMITONES};
+use crate::modulation::{Modulation, ModulationMonitor, PITCH_RANGE_SEMITONES};
 use crate::sample::SampleBuffer;
 
 /// Output frames a released brake takes to reach full speed again.
@@ -124,6 +124,11 @@ impl Voice {
     /// The cell this voice plays, before modifiers.
     pub fn base(&self) -> CellSpec {
         self.base
+    }
+
+    /// Where this voice's modulation stood on its last frame.
+    pub fn monitor(&self) -> ModulationMonitor {
+        self.modulation.monitor()
     }
 
     /// Start this voice, replacing whatever it was playing before.

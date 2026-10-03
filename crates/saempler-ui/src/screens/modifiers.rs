@@ -1,16 +1,21 @@
-use nih_plug_egui::egui::{pos2, vec2, Align2, FontId, PointerButton, Sense, Ui};
+use nih_plug_egui::egui::{pos2, vec2, Sense, Ui};
 use saempler_audio::EngineCommand;
 use saempler_model::{note_name, Modifier, ModifierMode, ProjectFile};
 
 use crate::screens::main::{hint, placeholder, section, ViewState, THEME};
-use crate::widgets::{button, led, segmented};
+use crate::widgets::{button, dropdown, lamp, segmented};
+
+/// Keys a modifier may be put on.
+///
+/// The whole keyboard would be a list of 128 entries to scroll through. These
+/// four octaves sit below where chops are usually mapped, which is where
+/// modifier keys belong.
+const NOTE_RANGE: std::ops::Range<u8> = 24..72;
 
 /// Width of the note column in a modifier row.
 const NOTE_WIDTH: f32 = 72.0;
 /// Height of a row.
 const ROW_HEIGHT: f32 = 34.0;
-/// How many notes one pixel of a note drag is worth.
-const NOTE_DRAG_SENSITIVITY: f32 = 0.08;
 
 /// Push the modifier layout to the engine.
 pub fn sync_modifiers(state: &ViewState<'_>, project: &ProjectFile) {
@@ -75,10 +80,7 @@ pub fn modifier_section(ui: &mut Ui, state: &ViewState<'_>) {
             }
         }
 
-        hint(
-            ui,
-            "Note ziehen verschiebt die Taste  ·  Rechtsklick auf die Note entfernt die Zeile",
-        );
+        hint(ui, "Taste aus der Liste wählen  ·  × entfernt die Zeile");
     });
 }
 
@@ -131,45 +133,24 @@ fn modifier_row(
     let mut edit = None;
 
     ui.horizontal(|ui| {
-        let (lamp, _) = ui.allocate_exact_size(vec2(18.0, ROW_HEIGHT), Sense::hover());
-        led(
-            ui,
+        let (bezel, _) = ui.allocate_exact_size(vec2(18.0, ROW_HEIGHT), Sense::hover());
+        lamp(
+            ui.painter(),
             &THEME,
-            pos2(lamp.center().x, lamp.center().y),
+            pos2(bezel.center().x, bezel.center().y),
             engaged.then_some(THEME.active),
         );
 
-        // Dragging the note is the quickest way to move a key, and it needs
-        // no second interaction mode for picking one.
-        let (note_rect, response) =
-            ui.allocate_exact_size(vec2(NOTE_WIDTH, ROW_HEIGHT), Sense::click_and_drag());
-        let hovered = response.hovered() || response.dragged();
-        ui.painter().rect_filled(
-            note_rect.shrink(2.0),
-            THEME.radius_sm,
-            if hovered {
-                THEME.control_hover_bg
-            } else {
-                THEME.control_pressed_bg
-            },
-        );
-        ui.painter().text(
-            note_rect.center(),
-            Align2::CENTER_CENTER,
-            note_name(note),
-            FontId::proportional(THEME.font_md),
-            if engaged { THEME.accent } else { THEME.text },
-        );
-
-        if response.dragged() {
-            let steps = -response.drag_delta().y * NOTE_DRAG_SENSITIVITY;
-            let target = (note as f32 + steps).round().clamp(0.0, 127.0) as u8;
+        // The key is picked from a list rather than only dragged: dragging is
+        // quick once you know it is there, and invisible until then.
+        let names: Vec<String> = NOTE_RANGE.map(note_name).collect();
+        let labels: Vec<&str> = names.iter().map(String::as_str).collect();
+        let selected = usize::from(note.saturating_sub(NOTE_RANGE.start));
+        if let Some(index) = dropdown(ui, &THEME, ("note", note), &labels, selected, NOTE_WIDTH) {
+            let target = NOTE_RANGE.start + index as u8;
             if target != note {
                 edit = Some(RowEdit::Move(note, target));
             }
-        }
-        if response.clicked_by(PointerButton::Secondary) {
-            edit = Some(RowEdit::Remove(note));
         }
 
         ui.add_space(THEME.spacing_sm);
@@ -192,6 +173,11 @@ fn modifier_row(
             .unwrap_or(0);
         if let Some(index) = segmented(ui, &THEME, &modes, selected) {
             edit = Some(RowEdit::Mode(note, ModifierMode::ALL[index]));
+        }
+
+        ui.add_space(THEME.spacing_sm);
+        if button(ui, &THEME, "×") {
+            edit = Some(RowEdit::Remove(note));
         }
     });
 

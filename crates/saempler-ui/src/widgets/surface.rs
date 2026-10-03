@@ -1,8 +1,7 @@
-use nih_plug_egui::egui::{
-    pos2, Color32, CornerRadius, FontId, Rect, Stroke, StrokeKind, Ui, Vec2,
-};
+use nih_plug_egui::egui::{Color32, FontId, Rect, Stroke, StrokeKind, Ui, Vec2};
 
 use crate::theme::Theme;
+use crate::widgets::panel::{raised_body, vertical_gradient};
 
 /// How a control looks right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -27,14 +26,12 @@ pub fn control_surface(ui: &Ui, theme: &Theme, rect: Rect, state: SurfaceState) 
     let radius = theme.radius_sm;
 
     let (base, top, border) = match state {
-        SurfaceState::Rest => (theme.control_bg, theme.control_top, theme.outline),
+        SurfaceState::Rest => (theme.control_bg, theme.control_top, Color32::BLACK),
         SurfaceState::Hover => (
             theme.control_hover_bg,
             theme.control_hover_top,
-            theme.outline,
+            Color32::BLACK,
         ),
-        // Pressed reads as pushed in: the lit edge goes away and the fill
-        // drops below the surrounding panel.
         SurfaceState::Pressed => (
             theme.control_pressed_bg,
             theme.control_pressed_bg,
@@ -47,34 +44,20 @@ pub fn control_surface(ui: &Ui, theme: &Theme, rect: Rect, state: SurfaceState) 
         ),
     };
 
-    painter.rect_filled(rect, radius, base);
-
-    // Upper half in the lighter tone, flat along the middle so the two tones
-    // meet in a straight line rather than a visible seam.
-    if top != base {
-        let upper = Rect::from_min_max(rect.min, pos2(rect.max.x, rect.center().y));
-        painter.rect_filled(
-            upper,
-            CornerRadius {
-                nw: radius.nw,
-                ne: radius.ne,
-                sw: 0,
-                se: 0,
-            },
-            top,
-        );
-    }
-
-    if state != SurfaceState::Pressed {
-        // A single lit pixel along the top edge gives the surface its relief.
-        let inset = f32::from(radius.nw).max(1.0);
-        painter.line_segment(
-            [
-                pos2(rect.min.x + inset, rect.min.y + 0.5),
-                pos2(rect.max.x - inset, rect.min.y + 0.5),
+    if state == SurfaceState::Pressed {
+        // Pushed in: no shadow under it, a dark lip above and a light one
+        // below, which is the opposite of a raised key.
+        painter.rect_filled(rect, radius, base);
+        painter.add(vertical_gradient(
+            rect.shrink(1.0),
+            &[
+                (0.0, Color32::from_black_alpha(120)),
+                (0.5, Color32::TRANSPARENT),
+                (1.0, Color32::from_white_alpha(28)),
             ],
-            Stroke::new(1.0, theme.control_highlight),
-        );
+        ));
+    } else {
+        raised_body(painter, theme, rect, radius, base, top);
     }
 
     painter.rect_stroke(

@@ -44,11 +44,12 @@ pub fn cell_section(ui: &mut Ui, state: &ViewState<'_>) {
     };
 
     let mut changed = false;
+    let live = Live::read(state);
 
-    changed |= playback_section(ui, &mut cell);
-    changed |= envelopes_section(ui, &mut cell);
-    changed |= lfos_section(ui, &mut cell);
-    changed |= matrix_section(ui, &mut cell);
+    changed |= playback_section(ui, &mut cell, live);
+    changed |= envelopes_section(ui, &mut cell, live);
+    changed |= lfos_section(ui, &mut cell, live);
+    changed |= matrix_section(ui, &mut cell, live);
 
     if changed {
         let id = cell.id;
@@ -58,11 +59,53 @@ pub fn cell_section(ui: &mut Ui, state: &ViewState<'_>) {
     }
 }
 
+/// What the engine is doing right now, read once per frame.
+///
+/// The interface asks the meters rather than recomputing anything: the voice
+/// has already worked these values out, and a second copy of the modulation
+/// here would be a second place for it to be wrong.
+#[derive(Debug, Clone, Copy, Default)]
+pub(crate) struct Live {
+    pub sounding: bool,
+    pub envelopes: [f32; 2],
+    pub lfos: [f32; 2],
+    pub destinations: [f32; 5],
+}
+
+impl Live {
+    fn read(state: &ViewState<'_>) -> Self {
+        let sounding = state.meters.any_playhead();
+        Self {
+            sounding,
+            envelopes: [state.meters.envelope(0), state.meters.envelope(1)],
+            lfos: [state.meters.lfo(0), state.meters.lfo(1)],
+            destinations: [
+                state.meters.destination(ModDestination::Volume),
+                state.meters.destination(ModDestination::Pan),
+                state.meters.destination(ModDestination::Pitch),
+                state.meters.destination(ModDestination::PlaybackRate),
+                state.meters.destination(ModDestination::LoopLength),
+            ],
+        }
+    }
+
+    /// The lamp colour for a module that is in use.
+    fn lamp(self, active: bool) -> Option<nih_plug_egui::egui::Color32> {
+        (self.sounding && active).then_some(THEME.active)
+    }
+
+    /// How much is reaching a destination, or nothing while silent.
+    fn reaching(self, destination: ModDestination) -> Option<f32> {
+        let amount = self.destinations[destination.index()];
+        (self.sounding && amount.abs() > 0.001).then_some(amount)
+    }
+}
+
 /// Reverse, speed, pitch and level.
-fn playback_section(ui: &mut Ui, cell: &mut PerformanceCell) -> bool {
+fn playback_section(ui: &mut Ui, cell: &mut PerformanceCell, live: Live) -> bool {
     let mut changed = false;
 
-    section(ui, "PLAYBACK", None, |ui| {
+    section(ui, "PLAYBACK", live.lamp(true), |ui| {
         ui.horizontal(|ui| {
             if toggle(ui, &THEME, "Reverse", cell.playback.reverse) {
                 cell.playback.reverse = !cell.playback.reverse;
@@ -80,6 +123,11 @@ fn playback_section(ui: &mut Ui, cell: &mut PerformanceCell) -> bool {
                     taper: Taper::Logarithmic,
                     unit: Unit::Multiplier,
                     diameter: KNOB_DIAMETER,
+                    // The rate destination is a multiplier on the read speed,
+                    // exactly as this knob is.
+                    modulated: live
+                        .reaching(ModDestination::PlaybackRate)
+                        .map(|amount| cell.playback.speed * (1.0 + amount).max(0.01)),
                 },
                 &mut cell.playback.speed,
             );
@@ -93,6 +141,11 @@ fn playback_section(ui: &mut Ui, cell: &mut PerformanceCell) -> bool {
                     taper: Taper::Linear,
                     unit: Unit::Semitones,
                     diameter: KNOB_DIAMETER,
+                    // A full-amount route reaches the end of the knob's own
+                    // range, so the two scales are the same.
+                    modulated: live
+                        .reaching(ModDestination::Pitch)
+                        .map(|amount| cell.playback.pitch_semitones + amount * MAX_PITCH_SEMITONES),
                 },
                 &mut cell.playback.pitch_semitones,
             );
@@ -106,6 +159,7 @@ fn playback_section(ui: &mut Ui, cell: &mut PerformanceCell) -> bool {
                     taper: Taper::Linear,
                     unit: Unit::Multiplier,
                     diameter: KNOB_DIAMETER,
+                    modulated: None,
                 },
                 &mut cell.playback.gain,
             );
@@ -214,13 +268,15 @@ fn mode_hint(mode: PlaybackMode, release_trigger: bool) -> &'static str {
 }
 
 /// Both envelopes, each with its curve beside its controls.
-fn envelopes_section(ui: &mut Ui, cell: &mut PerformanceCell) -> bool {
+fn envelopes_section(ui: &mut Ui, cell: &mut PerformanceCell, live: Live) -> bool {
     let mut changed = false;
 
-    section(ui, "ENVELOPES", None, |ui| {
+    let running = live.envelopes.iter().any(|level| *level > 0.001);
+    section(ui, "ENVELOPES", live.lamp(running), |ui| {
         for (index, name) in ["ENV A", "ENV B"].into_iter().enumerate() {
             ui.horizontal(|ui| {
-                envelope_display(ui, &THEME, name, cell.envelopes[index], CURVE_SIZE);
+                let level = live.sounding.then_some(live.envelopes[index]);
+                envelope_display(ui, &THEME, name, cell.envelopes[index], level, CURVE_SIZE);
                 ui.add_space(THEME.spacing_md);
                 changed |= envelope_controls(ui, &mut cell.envelopes[index]);
             });
@@ -240,6 +296,7 @@ fn envelope_controls(ui: &mut Ui, envelope: &mut EnvelopeDefinition) -> bool {
         taper: Taper::Skewed,
         unit: Unit::Milliseconds,
         diameter: KNOB_DIAMETER,
+        modulated: None,
     };
     let mut changed = false;
 
@@ -265,6 +322,7 @@ fn envelope_controls(ui: &mut Ui, envelope: &mut EnvelopeDefinition) -> bool {
             taper: Taper::Linear,
             unit: Unit::Plain,
             diameter: KNOB_DIAMETER,
+            modulated: None,
         },
         &mut envelope.sustain,
     );
@@ -279,13 +337,15 @@ fn envelope_controls(ui: &mut Ui, envelope: &mut EnvelopeDefinition) -> bool {
 }
 
 /// Both LFOs, each with its shape beside its controls.
-fn lfos_section(ui: &mut Ui, cell: &mut PerformanceCell) -> bool {
+fn lfos_section(ui: &mut Ui, cell: &mut PerformanceCell, live: Live) -> bool {
     let mut changed = false;
 
-    section(ui, "LFOS", None, |ui| {
+    let running = live.lfos.iter().any(|value| value.abs() > 0.001);
+    section(ui, "LFOS", live.lamp(running), |ui| {
         for (index, name) in ["LFO 1", "LFO 2"].into_iter().enumerate() {
             ui.horizontal(|ui| {
-                lfo_display(ui, &THEME, name, cell.lfos[index].shape, CURVE_SIZE);
+                let value = live.sounding.then_some(live.lfos[index]);
+                lfo_display(ui, &THEME, name, cell.lfos[index].shape, value, CURVE_SIZE);
                 ui.add_space(THEME.spacing_md);
                 changed |= lfo_controls(ui, index, &mut cell.lfos[index]);
             });
@@ -360,6 +420,7 @@ fn lfo_controls(ui: &mut Ui, index: usize, lfo: &mut LfoDefinition) -> bool {
                         taper: Taper::Logarithmic,
                         unit: Unit::Hertz,
                         diameter: KNOB_DIAMETER,
+                        modulated: None,
                     },
                     &mut lfo.rate_hz,
                 );
@@ -375,10 +436,11 @@ fn lfo_controls(ui: &mut Ui, index: usize, lfo: &mut LfoDefinition) -> bool {
 /// A route is hard to read as three unlabelled controls in a row, so the table
 /// carries column headings and an arrow between source and destination: the
 /// row says "this source moves that destination by this much".
-fn matrix_section(ui: &mut Ui, cell: &mut PerformanceCell) -> bool {
+fn matrix_section(ui: &mut Ui, cell: &mut PerformanceCell, live: Live) -> bool {
     let mut changed = false;
 
-    section(ui, "MOD MATRIX", None, |ui| {
+    let routing = !cell.routes.is_empty();
+    section(ui, "MOD MATRIX", live.lamp(routing), |ui| {
         let sources: Vec<&str> = ModSource::ALL.iter().map(|source| source.label()).collect();
         let destinations: Vec<&str> = ModDestination::ALL
             .iter()

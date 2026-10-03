@@ -23,8 +23,12 @@ pub struct Theme {
     pub window_bg: Color32,
     /// Lit top of the brushed metal a panel is milled from.
     pub chassis_top: Color32,
+    /// The metal across the middle of a panel, where the light falls off.
+    pub chassis_mid: Color32,
     /// Shaded bottom of that metal.
     pub chassis_bottom: Color32,
+    /// Light bounced back up into the very bottom edge.
+    pub chassis_foot: Color32,
     /// Hairline along the top edge of a panel, where the light catches it.
     pub chassis_edge: Color32,
     /// Shadow under a panel, which gives it its thickness.
@@ -110,8 +114,8 @@ impl Theme {
             spacing_md: 8.0,
             spacing_lg: 14.0,
 
-            radius_sm: CornerRadius::same(3),
-            radius_md: CornerRadius::same(5),
+            radius_sm: CornerRadius::same(4),
+            radius_md: CornerRadius::same(9),
 
             stroke_thin: 1.0,
             stroke_thick: 2.0,
@@ -121,26 +125,28 @@ impl Theme {
             font_lg: 18.0,
 
             window_bg: Color32::from_rgb(0x14, 0x13, 0x11),
-            chassis_top: Color32::from_rgb(0xc6, 0xc2, 0xba),
-            chassis_bottom: Color32::from_rgb(0x8f, 0x8b, 0x84),
-            chassis_edge: Color32::from_rgb(0xe8, 0xe5, 0xdf),
-            chassis_shadow: Color32::from_rgb(0x4a, 0x47, 0x43),
+            chassis_top: Color32::from_rgb(0xd9, 0xd4, 0xc9),
+            chassis_mid: Color32::from_rgb(0xb0, 0xab, 0xa1),
+            chassis_bottom: Color32::from_rgb(0x7b, 0x77, 0x6f),
+            chassis_foot: Color32::from_rgb(0x8d, 0x89, 0x81),
+            chassis_edge: Color32::from_rgb(0xf0, 0xec, 0xe4),
+            chassis_shadow: Color32::from_rgb(0x3b, 0x39, 0x35),
             screw: Color32::from_rgb(0x6b, 0x68, 0x63),
             screw_highlight: Color32::from_rgb(0xb4, 0xb0, 0xa9),
-            title: Color32::from_rgb(0x24, 0x22, 0x1f),
-            label: Color32::from_rgb(0x46, 0x43, 0x3e),
+            title: Color32::from_rgb(0x1b, 0x19, 0x17),
+            label: Color32::from_rgb(0x3d, 0x3a, 0x35),
             value: Color32::from_rgb(0x1a, 0x18, 0x16),
             led_off: Color32::from_rgb(0x3a, 0x37, 0x33),
             panel_bg: Color32::from_rgb(0x21, 0x1f, 0x1c),
             panel_top: Color32::from_rgb(0x28, 0x26, 0x22),
-            control_bg: Color32::from_rgb(0x2b, 0x28, 0x24),
-            control_top: Color32::from_rgb(0x34, 0x31, 0x2c),
-            control_hover_bg: Color32::from_rgb(0x38, 0x34, 0x2e),
-            control_hover_top: Color32::from_rgb(0x43, 0x3e, 0x37),
+            control_bg: Color32::from_rgb(0x20, 0x1e, 0x1c),
+            control_top: Color32::from_rgb(0x3e, 0x3a, 0x35),
+            control_hover_bg: Color32::from_rgb(0x2a, 0x27, 0x24),
+            control_hover_top: Color32::from_rgb(0x4e, 0x49, 0x42),
             control_pressed_bg: Color32::from_rgb(0x16, 0x15, 0x13),
-            control_selected_bg: Color32::from_rgb(0x1d, 0x32, 0x33),
-            control_selected_top: Color32::from_rgb(0x24, 0x3d, 0x3e),
-            control_highlight: Color32::from_rgb(0x4e, 0x48, 0x40),
+            control_selected_bg: Color32::from_rgb(0x12, 0x2b, 0x2d),
+            control_selected_top: Color32::from_rgb(0x1f, 0x46, 0x48),
+            control_highlight: Color32::from_rgb(0x66, 0x60, 0x57),
             outline: Color32::from_rgb(0x0d, 0x0c, 0x0b),
 
             text: Color32::from_rgb(0xe8, 0xe3, 0xd8),

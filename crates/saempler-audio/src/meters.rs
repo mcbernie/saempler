@@ -1,5 +1,7 @@
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
+use saempler_model::{ModDestination, DESTINATION_COUNT, ENVELOPE_COUNT, LFO_COUNT};
+
 /// Published for an idle slot, so that frame zero stays a valid position.
 pub const NO_PLAYHEAD: u64 = u64::MAX;
 
@@ -22,6 +24,15 @@ pub struct Meters {
     playheads: [AtomicU64; PLAYHEAD_SLOTS],
     /// One bit per modifier that would affect the next performance note.
     modifiers: AtomicU32,
+    /// Where the modulation of the newest voice stands.
+    ///
+    /// Published so the interface can show the modules running rather than
+    /// only their settings: a knob under an envelope has to be seen to move.
+    /// One voice rather than all of them, because several voices would have to
+    /// be averaged into something that matches none of them.
+    envelopes: [AtomicU32; ENVELOPE_COUNT],
+    lfos: [AtomicU32; LFO_COUNT],
+    destinations: [AtomicU32; DESTINATION_COUNT],
 }
 
 impl Default for Meters {
@@ -32,6 +43,9 @@ impl Default for Meters {
             active_voices: AtomicU32::new(0),
             playheads: std::array::from_fn(|_| AtomicU64::new(NO_PLAYHEAD)),
             modifiers: AtomicU32::new(0),
+            envelopes: std::array::from_fn(|_| AtomicU32::new(0)),
+            lfos: std::array::from_fn(|_| AtomicU32::new(0)),
+            destinations: std::array::from_fn(|_| AtomicU32::new(0)),
         }
     }
 }
@@ -39,6 +53,61 @@ impl Default for Meters {
 impl Meters {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Publish where the newest voice's modulation stands.
+    ///
+    /// Called once per block rather than per frame: the interface redraws far
+    /// more slowly than the audio runs, and a per-frame store would be work
+    /// nobody sees.
+    pub fn store_modulation(
+        &self,
+        envelopes: [f32; ENVELOPE_COUNT],
+        lfos: [f32; LFO_COUNT],
+        destinations: [f32; DESTINATION_COUNT],
+    ) {
+        for (slot, value) in self.envelopes.iter().zip(envelopes) {
+            slot.store(value.to_bits(), Ordering::Relaxed);
+        }
+        for (slot, value) in self.lfos.iter().zip(lfos) {
+            slot.store(value.to_bits(), Ordering::Relaxed);
+        }
+        for (slot, value) in self.destinations.iter().zip(destinations) {
+            slot.store(value.to_bits(), Ordering::Relaxed);
+        }
+    }
+
+    /// Clear the published modulation, for when nothing is sounding.
+    pub fn clear_modulation(&self) {
+        self.store_modulation(
+            [0.0; ENVELOPE_COUNT],
+            [0.0; LFO_COUNT],
+            [0.0; DESTINATION_COUNT],
+        );
+    }
+
+    /// Level of an envelope of the newest voice, from 0 to 1.
+    pub fn envelope(&self, index: usize) -> f32 {
+        self.envelopes
+            .get(index)
+            .map(|slot| f32::from_bits(slot.load(Ordering::Relaxed)))
+            .unwrap_or(0.0)
+    }
+
+    /// Output of an LFO of the newest voice, from -1 to 1.
+    pub fn lfo(&self, index: usize) -> f32 {
+        self.lfos
+            .get(index)
+            .map(|slot| f32::from_bits(slot.load(Ordering::Relaxed)))
+            .unwrap_or(0.0)
+    }
+
+    /// How much modulation is reaching a destination on the newest voice.
+    pub fn destination(&self, destination: ModDestination) -> f32 {
+        self.destinations
+            .get(destination.index())
+            .map(|slot| f32::from_bits(slot.load(Ordering::Relaxed)))
+            .unwrap_or(0.0)
     }
 
     /// Publish the peak levels of the block that was just rendered.
