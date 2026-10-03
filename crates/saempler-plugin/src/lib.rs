@@ -141,6 +141,8 @@ impl Plugin for Saempler {
             };
             view.status = None;
             view.peaks = loaded.peaks;
+            view.buffer = Some(Arc::clone(&loaded.buffer));
+            view.reset_view();
 
             let bounds = {
                 let mut project = match project.lock() {

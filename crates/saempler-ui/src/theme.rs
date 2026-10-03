@@ -25,8 +25,20 @@ pub struct Theme {
     pub panel_bg: Color32,
     /// Background of an interactive control at rest.
     pub control_bg: Color32,
+    /// Lighter upper half of a control at rest.
+    pub control_top: Color32,
     /// Background of an interactive control under the pointer.
     pub control_hover_bg: Color32,
+    /// Lighter upper half of a control under the pointer.
+    pub control_hover_top: Color32,
+    /// Background of a control that is held down, or of a recessed track.
+    pub control_pressed_bg: Color32,
+    /// Background of a control carrying the current value.
+    pub control_selected_bg: Color32,
+    /// Lighter upper half of a control carrying the current value.
+    pub control_selected_top: Color32,
+    /// The lit pixel along the top edge that gives a control its relief.
+    pub control_highlight: Color32,
     /// Border between surfaces.
     pub outline: Color32,
 
@@ -48,6 +60,8 @@ pub struct Theme {
     pub waveform_axis: Color32,
     /// A slice boundary marker at rest.
     pub marker: Color32,
+    /// The position the engine is playing.
+    pub playhead: Color32,
     /// Shading of an unselected slice.
     pub slice_fill: Color32,
     /// Shading of the neighbouring slice, so divisions read without markers.
@@ -81,8 +95,14 @@ impl Theme {
 
             window_bg: Color32::from_rgb(0x15, 0x17, 0x1a),
             panel_bg: Color32::from_rgb(0x1d, 0x20, 0x24),
-            control_bg: Color32::from_rgb(0x2a, 0x2e, 0x34),
-            control_hover_bg: Color32::from_rgb(0x36, 0x3b, 0x43),
+            control_bg: Color32::from_rgb(0x25, 0x29, 0x2f),
+            control_top: Color32::from_rgb(0x2e, 0x33, 0x3a),
+            control_hover_bg: Color32::from_rgb(0x30, 0x35, 0x3d),
+            control_hover_top: Color32::from_rgb(0x3a, 0x40, 0x49),
+            control_pressed_bg: Color32::from_rgb(0x16, 0x19, 0x1d),
+            control_selected_bg: Color32::from_rgb(0x1c, 0x2e, 0x30),
+            control_selected_top: Color32::from_rgb(0x22, 0x38, 0x3a),
+            control_highlight: Color32::from_rgb(0x45, 0x4c, 0x56),
             outline: Color32::from_rgb(0x3a, 0x3f, 0x47),
 
             text: Color32::from_rgb(0xe2, 0xe6, 0xeb),
@@ -96,6 +116,7 @@ impl Theme {
             waveform: Color32::from_rgb(0x5e, 0xea, 0xd4),
             waveform_axis: Color32::from_rgb(0x30, 0x36, 0x3e),
             marker: Color32::from_rgb(0x64, 0x6d, 0x7a),
+            playhead: Color32::from_rgb(0xf4, 0x72, 0xb6),
             // Slice shading sits behind the trace, so it stays very low
             // contrast; the markers carry the actual division.
             slice_fill: Color32::from_rgb(0x19, 0x1d, 0x22),

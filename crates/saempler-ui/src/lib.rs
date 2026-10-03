@@ -11,3 +11,4 @@ pub mod widgets;
 
 pub use screens::main::{draw, SampleView, ViewState};
 pub use theme::Theme;
+pub use widgets::ViewRange;

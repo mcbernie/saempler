@@ -136,6 +136,53 @@ impl Project {
         Some((left, right))
     }
 
+    /// Move the slice boundary sitting at `from` to `to`.
+    ///
+    /// A boundary is identified by its position rather than by a slice and an
+    /// edge, so that neighbouring slices which share it move together. That is
+    /// what dragging a marker in an evenly divided sample should do.
+    ///
+    /// The target is clamped so that no affected slice becomes empty, and so
+    /// that the boundary stays inside `total_frames`. Returns whether any
+    /// slice changed.
+    pub fn move_boundary(&mut self, from: u64, to: u64, total_frames: u64) -> bool {
+        // A slice must keep at least one frame on either side of the boundary.
+        let mut lower = 0u64;
+        let mut upper = total_frames;
+        let mut affected = false;
+
+        for slice in &self.slices {
+            if slice.end_frame == from {
+                lower = lower.max(slice.start_frame + 1);
+                affected = true;
+            }
+            if slice.start_frame == from {
+                upper = upper.min(slice.end_frame.saturating_sub(1));
+                affected = true;
+            }
+        }
+
+        if !affected || lower > upper {
+            return false;
+        }
+
+        let to = to.clamp(lower, upper);
+        if to == from {
+            return false;
+        }
+
+        for slice in &mut self.slices {
+            if slice.end_frame == from {
+                slice.end_frame = to;
+            }
+            if slice.start_frame == from {
+                slice.start_frame = to;
+            }
+        }
+        self.sort_slices();
+        true
+    }
+
     /// The slice covering `frame`, if any.
     pub fn slice_at(&self, frame: u64) -> Option<&Slice> {
         self.slices.iter().find(|slice| slice.contains(frame))
@@ -452,6 +499,82 @@ mod tests {
 
         assert_eq!(project.split_slice(SliceId(999), 50), None);
         assert_eq!(project.slices().len(), 1);
+    }
+
+    #[test]
+    fn moving_a_shared_boundary_moves_both_neighbours() {
+        let mut project = project_with_sample(1_000);
+        project.add_slice(0, 400);
+        project.add_slice(400, 800);
+
+        assert!(project.move_boundary(400, 600, 1_000));
+
+        let slices = project.slices();
+        assert_eq!((slices[0].start_frame, slices[0].end_frame), (0, 600));
+        assert_eq!((slices[1].start_frame, slices[1].end_frame), (600, 800));
+    }
+
+    #[test]
+    fn moving_an_outer_boundary_moves_only_that_slice() {
+        let mut project = project_with_sample(1_000);
+        project.add_slice(200, 400);
+        project.add_slice(400, 800);
+
+        assert!(project.move_boundary(200, 100, 1_000));
+
+        let slices = project.slices();
+        assert_eq!((slices[0].start_frame, slices[0].end_frame), (100, 400));
+        assert_eq!((slices[1].start_frame, slices[1].end_frame), (400, 800));
+    }
+
+    #[test]
+    fn a_boundary_cannot_be_dragged_past_its_neighbours() {
+        let mut project = project_with_sample(1_000);
+        project.add_slice(0, 400);
+        project.add_slice(400, 800);
+
+        // Far past the right neighbour's end.
+        project.move_boundary(400, 5_000, 1_000);
+
+        let slices = project.slices();
+        assert_eq!(slices[1].end_frame, 800);
+        assert!(slices[1].len_frames() >= 1, "no slice may collapse");
+        assert_eq!(slices[0].end_frame, slices[1].start_frame);
+    }
+
+    #[test]
+    fn a_boundary_cannot_be_dragged_before_its_left_neighbour() {
+        let mut project = project_with_sample(1_000);
+        project.add_slice(100, 400);
+        project.add_slice(400, 800);
+
+        project.move_boundary(400, 0, 1_000);
+
+        let slices = project.slices();
+        assert!(slices[0].len_frames() >= 1);
+        assert_eq!(slices[0].start_frame, 100);
+        assert_eq!(slices[0].end_frame, 101);
+        assert_eq!(slices[1].start_frame, 101);
+    }
+
+    #[test]
+    fn moving_a_boundary_that_does_not_exist_changes_nothing() {
+        let mut project = project_with_sample(1_000);
+        project.add_slice(0, 400);
+        let before = project.slices().to_vec();
+
+        assert!(!project.move_boundary(777, 500, 1_000));
+
+        assert_eq!(project.slices(), before.as_slice());
+    }
+
+    #[test]
+    fn moving_a_boundary_nowhere_reports_no_change() {
+        let mut project = project_with_sample(1_000);
+        project.add_slice(0, 400);
+        project.add_slice(400, 800);
+
+        assert!(!project.move_boundary(400, 400, 1_000));
     }
 
     #[test]

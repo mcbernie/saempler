@@ -1,35 +1,48 @@
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 use nih_plug::prelude::{FloatParam, ParamSetter};
 use nih_plug_egui::egui::{self, Align2, CentralPanel, FontId, Frame, Ui};
-use saempler_audio::{CommandProducer, EngineCommand, Meters, SliceBounds};
+use saempler_audio::{CommandProducer, EngineCommand, Meters, SampleBuffer, SliceBounds};
 use saempler_core::PeakCache;
 use saempler_model::ProjectFile;
 
 use crate::theme::Theme;
-use crate::widgets::{button, knob, readout, segmented, stereo_meter, waveform, MarkerEdge};
+use crate::widgets::{
+    button, knob, readout, segmented, stereo_meter, waveform, ViewRange, WaveformSource,
+};
 
 const THEME: Theme = Theme::dark();
 
 const KNOB_DIAMETER: f32 = 52.0;
 const METER_WIDTH: f32 = 170.0;
-const WAVEFORM_HEIGHT: f32 = 160.0;
+const WAVEFORM_HEIGHT: f32 = 170.0;
 
 /// Slice counts offered by the quick division buttons.
 const EVEN_DIVISIONS: [u32; 4] = [4, 8, 16, 32];
 
 /// What the interface knows about the sample currently loaded.
 ///
-/// Owned by the plugin and filled in by the import task. The peaks are what
-/// the waveform draws from; the decoded audio itself only ever reaches the
-/// audio engine.
+/// Owned by the plugin and filled in by the import task. The peaks drive the
+/// overview; the buffer is only read when the view is zoomed in past the
+/// resolution of the peak cache.
 #[derive(Default)]
 pub struct SampleView {
     pub peaks: PeakCache,
+    /// The decoded audio, shared with the engine.
+    pub buffer: Option<Arc<SampleBuffer>>,
+    /// Section of the sample the waveform is showing.
+    pub view: ViewRange,
     /// Message from the last import attempt, shown until the next one.
     pub status: Option<String>,
     /// Whether an import is running right now.
     pub loading: bool,
+}
+
+impl SampleView {
+    /// Show the whole sample again.
+    pub fn reset_view(&mut self) {
+        self.view = ViewRange::full(self.peaks.frames());
+    }
 }
 
 /// Everything the editor needs to draw a frame.
@@ -39,7 +52,7 @@ pub struct SampleView {
 pub struct ViewState<'a> {
     /// Persisted project state. Locked on the UI thread only.
     pub project: &'a Mutex<ProjectFile>,
-    /// Peaks and import status. Written by the import task, read here.
+    /// Peaks, audio and import status. Written by the import task, read here.
     pub sample: &'a Mutex<SampleView>,
     /// Producing end of the engine command queue. Locked on the UI thread
     /// only; the audio thread owns the consumer and never blocks on this.
@@ -68,6 +81,14 @@ impl ViewState<'_> {
     }
 }
 
+/// Bounds of the project's selected slice, for the engine.
+fn selected_bounds(project: &ProjectFile) -> Option<SliceBounds> {
+    project.project.selected().map(|slice| SliceBounds {
+        start_frame: slice.start_frame,
+        end_frame: slice.end_frame,
+    })
+}
+
 /// Apply the product theme to egui's own surfaces.
 pub fn apply_style(ctx: &egui::Context, theme: &Theme) {
     let mut visuals = egui::Visuals::dark();
@@ -82,6 +103,12 @@ pub fn apply_style(ctx: &egui::Context, theme: &Theme) {
 pub fn draw(ctx: &egui::Context, setter: &ParamSetter, state: &ViewState<'_>) -> bool {
     apply_style(ctx, &THEME);
     let mut import_requested = false;
+
+    // The playhead moves with every processed block, so while something is
+    // sounding the editor cannot wait for the next input event to redraw.
+    if state.meters.playhead().is_some() {
+        ctx.request_repaint();
+    }
 
     CentralPanel::default()
         .frame(
@@ -151,18 +178,32 @@ fn source_section(ui: &mut Ui, state: &ViewState<'_>) -> bool {
         let Ok(mut project) = state.project.lock() else {
             return;
         };
-        let Ok(sample) = state.sample.lock() else {
+        let Ok(mut sample) = state.sample.lock() else {
             return;
         };
+
+        let total = sample.peaks.frames();
+        if sample.view.is_empty() && total > 0 {
+            sample.view = ViewRange::full(total);
+        }
 
         let action = waveform(
             ui,
             &THEME,
-            &sample.peaks,
-            project.project.slices(),
-            project.project.selection(),
+            &WaveformSource {
+                peaks: &sample.peaks,
+                buffer: sample.buffer.as_deref(),
+                slices: project.project.slices(),
+                selected: project.project.selection(),
+                playhead: state.meters.playhead(),
+                view: sample.view,
+            },
             WAVEFORM_HEIGHT,
         );
+
+        if let Some(view) = action.view {
+            sample.view = view;
+        }
 
         let mut selection_changed = false;
 
@@ -177,35 +218,25 @@ fn source_section(ui: &mut Ui, state: &ViewState<'_>) -> bool {
             }
         }
 
-        if let Some((id, edge, frame)) = action.move_marker {
-            if let Some(slice) = project.project.slice(id).copied() {
-                let (start, end) = match edge {
-                    MarkerEdge::Start => (frame, slice.end_frame),
-                    MarkerEdge::End => (slice.start_frame, frame),
-                };
-                project.project.set_slice_bounds(id, start, end);
-                if project.project.selection() == Some(id) {
-                    selection_changed = true;
-                }
+        if let Some((from, to)) = action.move_boundary {
+            if project.project.move_boundary(from, to, total) {
+                selection_changed = true;
             }
         }
 
         if selection_changed {
-            let bounds = project.project.selected().map(|slice| SliceBounds {
-                start_frame: slice.start_frame,
-                end_frame: slice.end_frame,
-            });
+            let bounds = selected_bounds(&project);
             state.send_selection(bounds);
         }
 
         ui.add_space(THEME.spacing_sm);
-        status_line(ui, &project, &sample, action.hovered_frame);
+        status_line(ui, &project, &sample, action.hovered_frame, total);
     });
 
     import_requested
 }
 
-/// Import button, quick divisions and the controls for the selected slice.
+/// Import button, quick divisions, zoom and the selected slice controls.
 fn toolbar(ui: &mut Ui, state: &ViewState<'_>) -> bool {
     let mut import_requested = false;
     let loading = state
@@ -220,7 +251,7 @@ fn toolbar(ui: &mut Ui, state: &ViewState<'_>) -> bool {
         } else {
             "Sample laden …"
         };
-        if button(ui, &THEME, label, 130.0) && !loading {
+        if button(ui, &THEME, label) && !loading {
             import_requested = true;
         }
 
@@ -242,15 +273,15 @@ fn toolbar(ui: &mut Ui, state: &ViewState<'_>) -> bool {
         let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
 
         // No division is "current", so the selector is drawn without one.
-        if let Some(index) = segmented(ui, &THEME, &refs, usize::MAX, 180.0) {
+        if let Some(index) = segmented(ui, &THEME, &refs, usize::MAX) {
             divide_evenly(state, EVEN_DIVISIONS[index]);
         }
 
         ui.add_space(THEME.spacing_md);
-        if button(ui, &THEME, "Slice löschen", 120.0) {
+        if button(ui, &THEME, "Slice löschen") {
             remove_selected(state);
         }
-        if button(ui, &THEME, "All Notes Off", 120.0) {
+        if button(ui, &THEME, "All Notes Off") {
             state.send(EngineCommand::AllNotesOff);
         }
     });
@@ -267,10 +298,7 @@ fn divide_evenly(state: &ViewState<'_>, count: u32) {
     let first = project.project.slices().first().map(|slice| slice.id);
     project.project.select(first);
 
-    let bounds = project.project.selected().map(|slice| SliceBounds {
-        start_frame: slice.start_frame,
-        end_frame: slice.end_frame,
-    });
+    let bounds = selected_bounds(&project);
     drop(project);
     state.send_selection(bounds);
 }
@@ -294,6 +322,7 @@ fn status_line(
     project: &ProjectFile,
     sample: &SampleView,
     hovered_frame: Option<u64>,
+    total: u64,
 ) {
     let slices = project.project.slices().len();
     let selection = project
@@ -314,10 +343,24 @@ fn status_line(
     let position = hovered_frame
         .map(|frame| format!("  ·  Frame {frame}"))
         .unwrap_or_default();
+    let zoom = if total == 0 || sample.view.is_full(total) {
+        String::new()
+    } else {
+        format!(
+            "  ·  Zoom {:.0} %",
+            total as f64 / sample.view.len_frames().max(1) as f64 * 100.0
+        )
+    };
+    let gestures = if total == 0 {
+        String::new()
+    } else {
+        "   |   Rad: Zoom  ·  rechte Maustaste ziehen: verschieben  ·           Doppelklick: teilen"
+            .to_owned()
+    };
 
     let text = match sample.status.as_deref() {
         Some(status) => status.to_owned(),
-        None => format!("{slices} Slices  ·  {selection}{position}"),
+        None => format!("{slices} Slices  ·  {selection}{position}{zoom}{gestures}"),
     };
     let color = if sample.status.is_some() {
         THEME.danger

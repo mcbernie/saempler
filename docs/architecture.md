@@ -105,6 +105,19 @@ rather than the length of the audio.
 
 The cache is built once per import, on the background thread.
 
+Zoomed in closer than the cache's finest level, the widget reads the decoded
+buffer directly instead. The interface therefore holds its own `Arc` to the
+sample; that reference is what keeps a detailed view possible without asking
+the audio thread for anything.
+
+## Slice boundaries are shared
+
+A boundary is identified by its frame position, not by a slice and an edge.
+Moving it moves every slice that starts or ends there, so dragging a marker in
+an evenly divided sample keeps the divisions adjacent instead of opening a gap.
+
+The target is clamped so that no affected slice can collapse to nothing.
+
 ## Host parameters versus project state
 
 Only stable global controls are host parameters; right now that is

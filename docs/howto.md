@@ -106,12 +106,29 @@ Sample laden …                load a WAV, AIFF, FLAC, MP3 or OGG file
 4 / 8 / 16 / 32               divide the sample into that many equal slices
 click a slice                 select it; notes play the selection
 double click inside a slice   split it there, placing a marker by hand
-drag near a marker            move that slice boundary
+drag a marker                 move that boundary, taking the neighbour with it
 Slice löschen                 remove the selected slice
 play notes                    the selected slice sounds, polyphonically
-drag the gain knob            level changes          (host parameter -> engine)
+```
+
+Navigating the waveform:
+
+```
+mouse wheel                   zoom around the pointer
+shift + wheel                 shift the view sideways
+hold right button and drag    shift the view sideways
+```
+
+Zoomed in past about 256 frames per pixel the waveform stops reading the peak
+cache and draws the audio itself; closer still, individual samples get a dot.
+A pink line marks the frame the engine is playing.
+
+The gain knob:
+
+```
+drag                          level changes          (host parameter -> engine)
 shift + drag                  fine adjustment
-double click the knob         back to the default
+double click                  back to the default
 ```
 
 The line under the waveform shows the slice count, the selected slice with its

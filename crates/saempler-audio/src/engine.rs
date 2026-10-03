@@ -58,6 +58,7 @@ impl Engine {
         self.next_age = 0;
         self.meters.store_peaks(0.0, 0.0);
         self.meters.store_active_voices(0);
+        self.meters.store_playhead(None);
     }
 
     /// Whether a sample buffer is loaded.
@@ -173,6 +174,18 @@ impl Engine {
         self.voices.iter().filter(|voice| voice.is_active()).count()
     }
 
+    /// Playback position of the most recently started sounding voice.
+    ///
+    /// With several voices at once the newest one is the one the player just
+    /// triggered, so that is the position worth showing.
+    fn playhead(&self) -> Option<u64> {
+        self.voices
+            .iter()
+            .filter(|voice| voice.is_active())
+            .max_by_key(|voice| voice.age())
+            .map(|voice| voice.position())
+    }
+
     /// Render the mixed voices into `left` and `right`, applying a master gain
     /// that ramps linearly from `gain_start` to `gain_end` across the block.
     ///
@@ -194,6 +207,7 @@ impl Engine {
             right[..frames].fill(0.0);
             self.meters.store_peaks(0.0, 0.0);
             self.meters.store_active_voices(0);
+            self.meters.store_playhead(None);
             return;
         };
 
@@ -223,6 +237,7 @@ impl Engine {
 
         self.meters.store_peaks(peak_left, peak_right);
         self.meters.store_active_voices(self.active_voices() as u32);
+        self.meters.store_playhead(self.playhead());
     }
 }
 
@@ -521,6 +536,52 @@ mod tests {
             second_half > first_half,
             "gain ramp should rise: {first_half} -> {second_half}"
         );
+    }
+
+    #[test]
+    fn the_playhead_follows_the_newest_voice() {
+        let mut h = harness();
+        h.commands
+            .push(EngineCommand::SetSample(dc_sample(48_000)))
+            .expect("the queue has capacity");
+        h.commands
+            .push(EngineCommand::SetSlice(SliceBounds {
+                start_frame: 10_000,
+                end_frame: 20_000,
+            }))
+            .expect("the queue has capacity");
+        h.engine.apply_commands();
+        assert_eq!(h.meters.playhead(), None);
+
+        h.engine.note_on(60, 1.0);
+        render(&mut h.engine, 512);
+
+        let first = h
+            .meters
+            .playhead()
+            .expect("a sounding voice has a position");
+        assert!(
+            (10_000..=10_600).contains(&first),
+            "the playhead should start inside the slice, got {first}"
+        );
+
+        render(&mut h.engine, 512);
+        let later = h.meters.playhead().expect("still sounding");
+        assert!(later > first, "the playhead must advance");
+    }
+
+    #[test]
+    fn the_playhead_clears_when_nothing_sounds() {
+        let mut h = harness();
+        load(&mut h, 48_000);
+        h.engine.note_on(60, 1.0);
+        render(&mut h.engine, 512);
+        assert!(h.meters.playhead().is_some());
+
+        h.engine.note_off(60);
+        render(&mut h.engine, 4_800);
+
+        assert_eq!(h.meters.playhead(), None);
     }
 
     #[test]

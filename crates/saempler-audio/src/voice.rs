@@ -72,6 +72,11 @@ impl Voice {
         self.age
     }
 
+    /// Frame this voice will read next, for the playhead display.
+    pub fn position(&self) -> u64 {
+        self.position
+    }
+
     /// Start this voice, replacing whatever it was playing before.
     pub fn start(&mut self, note: u8, velocity: f32, age: u64, bounds: SliceBounds, rate: f32) {
         self.stage = Stage::Attack;
