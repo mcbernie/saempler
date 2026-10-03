@@ -247,6 +247,17 @@ An envelope longer than its slice is scaled down in proportion rather than
 truncated, so a long release on a short chop fades across all of it instead of
 silencing the voice on its first frame.
 
+## Loop regions
+
+A loop is an interval in source frames, not a point plus a direction. Turning a
+voice round inside a loop has to reverse it; anchored to a point, the playhead
+would travel away from the anchor, never meet the wrap condition and read
+itself out of the slice into silence.
+
+An audition has no key to let go of, so the engine plays it in gate mode
+whatever the cell says. A looping cell previewed while it is being set up would
+otherwise sound until something else stopped it.
+
 ## Playback modes
 
 Gate, one shot, loop, repeat and collapse are one mechanism at heart: a loop

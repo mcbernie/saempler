@@ -46,8 +46,12 @@ pub struct Voice {
     /// winds back up to speed, zero holds.
     rate_decay: f64,
     reverse: bool,
-    /// Frame playback jumps back to while looping.
-    loop_start: u64,
+    /// Lower bound of the region the loop reads, in source frames.
+    ///
+    /// The loop is an interval rather than a point plus a direction, so that
+    /// turning a voice round inside a loop reverses it instead of sending the
+    /// playhead away from its anchor and out of the region.
+    loop_low: u64,
     /// Length of the loop the playback mode runs, in source frames. Zero means
     /// the mode is not looping, either because it never does or because a
     /// release trigger has not fired yet. A collapse shrinks this per pass.
@@ -79,7 +83,7 @@ impl Default for Voice {
             rate_scale: 1.0,
             rate_decay: 0.0,
             reverse: false,
-            loop_start: 0,
+            loop_low: 0,
             mode_loop: 0,
             loop_scale: 1.0,
             sample_rate: 48_000.0,
@@ -162,7 +166,7 @@ impl Voice {
         } else {
             spec.bounds.start_frame as f64
         };
-        self.loop_start = self.position.max(0.0) as u64;
+        self.loop_low = self.position.max(0.0) as u64;
         self.mode_loop = 0;
         if !spec.release_trigger {
             self.engage_mode_loop();
@@ -204,11 +208,12 @@ impl Voice {
         self.reverse = spec.reverse;
 
         // A loop that has just been engaged starts under the playhead; one
-        // that was already running keeps its place so the rhythm does not jump.
+        // that was already running keeps its region, so neither the rhythm
+        // jumps nor does reversing throw the playhead out of it.
         let had_loop = self.loop_length() > 0.0;
         self.spec = spec;
         if self.loop_length() > 0.0 && !had_loop {
-            self.loop_start = self.position.max(0.0) as u64;
+            self.anchor_loop();
         }
 
         if spec.tape_stop_frames > 0 {
@@ -275,8 +280,41 @@ impl Voice {
             self.spec.bounds.len_frames() as f64
         };
 
-        self.loop_start = self.position.max(0.0) as u64;
         self.mode_loop = length.max(MIN_LOOP_FRAMES) as u64;
+        self.anchor_loop();
+    }
+
+    /// Lay the loop region out around the playhead.
+    ///
+    /// Playing forwards the region runs from here on; playing backwards it
+    /// runs up to here, so in both cases the audio under the playhead is the
+    /// first thing the loop repeats.
+    fn anchor_loop(&mut self) {
+        let position = self.position.max(0.0) as u64;
+        let length = self.raw_loop() as u64;
+        let low = if self.reverse {
+            position.saturating_sub(length)
+        } else {
+            position
+        };
+
+        self.loop_low = low.clamp(
+            self.spec.bounds.start_frame,
+            self.spec.bounds.end_frame.saturating_sub(1),
+        );
+    }
+
+    /// Loop length before it is clamped to what is left of the slice.
+    fn raw_loop(&self) -> f64 {
+        let base = match usable_loop(self.spec) {
+            0 => self.mode_loop as f64,
+            modifier => modifier as f64,
+        };
+        if base <= 0.0 {
+            return 0.0;
+        }
+
+        (base * self.loop_scale as f64).max(MIN_LOOP_FRAMES)
     }
 
     /// Length of one repeat or collapse pass, in source frames.
@@ -295,25 +333,16 @@ impl Voice {
     /// A modifier loop wins over the mode's own: the modifier is a gesture
     /// made while playing, and it should be heard over a setting.
     fn loop_length(&self) -> f64 {
-        let base = match usable_loop(self.spec) {
-            0 => self.mode_loop as f64,
-            modifier => modifier as f64,
-        };
+        let base = self.raw_loop();
         if base <= 0.0 {
             return 0.0;
         }
 
-        // A loop has to stay inside the slice: reading past the edge would
+        // The region has to stay inside the slice: reading past the edge would
         // mix the neighbouring chop into the tail.
-        let available = if self.reverse {
-            self.loop_start.saturating_sub(self.spec.bounds.start_frame)
-        } else {
-            self.spec.bounds.end_frame.saturating_sub(self.loop_start)
-        } as f64;
+        let available = self.spec.bounds.end_frame.saturating_sub(self.loop_low) as f64;
 
-        (base * self.loop_scale as f64)
-            .max(MIN_LOOP_FRAMES)
-            .min(available)
+        base.min(available)
     }
 
     /// Silence the voice immediately.
@@ -397,7 +426,7 @@ impl Voice {
         (left * level * left_gain, right * level * right_gain)
     }
 
-    /// Jump back to the loop start when the loop runs out.
+    /// Send the playhead back to the far end when it leaves the loop region.
     ///
     /// Returns whether this voice is looping at all, which decides whether the
     /// slice edge is something it can ever reach.
@@ -407,20 +436,30 @@ impl Voice {
             return false;
         }
 
-        let start = self.loop_start as f64;
-        let travelled = if self.reverse {
-            start - self.position
+        // Half open: forwards the region is read from `low` up to but not
+        // including `high`, so backwards it starts one frame below `high`.
+        let low = self.loop_low as f64;
+        let high = low + length;
+        let wrapped = if self.reverse {
+            (self.position <= low).then_some(high - 1.0)
         } else {
-            self.position - start
+            (self.position >= high).then_some(low)
         };
-        if travelled >= length {
-            self.position = start;
+
+        if let Some(position) = wrapped {
+            self.position = position;
 
             // A collapse shortens its own loop with every pass. Only its own:
             // a modifier loop keeps the length the gesture asked for.
             if usable_loop(self.spec) == 0 && self.spec.mode == PlaybackMode::Collapse {
                 let next = self.mode_loop as f64 * self.spec.collapse as f64;
                 self.mode_loop = next.max(MIN_LOOP_FRAMES) as u64;
+                // Backwards the region keeps its upper end, so the collapse is
+                // heard at the point the loop was taken from either way.
+                if self.reverse {
+                    self.loop_low = (high - self.raw_loop()).max(0.0) as u64;
+                    self.position = high - 1.0;
+                }
             }
         }
 
@@ -798,6 +837,105 @@ mod tests {
         }
 
         assert!(!voice.is_active(), "the release should have ended it");
+    }
+
+    #[test]
+    fn a_reversed_loop_keeps_running() {
+        let buffer = dc_buffer(10_000);
+        let spec = CellSpec {
+            mode: PlaybackMode::Loop,
+            reverse: true,
+            ..spec(1_000, 3_000)
+        };
+        let mut voice = Voice::default();
+        start(&mut voice, spec);
+
+        let mut heard = 0.0f32;
+        for _ in 0..20_000 {
+            heard = heard.max(voice.next_frame(&buffer).0.abs());
+            assert!(
+                (1_000..3_000).contains(&voice.position()),
+                "left the slice: {}",
+                voice.position()
+            );
+        }
+
+        assert!(voice.is_active(), "a held loop should not end by itself");
+        assert!(heard > 0.5, "it fell silent: {heard}");
+    }
+
+    #[test]
+    fn turning_a_loop_round_keeps_it_inside_its_region() {
+        let buffer = dc_buffer(10_000);
+        let forwards = CellSpec {
+            mode: PlaybackMode::Repeat,
+            cycle_whole_notes: Division::Sixteenth.whole_notes(),
+            ..spec(0, 48_000)
+        };
+        let mut voice = Voice::default();
+        start(&mut voice, forwards);
+        for _ in 0..3_000 {
+            voice.next_frame(&buffer);
+        }
+
+        // The reverse modifier, engaged while the loop is already running.
+        voice.retune(CellSpec {
+            reverse: true,
+            ..forwards
+        });
+
+        let mut heard = 0.0f32;
+        for _ in 0..20_000 {
+            heard = heard.max(voice.next_frame(&buffer).0.abs());
+        }
+
+        assert!(voice.is_active(), "reversing should not end the voice");
+        assert!(heard > 0.5, "reversing silenced the loop: {heard}");
+    }
+
+    #[test]
+    fn a_reversed_collapse_still_shortens_its_loop() {
+        let buffer = dc_buffer(200_000);
+        let spec = CellSpec {
+            mode: PlaybackMode::Collapse,
+            cycle_whole_notes: Division::Sixteenth.whole_notes(),
+            collapse: 0.5,
+            reverse: true,
+            ..spec(0, 100_000)
+        };
+        let mut voice = Voice::default();
+        start(&mut voice, spec);
+
+        let mut passes = Vec::new();
+        let mut lowest = u64::MAX;
+        let mut previous = voice.position();
+        for _ in 0..40_000 {
+            voice.next_frame(&buffer);
+            let position = voice.position();
+            if position > previous {
+                passes.push(previous);
+                lowest = u64::MAX;
+            }
+            lowest = lowest.min(position);
+            previous = position;
+        }
+
+        // Backwards the region keeps its upper end, so a shrinking loop shows
+        // up as a lower bound climbing towards it and then holding at the
+        // floor.
+        assert!(passes.len() >= 3, "expected several passes: {passes:?}");
+        for pair in passes.windows(2) {
+            assert!(
+                pair[1] >= pair[0],
+                "the region grew instead of shrinking: {passes:?}"
+            );
+        }
+        let last = *passes.last().expect("the list was checked above");
+        assert!(passes[0] < last, "the loop never shortened: {passes:?}");
+        assert!(
+            (100_000.0 - last as f64) <= MIN_LOOP_FRAMES + 1.0,
+            "it never reached the floor: {passes:?}"
+        );
     }
 
     #[test]

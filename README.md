@@ -36,8 +36,11 @@ What works today:
 - playback modes per cell: gate, one shot, loop, tempo-synced repeat and a
   collapse whose loop shrinks on every pass, each able to start at the note off
   instead of the note on
-- a map of the whole sample above the pages, with the key every chop plays on,
-  so the cell being edited is always visible in context
+- one screen: the sample with the key every chop plays on across the top, the
+  pads down the left, and the editor beside them, so what is being played and
+  what is being edited are never on separate pages
+- panel lamps, lit pads and a readout of the notes and slices currently
+  sounding, so the state of a performance is readable at a glance
 - two envelopes and two LFOs per cell, free running or locked to the host
   tempo, none of them wired to a fixed parameter
 - a modulation matrix of up to eight routes, from envelopes, LFOs or velocity

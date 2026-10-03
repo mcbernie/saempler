@@ -15,7 +15,7 @@ const EVEN_DIVISIONS: [u32; 4] = [4, 8, 16, 32];
 pub fn source_section(ui: &mut Ui, state: &ViewState<'_>) -> bool {
     let mut import_requested = false;
 
-    section(ui, "SOURCE SAMPLE", |ui| {
+    section(ui, "SOURCE SAMPLE", None, |ui| {
         import_requested = toolbar(ui, state);
         ui.add_space(THEME.spacing_sm);
 

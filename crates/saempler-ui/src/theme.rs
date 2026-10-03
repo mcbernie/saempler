@@ -19,8 +19,29 @@ pub struct Theme {
     pub font_md: f32,
     pub font_lg: f32,
 
-    /// Window background, the darkest surface in the hierarchy.
+    /// Window background, seen only at the very edge of the chassis.
     pub window_bg: Color32,
+    /// Lit top of the brushed metal a panel is milled from.
+    pub chassis_top: Color32,
+    /// Shaded bottom of that metal.
+    pub chassis_bottom: Color32,
+    /// Hairline along the top edge of a panel, where the light catches it.
+    pub chassis_edge: Color32,
+    /// Shadow under a panel, which gives it its thickness.
+    pub chassis_shadow: Color32,
+    /// Body of the screws that hold a panel down.
+    pub screw: Color32,
+    /// Lit side of a screw head.
+    pub screw_highlight: Color32,
+    /// Dark text, for the panel legends printed onto the metal.
+    pub title: Color32,
+    /// Dark text for the smaller labels printed onto the metal, such as the
+    /// name under a knob. Light text would vanish on a light panel.
+    pub label: Color32,
+    /// The value a control currently reads, printed onto the metal.
+    pub value: Color32,
+    /// An indicator lamp that is not lit.
+    pub led_off: Color32,
     /// Background of a framed section.
     pub panel_bg: Color32,
     /// Lighter upper edge of a panel, the lit side of its bevel.
@@ -100,6 +121,16 @@ impl Theme {
             font_lg: 18.0,
 
             window_bg: Color32::from_rgb(0x14, 0x13, 0x11),
+            chassis_top: Color32::from_rgb(0xc6, 0xc2, 0xba),
+            chassis_bottom: Color32::from_rgb(0x8f, 0x8b, 0x84),
+            chassis_edge: Color32::from_rgb(0xe8, 0xe5, 0xdf),
+            chassis_shadow: Color32::from_rgb(0x4a, 0x47, 0x43),
+            screw: Color32::from_rgb(0x6b, 0x68, 0x63),
+            screw_highlight: Color32::from_rgb(0xb4, 0xb0, 0xa9),
+            title: Color32::from_rgb(0x24, 0x22, 0x1f),
+            label: Color32::from_rgb(0x46, 0x43, 0x3e),
+            value: Color32::from_rgb(0x1a, 0x18, 0x16),
+            led_off: Color32::from_rgb(0x3a, 0x37, 0x33),
             panel_bg: Color32::from_rgb(0x21, 0x1f, 0x1c),
             panel_top: Color32::from_rgb(0x28, 0x26, 0x22),
             control_bg: Color32::from_rgb(0x2b, 0x28, 0x24),
@@ -139,6 +170,11 @@ impl Theme {
                 Color32::from_rgb(0x63, 0xe2, 0x8a),
             ],
         }
+    }
+
+    /// Stroke around a recessed area cut into the metal.
+    pub fn inset_stroke(&self) -> Stroke {
+        Stroke::new(self.stroke_thin, self.chassis_shadow)
     }
 
     /// Outline stroke for a surface at rest.

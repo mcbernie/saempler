@@ -154,14 +154,14 @@ pub fn value_knob(ui: &mut Ui, theme: &Theme, spec: KnobSpec<'_>, value: &mut f3
         Align2::CENTER_TOP,
         label,
         FontId::proportional(theme.font_sm),
-        theme.text_dim,
+        theme.label,
     );
     painter.text(
         Pos2::new(centre.x, dial.max.y + theme.font_sm + theme.spacing_sm),
         Align2::CENTER_TOP,
         format_value(*value, unit),
         FontId::proportional(theme.font_sm),
-        theme.text,
+        theme.value,
     );
 
     changed

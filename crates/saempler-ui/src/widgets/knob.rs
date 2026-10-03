@@ -80,9 +80,9 @@ pub fn knob<P: Param>(
     );
 
     let text_color = if response.hovered() {
-        theme.text
+        theme.value
     } else {
-        theme.text_dim
+        theme.label
     };
     painter.text(
         Pos2::new(center.x, dial_rect.max.y + theme.spacing_sm * 0.5),
@@ -96,7 +96,7 @@ pub fn knob<P: Param>(
         Align2::CENTER_TOP,
         param.to_string(),
         FontId::proportional(theme.font_sm),
-        theme.text,
+        theme.value,
     );
 
     response

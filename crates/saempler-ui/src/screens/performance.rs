@@ -32,7 +32,8 @@ pub fn sync_cells(state: &ViewState<'_>, project: &ProjectFile) {
 
 /// The pad grid: which note plays which slice, and how.
 pub fn performance_section(ui: &mut Ui, state: &ViewState<'_>) {
-    section(ui, "PERFORMANCE", |ui| {
+    let sounding = state.meters.any_playhead().then_some(THEME.active);
+    section(ui, "PERFORMANCE", sounding, |ui| {
         toolbar(ui, state);
         ui.add_space(THEME.spacing_sm);
 

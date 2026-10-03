@@ -37,7 +37,7 @@ enum RowEdit {
 
 /// The modifier keys: which note, what it does, and how it responds.
 pub fn modifier_section(ui: &mut Ui, state: &ViewState<'_>) {
-    section(ui, "MODIFIER KEYS", |ui| {
+    section(ui, "MODIFIER KEYS", None, |ui| {
         toolbar(ui, state);
         ui.add_space(THEME.spacing_sm);
 

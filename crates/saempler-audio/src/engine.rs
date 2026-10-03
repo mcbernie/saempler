@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use saempler_model::{Modifier, ModifierMode};
+use saempler_model::{Modifier, ModifierMode, PlaybackMode};
 
 use crate::command::{CellSpec, CommandConsumer, DisposalProducer, EngineCommand};
 use crate::meters::Meters;
@@ -167,7 +167,17 @@ impl Engine {
                     self.modifiers.clear();
                     self.retune_voices();
                 }
-                EngineCommand::Preview(spec) => self.trigger(PREVIEW_NOTE, 1.0, spec, spec),
+                EngineCommand::Preview(spec) => {
+                    // An audition has no key to let go of, so it always plays
+                    // the slice once: a looping cell previewed as it is set up
+                    // would sound until something else stopped it.
+                    let spec = CellSpec {
+                        mode: PlaybackMode::Gate,
+                        release_trigger: false,
+                        ..spec
+                    };
+                    self.trigger(PREVIEW_NOTE, 1.0, spec, spec);
+                }
                 EngineCommand::AllNotesOff => {
                     for voice in &mut self.voices {
                         voice.release();
@@ -456,6 +466,29 @@ mod tests {
         h.engine.note_on(61, 1.0);
 
         assert_eq!(h.engine.active_voices(), 0);
+    }
+
+    #[test]
+    fn previewing_a_looping_cell_still_ends() {
+        let mut h = harness();
+        load(&mut h, 48_000);
+
+        h.commands
+            .push(EngineCommand::Preview(CellSpec {
+                mode: PlaybackMode::Loop,
+                ..spec(0, 4_800)
+            }))
+            .expect("the queue has capacity");
+        h.engine.apply_commands();
+        assert_eq!(h.engine.active_voices(), 1);
+
+        render(&mut h.engine, 48_000);
+
+        assert_eq!(
+            h.engine.active_voices(),
+            0,
+            "an audition has no key to let go of, so it has to stop by itself"
+        );
     }
 
     #[test]

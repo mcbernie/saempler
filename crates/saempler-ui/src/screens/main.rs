@@ -1,7 +1,9 @@
 use std::sync::{Arc, Mutex};
 
 use nih_plug::prelude::{FloatParam, ParamSetter};
-use nih_plug_egui::egui::{self, pos2, vec2, Align2, FontId, Frame, Sense, Stroke, Ui};
+use nih_plug_egui::egui::{
+    self, pos2, vec2, Align2, Color32, FontId, Frame, Margin, Sense, Shape, Ui,
+};
 use nih_plug_egui::{resizable_window::ResizableWindow, EguiState};
 use saempler_audio::{CellSpec, CommandProducer, EngineCommand, Meters, SampleBuffer, SliceBounds};
 use saempler_core::PeakCache;
@@ -13,37 +15,46 @@ use crate::screens::performance::performance_section;
 use crate::screens::source::{note_map, source_section};
 use crate::theme::Theme;
 use crate::widgets::{
-    knob, led, readout, slice_map, stereo_meter, tab_bar, ViewRange, WaveformSource,
+    inset, knob, lamp, metal_panel, panel_header, readout, slice_map, stereo_meter, tab_bar,
+    ViewRange, WaveformSource, HEADER_HEIGHT,
 };
 
 pub(crate) const THEME: Theme = Theme::dark();
 
 const KNOB_DIAMETER: f32 = 48.0;
 const METER_WIDTH: f32 = 150.0;
+/// Width of the readouts that say what is being triggered.
+const TRIGGER_WIDTH: f32 = 150.0;
 /// Height of the sample map that stays above the pages.
-const MAP_HEIGHT: f32 = 54.0;
+const MAP_HEIGHT: f32 = 76.0;
+/// Share of the width the performance pads take.
+///
+/// The pads and the editor are side by side rather than on separate pages:
+/// what is being edited and what is being played have to be visible at once.
+const PERFORM_SHARE: f32 = 0.42;
 
 /// Smallest the editor window may be dragged to.
 pub const MIN_EDITOR_SIZE: (f32, f32) = (720.0, 470.0);
 
-/// The pages of the editor.
+/// The pages of the editor's right-hand side.
+///
+/// The source sample and the pads are not among them: they stay on screen, so
+/// the chop being edited and the keys that play it are always visible.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Tab {
     #[default]
-    Sample,
-    Perform,
     Cell,
+    Source,
     Modifiers,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 4] = [Tab::Sample, Tab::Perform, Tab::Cell, Tab::Modifiers];
+    pub const ALL: [Tab; 3] = [Tab::Cell, Tab::Source, Tab::Modifiers];
 
     pub fn label(self) -> &'static str {
         match self {
-            Tab::Sample => "SAMPLE",
-            Tab::Perform => "PERFORM",
-            Tab::Cell => "CELL",
+            Tab::Cell => "SLICE / SOUND",
+            Tab::Source => "SOURCE",
             Tab::Modifiers => "MODIFIERS",
         }
     }
@@ -128,7 +139,7 @@ pub fn apply_style(ctx: &egui::Context, theme: &Theme) {
     // Popups are the one surface egui draws the frame for; give it the panel
     // colour and the accent border the rest of the interface uses.
     visuals.window_fill = theme.panel_bg;
-    visuals.window_stroke = Stroke::new(theme.stroke_thin, theme.accent);
+    visuals.window_stroke = egui::Stroke::new(theme.stroke_thin, theme.accent);
     visuals.popup_shadow = egui::epaint::Shadow {
         offset: [0, 4],
         blur: 12,
@@ -156,36 +167,54 @@ pub fn draw(ctx: &egui::Context, setter: &ParamSetter, state: &ViewState<'_>) ->
         .show(ctx, state.editor_state, |ui| {
             Frame::new()
                 .fill(THEME.window_bg)
-                .inner_margin(THEME.spacing_lg)
+                .inner_margin(THEME.spacing_md)
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing = vec2(THEME.spacing_md, THEME.spacing_md);
                     header(ui, state);
                     sample_map(ui, state);
 
-                    let tab = current_tab(state);
-                    let labels: Vec<&str> = Tab::ALL.iter().map(|tab| tab.label()).collect();
-                    if let Some(index) = tab_bar(ui, &THEME, &labels, tab as usize) {
-                        set_tab(state, Tab::ALL[index]);
-                    }
-                    ui.add_space(THEME.spacing_md);
-
-                    // The page scrolls; the header, the sample map and the
-                    // footer stay put, so the chop being edited, the meters and
-                    // the modifier lamps are in view whichever page is open.
                     // Height of the footer below: its knob plus the knob's two
-                    // label lines, the section title and the frame margins.
+                    // label lines, the legend and the panel margins.
                     let footer = KNOB_DIAMETER + THEME.font_sm * 4.6 + THEME.spacing_lg * 2.0;
-                    egui::ScrollArea::vertical()
-                        .max_height((ui.available_height() - footer).max(140.0))
-                        .auto_shrink([false, false])
-                        .show(ui, |ui| match tab {
-                            Tab::Sample => import_requested = source_section(ui, state),
-                            Tab::Perform => performance_section(ui, state),
-                            Tab::Cell => cell_section(ui, state),
-                            Tab::Modifiers => modifier_section(ui, state),
+                    let body = (ui.available_height() - footer - THEME.spacing_md).max(200.0);
+
+                    // Side by side, each column laid out downwards: inside a
+                    // horizontal layout a plain child would place its contents
+                    // across rather than down.
+                    let column = egui::Layout::top_down(egui::Align::Min);
+                    ui.horizontal_top(|ui| {
+                        let total = ui.available_width();
+                        let left = (total * PERFORM_SHARE).floor();
+
+                        ui.allocate_ui_with_layout(vec2(left, body), column, |ui| {
+                            ui.set_width(left);
+                            egui::ScrollArea::vertical()
+                                .id_salt("perform-scroll")
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| performance_section(ui, state));
                         });
 
-                    ui.add_space(THEME.spacing_sm);
+                        let right = (total - left - THEME.spacing_md).max(200.0);
+                        ui.allocate_ui_with_layout(vec2(right, body), column, |ui| {
+                            ui.set_width(right);
+                            let tab = current_tab(state);
+                            let labels: Vec<&str> =
+                                Tab::ALL.iter().map(|tab| tab.label()).collect();
+                            if let Some(index) = tab_bar(ui, &THEME, &labels, tab as usize) {
+                                set_tab(state, Tab::ALL[index]);
+                            }
+
+                            egui::ScrollArea::vertical()
+                                .id_salt("detail-scroll")
+                                .auto_shrink([false, false])
+                                .show(ui, |ui| match tab {
+                                    Tab::Cell => cell_section(ui, state),
+                                    Tab::Source => import_requested = source_section(ui, state),
+                                    Tab::Modifiers => modifier_section(ui, state),
+                                });
+                        });
+                    });
+
                     footer_section(ui, setter, state);
                 });
         });
@@ -213,7 +242,10 @@ fn set_tab(state: &ViewState<'_>, tab: Tab) {
 /// Above the tabs rather than inside the source page: without it the cell page
 /// is a set of controls with nothing to say which chop they belong to.
 fn sample_map(ui: &mut Ui, state: &ViewState<'_>) {
-    section(ui, "SAMPLE", |ui| {
+    // The lamp is lit while anything is sounding, so the panel says at a
+    // glance whether the instrument is playing.
+    let sounding = state.meters.any_playhead().then_some(THEME.active);
+    section(ui, "SOURCE SAMPLE", sounding, |ui| {
         let Ok(mut project) = state.project.lock() else {
             return;
         };
@@ -339,7 +371,11 @@ fn header(ui: &mut Ui, state: &ViewState<'_>) {
 /// Kept out of the tabs on purpose: while performing you need to see what the
 /// modifiers are doing whichever page is open.
 fn footer_section(ui: &mut Ui, setter: &ParamSetter, state: &ViewState<'_>) {
-    section(ui, "OUTPUT", |ui| {
+    let clipping = {
+        let (left, right) = state.meters.peaks();
+        (left.max(right) >= 1.0).then_some(THEME.danger)
+    };
+    section(ui, "OUTPUT", clipping.or(Some(THEME.active)), |ui| {
         ui.horizontal(|ui| {
             knob(ui, &THEME, state.gain, setter, KNOB_DIAMETER);
             ui.add_space(THEME.spacing_lg);
@@ -355,10 +391,77 @@ fn footer_section(ui: &mut Ui, setter: &ParamSetter, state: &ViewState<'_>) {
                 );
             });
 
-            ui.add_space(THEME.spacing_lg);
+            ui.add_space(THEME.spacing_md);
+            ui.vertical(|ui| {
+                readout(ui, &THEME, "Spielt", &sounding_notes(state), TRIGGER_WIDTH);
+                readout(ui, &THEME, "Slice", &sounding_slices(state), TRIGGER_WIDTH);
+            });
+
+            ui.add_space(THEME.spacing_md);
             modifier_lamps(ui, state);
         });
     });
+}
+
+/// Names of the notes currently sounding.
+///
+/// Worked out from the playheads the engine publishes rather than from a
+/// separate message: a voice is inside the slice it plays, and the slice says
+/// which key triggered it.
+fn sounding_notes(state: &ViewState<'_>) -> String {
+    let Ok(project) = state.project.lock() else {
+        return String::new();
+    };
+
+    let mut names: Vec<String> = Vec::new();
+    for frame in state.meters.playheads() {
+        let Some(slice) = project.project.slice_at(frame) else {
+            continue;
+        };
+        for cell in project.project.cells() {
+            if cell.slice == slice.id {
+                let name = saempler_model::note_name(cell.midi_note);
+                if !names.contains(&name) {
+                    names.push(name);
+                }
+                break;
+            }
+        }
+    }
+
+    if names.is_empty() {
+        "—".to_owned()
+    } else {
+        names.join(" ")
+    }
+}
+
+/// Numbers of the slices currently being read.
+fn sounding_slices(state: &ViewState<'_>) -> String {
+    let Ok(project) = state.project.lock() else {
+        return String::new();
+    };
+
+    let mut numbers: Vec<String> = Vec::new();
+    for frame in state.meters.playheads() {
+        if let Some(index) = project
+            .project
+            .slices()
+            .iter()
+            .position(|slice| slice.contains(frame))
+        {
+            let label = format!("S{}", index + 1);
+            if !numbers.contains(&label) {
+                numbers.push(label);
+            }
+        }
+    }
+
+    if numbers.is_empty() {
+        "—".to_owned()
+    } else {
+        numbers.join(" ")
+    }
 }
 
 /// One lamp per modifier, lit while it is in effect.
@@ -370,8 +473,8 @@ fn modifier_lamps(ui: &mut Ui, state: &ViewState<'_>) {
             let lit = engaged & (1 << modifier.index()) != 0;
             let (rect, _) = ui.allocate_exact_size(vec2(78.0, 36.0), Sense::hover());
 
-            led(
-                ui,
+            lamp(
+                ui.painter(),
                 &THEME,
                 pos2(rect.center().x, rect.min.y + 8.0),
                 lit.then_some(THEME.active),
@@ -381,50 +484,44 @@ fn modifier_lamps(ui: &mut Ui, state: &ViewState<'_>) {
                 Align2::CENTER_BOTTOM,
                 modifier.label(),
                 FontId::proportional(THEME.font_sm),
-                if lit { THEME.text } else { THEME.text_dim },
+                if lit { THEME.value } else { THEME.label },
             );
         }
     });
 }
 
-/// A titled, framed group of controls.
-pub(crate) fn section(ui: &mut Ui, title: &str, contents: impl FnOnce(&mut Ui)) {
-    Frame::new()
-        .fill(THEME.panel_bg)
-        .stroke(THEME.outline_stroke())
-        .corner_radius(THEME.radius_md)
-        .inner_margin(THEME.spacing_md)
+/// A group of controls on a panel of brushed metal.
+///
+/// `lit` is the colour of the panel's lamp, or `None` for a dark one. The
+/// background is reserved before the contents and filled in afterwards,
+/// because a panel is only as tall as what has been laid out on it.
+pub(crate) fn section(
+    ui: &mut Ui,
+    title: &str,
+    lit: Option<Color32>,
+    contents: impl FnOnce(&mut Ui),
+) {
+    let background = ui.painter().add(Shape::Noop);
+
+    let panel = Frame::new()
+        .inner_margin(Margin {
+            left: THEME.spacing_lg as i8,
+            right: THEME.spacing_lg as i8,
+            top: THEME.spacing_sm as i8,
+            bottom: THEME.spacing_lg as i8,
+        })
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
 
-            let (rect, _) = ui.allocate_exact_size(
-                vec2(ui.available_width(), THEME.font_sm + THEME.spacing_sm),
-                Sense::hover(),
-            );
-            let painter = ui.painter();
-
-            painter.text(
-                rect.left_center(),
-                Align2::LEFT_CENTER,
-                title,
-                FontId::proportional(THEME.font_sm),
-                THEME.text_dim,
-            );
-
-            // A rule from the title to the right edge, like a panel legend.
-            let text_width = title.chars().count() as f32 * THEME.font_sm * 0.68 + THEME.spacing_md;
-            if rect.width() > text_width {
-                painter.line_segment(
-                    [
-                        pos2(rect.min.x + text_width, rect.center().y),
-                        pos2(rect.max.x, rect.center().y),
-                    ],
-                    Stroke::new(1.0, THEME.outline),
-                );
-            }
+            let (rect, _) =
+                ui.allocate_exact_size(vec2(ui.available_width(), HEADER_HEIGHT), Sense::hover());
+            panel_header(ui, &THEME, rect, title, lit);
 
             contents(ui);
         });
+
+    ui.painter()
+        .set(background, metal_panel(&THEME, panel.response.rect));
 }
 
 /// A dimmed line of explanatory text.
@@ -451,13 +548,14 @@ pub(crate) fn hint(ui: &mut Ui, text: &str) {
         Align2::LEFT_CENTER,
         text,
         FontId::proportional(THEME.font_sm),
-        THEME.text_dim,
+        THEME.title.gamma_multiply(0.75),
     );
 }
 
 /// Text standing in for a page that has nothing to show yet.
 pub(crate) fn placeholder(ui: &mut Ui, text: &str) {
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 72.0), Sense::hover());
+    inset(ui.painter(), &THEME, rect, THEME.waveform_bg);
     ui.painter().text(
         rect.center(),
         Align2::CENTER_CENTER,

@@ -64,7 +64,7 @@ pub fn readout(ui: &mut Ui, theme: &Theme, label: &str, value: &str, width: f32)
     let (rect, _response) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
     let painter = ui.painter();
 
-    painter.rect_filled(rect, theme.radius_sm, theme.panel_bg);
+    crate::widgets::panel::inset(painter, theme, rect, theme.waveform_bg);
     painter.text(
         pos2(rect.min.x + theme.spacing_md, rect.center().y),
         Align2::LEFT_CENTER,
