@@ -276,6 +276,19 @@ A release trigger turns the key coming up into the start of the effect rather
 than the end of the note. The loop then runs for as long as the release stage
 of whatever is routed to volume.
 
+## Window layout
+
+Every band of the window is given its rectangle before anything is drawn in
+it, and a panel fills the rectangle it was handed. Laid out by flow instead, a
+panel that measures a few points too tall pushes the ones after it off the
+window, and an empty project lays out differently from a full one; both were
+visible as panels clipped at the right and bottom edges.
+
+The minimum window size is therefore the size the layout actually needs, not a
+guess. Extra height goes to the two middle columns. The pad grid shrinks its
+pads to fit rather than scrolling: a key that is mapped but out of sight is
+worse than a small one.
+
 ## Showing the engine running
 
 The meters publish where the newest voice's modulation stands: both envelope

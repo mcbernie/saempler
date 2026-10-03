@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use nih_plug::prelude::{FloatParam, ParamSetter};
 use nih_plug_egui::egui::{
-    self, pos2, vec2, Align2, Color32, FontId, Frame, Margin, Sense, Shape, Stroke, Ui,
+    self, pos2, vec2, Align2, Color32, FontId, Frame, Margin, Rect, Sense, Shape, Stroke, Ui,
 };
 use nih_plug_egui::{resizable_window::ResizableWindow, EguiState};
 use saempler_audio::{CellSpec, CommandProducer, EngineCommand, Meters, SampleBuffer, SliceBounds};
@@ -31,7 +31,21 @@ const TRIGGER_WIDTH: f32 = 130.0;
 const PERFORM_SHARE: f32 = 0.42;
 
 /// Smallest the editor window may be dragged to.
-pub const MIN_EDITOR_SIZE: (f32, f32) = (720.0, 470.0);
+///
+/// The size the layout actually needs, not a guess: every band below has a
+/// fixed height and the two columns fill what is left, so a window any smaller
+/// could only clip a panel. Dragging the window bigger hands the extra height
+/// to the pads and the editor, which both grow with their column.
+pub const MIN_EDITOR_SIZE: (f32, f32) = (1_120.0, 900.0);
+
+/// Height of the masthead strip.
+const MASTHEAD_HEIGHT: f32 = 42.0;
+/// Height of the source panel, waveform and toolbar together.
+const SOURCE_HEIGHT: f32 = 172.0;
+/// Height of the footer row holding the modifiers and the output strip.
+const FOOTER_HEIGHT: f32 = 118.0;
+/// Smallest the two middle columns may become.
+const MIN_BODY_HEIGHT: f32 = 420.0;
 
 /// What the editor keeps between frames.
 ///
@@ -141,29 +155,42 @@ pub fn draw(ctx: &egui::Context, setter: &ParamSetter, state: &ViewState<'_>) ->
                 .inner_margin(THEME.spacing_md)
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing = vec2(THEME.spacing_md, THEME.spacing_md);
-                    header(ui, state);
-                    import_requested = source_section(ui, state);
 
-                    let body =
-                        (ui.available_height() - FOOTER_HEIGHT - THEME.spacing_md).max(200.0);
+                    // Every band gets its rectangle up front rather than
+                    // growing out of what came before. Laid out by flow, a
+                    // panel that is a few points too tall pushes the ones
+                    // after it off the window, and an empty project lays out
+                    // differently from a full one. Given rectangles, the
+                    // picture holds still whatever is loaded.
+                    let full = ui.available_rect_before_wrap();
+                    let gap = THEME.spacing_md;
 
-                    fixed_columns(
-                        ui,
-                        body,
-                        PERFORM_SHARE,
-                        |ui| performance_section(ui, state),
-                        |ui| cell_section(ui, state),
+                    let masthead = band(full, full.min.y, MASTHEAD_HEIGHT);
+                    let source = band(full, masthead.max.y + gap, SOURCE_HEIGHT);
+                    let footer =
+                        Rect::from_min_max(pos2(full.min.x, full.max.y - FOOTER_HEIGHT), full.max);
+                    let body = Rect::from_min_max(
+                        pos2(full.min.x, source.max.y + gap),
+                        pos2(
+                            full.max.x,
+                            (footer.min.y - gap).max(source.max.y + MIN_BODY_HEIGHT),
+                        ),
                     );
+
+                    region(ui, masthead, |ui| header(ui, state));
+                    region(ui, source, |ui| {
+                        import_requested = source_section(ui, state)
+                    });
+
+                    let (pads, editor) = split(body, PERFORM_SHARE, gap);
+                    region(ui, pads, |ui| performance_section(ui, state));
+                    region(ui, editor, |ui| cell_section(ui, state));
 
                     // The footer: modifier cards on the left, the output
                     // strip on the right, as the reference lays it out.
-                    fixed_columns(
-                        ui,
-                        FOOTER_HEIGHT,
-                        0.63,
-                        |ui| modifier_section(ui, state),
-                        |ui| footer_section(ui, setter, state),
-                    );
+                    let (keys, output) = split(footer, 0.63, gap);
+                    region(ui, keys, |ui| modifier_section(ui, state));
+                    region(ui, output, |ui| footer_section(ui, setter, state));
                 });
         });
 
@@ -353,47 +380,36 @@ fn sounding_slices(state: &ViewState<'_>) -> String {
     }
 }
 
-/// Two columns in fixed rectangles.
-///
-/// Fixed rather than flowed on purpose: in a flowed row, a column whose
-/// contents run a few points wide pushes every later sibling along, and the
-/// last panel ends up cut off by the window edge. With given rectangles an
-/// overflow stays that column's own problem.
-fn fixed_columns(
-    ui: &mut Ui,
-    height: f32,
-    split: f32,
-    left: impl FnOnce(&mut Ui),
-    right: impl FnOnce(&mut Ui),
-) {
-    let full = ui.available_width();
-    let (rect, _) = ui.allocate_exact_size(vec2(full, height), Sense::hover());
-    let left_width = (full * split).floor();
-
-    let column = |target: egui::Rect| {
-        egui::UiBuilder::new()
-            .max_rect(target)
-            .layout(egui::Layout::top_down(egui::Align::Min))
-    };
-
-    let left_rect = egui::Rect::from_min_size(rect.min, vec2(left_width, height));
-    ui.scope_builder(column(left_rect), |ui| {
-        ui.set_width(left_rect.width());
-        left(ui);
-    });
-
-    let right_rect = egui::Rect::from_min_max(
-        pos2(left_rect.max.x + THEME.spacing_md, rect.min.y),
-        rect.max,
-    );
-    ui.scope_builder(column(right_rect), |ui| {
-        ui.set_width(right_rect.width());
-        right(ui);
-    });
+/// A full-width horizontal band of `full`, starting at `top`.
+pub(crate) fn band(full: Rect, top: f32, height: f32) -> Rect {
+    Rect::from_min_max(pos2(full.min.x, top), pos2(full.max.x, top + height))
 }
 
-/// Height of the footer row holding the modifiers and the output strip.
-const FOOTER_HEIGHT: f32 = 118.0;
+/// Cut a rectangle into two columns with a gap between them.
+fn split(rect: Rect, share: f32, gap: f32) -> (Rect, Rect) {
+    let boundary = (rect.min.x + rect.width() * share).floor();
+    (
+        Rect::from_min_max(rect.min, pos2(boundary, rect.max.y)),
+        Rect::from_min_max(pos2(boundary + gap, rect.min.y), rect.max),
+    )
+}
+
+/// Draw into a given rectangle, laying contents out downwards.
+///
+/// The rectangle is both the room the contents get and the room they may use:
+/// nothing inside can push a neighbour, which is what keeps the window from
+/// rearranging itself as the project fills up.
+pub(crate) fn region(ui: &mut Ui, rect: Rect, contents: impl FnOnce(&mut Ui)) {
+    ui.scope_builder(
+        egui::UiBuilder::new()
+            .max_rect(rect)
+            .layout(egui::Layout::top_down(egui::Align::Min)),
+        |ui| {
+            ui.set_width(rect.width());
+            contents(ui);
+        },
+    );
+}
 
 /// A group of controls on a panel of brushed metal.
 ///
@@ -430,6 +446,10 @@ pub(crate) fn section_with(
         })
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
+            // The plate covers the whole region it was given, whatever its
+            // contents measure. Otherwise an empty project draws short panels
+            // and a full one draws tall ones, and the window never settles.
+            ui.set_min_height(ui.available_height());
 
             let (rect, _) = ui.allocate_exact_size(
                 vec2(ui.available_width(), HEADER_HEIGHT + 8.0),
@@ -485,6 +505,34 @@ pub(crate) fn hint(ui: &mut Ui, text: &str) {
         text,
         FontId::proportional(THEME.font_sm),
         THEME.title.gamma_multiply(0.75),
+    );
+}
+
+/// A dimmed line of explanatory text on a dark surface.
+///
+/// The panels are light metal and [`hint`] is dark to suit them; inside the
+/// editor windows the surface is dark again and the same text would vanish.
+pub(crate) fn hint_light(ui: &mut Ui, text: &str) {
+    let width = ui.fonts(|fonts| {
+        fonts
+            .layout_no_wrap(
+                text.to_owned(),
+                FontId::proportional(THEME.font_sm),
+                THEME.text_dim,
+            )
+            .size()
+            .x
+    });
+    let (rect, _) = ui.allocate_exact_size(
+        vec2(width.min(ui.available_width()), THEME.font_sm * 1.7),
+        Sense::hover(),
+    );
+    ui.painter().text(
+        rect.left_center(),
+        Align2::LEFT_CENTER,
+        text,
+        FontId::proportional(THEME.font_sm),
+        THEME.text_dim,
     );
 }
 

@@ -171,9 +171,14 @@ Sync                locks an LFO to the host tempo and swaps hertz for notes
 Retrigger           restarts the LFO phase with every note
 ```
 
-Nothing needs scrolling at the standard window size. The window resizes from
-the corner; below the standard size the panels are clipped rather than
-rearranged.
+Nothing scrolls. Every band of the window has a fixed height and the two
+middle columns take what is left, so the picture holds still whether the
+project is empty or full. The window cannot be dragged below the size the
+layout needs; making it bigger hands the extra room to the pads and the
+editor. Too many keys to fit are drawn smaller rather than hidden.
+
+The toolbars carry drawn marks rather than words. Resting the pointer on one
+says what it does.
 
 Everything is on one screen: the sample across the top, the pads on the
 left, the editor on the right, and a footer with the modifier keys and the

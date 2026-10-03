@@ -4,7 +4,7 @@ use saempler_core::cell_spec;
 use saempler_model::ProjectFile;
 
 use crate::screens::main::{placeholder, section, ViewState, THEME};
-use crate::widgets::{button, performance_pad, PadView, PAD_SIZE};
+use crate::widgets::{icon_button, performance_pad, Icon, PadView, MIN_PAD_SIZE, PAD_SIZE};
 
 /// Note the automatic mapping starts at.
 const BASE_NOTE: u8 = 60;
@@ -34,10 +34,6 @@ pub fn sync_cells(state: &ViewState<'_>, project: &ProjectFile) {
 pub fn performance_section(ui: &mut Ui, state: &ViewState<'_>) {
     let sounding = state.meters.any_playhead().then_some(THEME.active);
     section(ui, "PERFORMANCE", sounding, |ui| {
-        // Down to the column's floor, whatever the grid needs: the panel's
-        // lower edge lines up with the matrix across the aisle, which is
-        // what keeps the picture calm.
-        ui.set_min_height(ui.available_height() - 12.0);
         toolbar(ui, state);
         ui.add_space(THEME.spacing_sm);
 
@@ -56,8 +52,11 @@ pub fn performance_section(ui: &mut Ui, state: &ViewState<'_>) {
         let playheads: Vec<u64> = state.meters.playheads().collect();
         let mut edit: Option<PadEdit> = None;
 
-        let available = ui.available_width();
-        let per_row = ((available / (PAD_SIZE + THEME.spacing_sm)).floor() as usize).max(1);
+        let (size, per_row) = grid(
+            ui.available_width(),
+            ui.available_height(),
+            project.project.cells().len(),
+        );
 
         for row in project.project.cells().chunks(per_row) {
             ui.horizontal(|ui| {
@@ -88,6 +87,7 @@ pub fn performance_section(ui: &mut Ui, state: &ViewState<'_>) {
                             peaks: &sample.peaks,
                             selected: project.project.cell_selection() == Some(cell.id),
                             sounding,
+                            size,
                         },
                     );
 
@@ -124,6 +124,24 @@ pub fn performance_section(ui: &mut Ui, state: &ViewState<'_>) {
     });
 }
 
+/// Pad size and row length that fit `count` pads into the given area.
+///
+/// The grid shrinks its pads rather than scrolling: a key that is mapped but
+/// out of sight is worse than a small one, and scrolling inside a panel was
+/// what made the window look broken in the first place.
+fn grid(width: f32, height: f32, count: usize) -> (f32, usize) {
+    let gap = THEME.spacing_sm;
+    let mut size = PAD_SIZE;
+    loop {
+        let per_row = (((width + gap) / (size + gap)).floor() as usize).max(1);
+        let rows = count.div_ceil(per_row);
+        if rows as f32 * (size + gap) <= height || size <= MIN_PAD_SIZE {
+            return (size, per_row);
+        }
+        size -= 2.0;
+    }
+}
+
 /// What a pad asked for this frame.
 enum PadEdit {
     Trigger(saempler_model::CellId),
@@ -142,7 +160,7 @@ fn toolbar(ui: &mut Ui, state: &ViewState<'_>) {
             return;
         }
 
-        if button(ui, &THEME, "Auf Noten legen") {
+        if icon_button(ui, &THEME, Icon::Keyboard, "Alle Slices auf Noten legen") {
             if let Ok(mut project) = state.project.lock() {
                 project.project.map_slices_from(BASE_NOTE);
                 let first = project.project.cells().first().map(|cell| cell.id);
@@ -151,11 +169,16 @@ fn toolbar(ui: &mut Ui, state: &ViewState<'_>) {
             }
         }
 
-        if button(ui, &THEME, "Duplizieren") {
+        if icon_button(
+            ui,
+            &THEME,
+            Icon::Copy,
+            "Gewählte Cell auf die nächste Note kopieren",
+        ) {
             copy_selected_to_next_note(state);
         }
 
-        if button(ui, &THEME, "Leeren") {
+        if icon_button(ui, &THEME, Icon::Clear, "Alle Noten leeren") {
             if let Ok(mut project) = state.project.lock() {
                 project.project.clear_cells();
                 sync_cells(state, &project);

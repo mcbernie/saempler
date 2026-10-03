@@ -6,6 +6,7 @@
 mod curves;
 pub(crate) mod dial;
 mod dropdown;
+mod icon;
 mod knob;
 mod meter;
 mod pad;
@@ -20,9 +21,10 @@ pub(crate) mod waveform;
 pub use curves::{envelope_display, lfo_display};
 pub use dial::{dial, DialState};
 pub use dropdown::dropdown;
+pub use icon::{icon_button, icon_label_button, Icon};
 pub use knob::knob;
 pub use meter::{readout, stereo_meter};
-pub use pad::{performance_pad, PadAction, PadView, PAD_SIZE};
+pub use pad::{performance_pad, PadAction, PadView, MIN_PAD_SIZE, PAD_SIZE};
 pub use panel::{
     inset, lamp, metal_panel, panel_header, raised_body, vertical_gradient, HEADER_HEIGHT,
 };

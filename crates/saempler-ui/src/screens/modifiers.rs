@@ -3,7 +3,7 @@ use saempler_audio::EngineCommand;
 use saempler_model::{note_name, Modifier, ModifierMode, ProjectFile};
 
 use crate::screens::main::{section_with, ViewState, THEME};
-use crate::widgets::{button, dropdown, inset, lamp};
+use crate::widgets::{button, dropdown, icon_button, inset, lamp, Icon};
 
 /// Keys a modifier may be put on.
 ///
@@ -62,7 +62,7 @@ pub fn modifier_section(ui: &mut Ui, state: &ViewState<'_>) {
         "MODIFIERS",
         lit,
         |ui| {
-            if button(ui, &THEME, "Bearbeiten …") {
+            if icon_button(ui, &THEME, Icon::Edit, "Modifier-Tasten bearbeiten") {
                 toggle_editor = true;
             }
         },
@@ -72,12 +72,27 @@ pub fn modifier_section(ui: &mut Ui, state: &ViewState<'_>) {
             };
 
             ui.horizontal(|ui| {
-                for entry in project.project.modifiers() {
+                ui.spacing_mut().item_spacing.x = THEME.spacing_md;
+                let total = project.project.modifiers().len();
+                for (shown, entry) in project.project.modifiers().iter().enumerate() {
+                    // A card that no longer fits is counted rather than drawn:
+                    // painted over the neighbouring panel it would look
+                    // broken, and the window has the full list anyway.
+                    if ui.available_width() < CARD_WIDTH + 30.0 {
+                        ui.painter().text(
+                            ui.cursor().min + vec2(2.0, CARD_HEIGHT * 0.5),
+                            Align2::LEFT_CENTER,
+                            format!("+{}", total - shown),
+                            FontId::proportional(THEME.font_md),
+                            THEME.label,
+                        );
+                        break;
+                    }
                     let active = engaged & (1 << entry.modifier.index()) != 0;
                     card(ui, entry.note, entry.modifier, entry.mode, active);
                 }
 
-                if project.project.modifiers().is_empty() {
+                if total == 0 {
                     let (rect, _) =
                         ui.allocate_exact_size(vec2(CARD_WIDTH * 2.0, CARD_HEIGHT), Sense::hover());
                     inset(ui.painter(), &THEME, rect, THEME.waveform_bg);
@@ -115,14 +130,14 @@ fn card(ui: &mut Ui, note: u8, modifier: Modifier, mode: ModifierMode, engaged: 
         engaged.then_some(THEME.active),
     );
     painter.text(
-        pos2(rect.min.x + 23.0, rect.min.y + 14.0),
+        pos2(rect.min.x + 26.0, rect.min.y + 14.0),
         Align2::LEFT_CENTER,
         modifier.label(),
         FontId::proportional(THEME.font_sm),
         if engaged { THEME.active } else { THEME.text },
     );
     painter.text(
-        pos2(rect.min.x + 12.0, rect.max.y - 8.0),
+        pos2(rect.min.x + 26.0, rect.max.y - 13.0),
         Align2::LEFT_CENTER,
         format!("{}  ·  {}", note_name(note), mode.label()),
         FontId::proportional(THEME.font_sm),
@@ -194,7 +209,7 @@ fn editor_window(ui: &Ui, state: &ViewState<'_>, engaged: u32) -> bool {
                         edit = Some(Edit::Mode(entry.note, ModifierMode::ALL[chosen]));
                     }
 
-                    if button(ui, &THEME, "×") {
+                    if icon_button(ui, &THEME, Icon::Cross, "Diese Taste entfernen") {
                         edit = Some(Edit::Remove(entry.note));
                     }
                 });
@@ -202,7 +217,7 @@ fn editor_window(ui: &Ui, state: &ViewState<'_>, engaged: u32) -> bool {
 
             ui.add_space(THEME.spacing_sm);
             ui.horizontal(|ui| {
-                if button(ui, &THEME, "Hinzufügen") {
+                if icon_button(ui, &THEME, Icon::Plus, "Taste hinzufügen") {
                     edit = Some(Edit::Add);
                 }
                 if button(ui, &THEME, "Standardbelegung") {

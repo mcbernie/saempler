@@ -4,7 +4,7 @@ use saempler_model::ProjectFile;
 
 use crate::screens::main::{preview_spec, EditorState, ViewState, THEME};
 use crate::screens::performance::sync_cells;
-use crate::widgets::{button, segmented, waveform, ViewRange, WaveformSource};
+use crate::widgets::{icon_button, segmented, waveform, Icon, ViewRange, WaveformSource};
 
 const WAVEFORM_HEIGHT: f32 = 100.0;
 
@@ -134,12 +134,12 @@ fn toolbar(ui: &mut Ui, state: &ViewState<'_>) -> bool {
         .unwrap_or(false);
 
     ui.horizontal(|ui| {
-        let label = if loading {
-            "Lädt …"
+        let tooltip = if loading {
+            "Wird geladen …"
         } else {
-            "Sample laden …"
+            "Sample laden"
         };
-        if button(ui, &THEME, label) && !loading {
+        if icon_button(ui, &THEME, Icon::Open, tooltip) && !loading {
             import_requested = true;
         }
 
@@ -166,10 +166,10 @@ fn toolbar(ui: &mut Ui, state: &ViewState<'_>) -> bool {
         }
 
         ui.add_space(THEME.spacing_md);
-        if button(ui, &THEME, "Slice löschen") {
+        if icon_button(ui, &THEME, Icon::Trash, "Gewählten Slice löschen") {
             remove_selected(state);
         }
-        if button(ui, &THEME, "All Notes Off") {
+        if icon_button(ui, &THEME, Icon::Stop, "Alle Noten sofort beenden") {
             state.send(EngineCommand::AllNotesOff);
         }
     });

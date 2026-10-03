@@ -6,10 +6,12 @@ use crate::theme::Theme;
 use crate::widgets::surface::{control_surface, SurfaceState};
 use crate::widgets::waveform::slice_color;
 
-/// Size of one performance pad.
+/// Size a pad is drawn at when there is room for it.
 pub const PAD_SIZE: f32 = 100.0;
-/// Height of the waveform thumbnail inside a pad.
-const THUMBNAIL_HEIGHT: f32 = 38.0;
+/// Smallest a pad may shrink to before the grid gives up on fitting.
+pub const MIN_PAD_SIZE: f32 = 56.0;
+/// Share of a pad's height taken by its waveform thumbnail.
+const THUMBNAIL_SHARE: f32 = 0.38;
 
 /// What the user did on a pad.
 #[derive(Debug, Default)]
@@ -30,6 +32,9 @@ pub struct PadView<'a> {
     pub selected: bool,
     /// Whether the engine is currently inside this pad's slice.
     pub sounding: bool,
+    /// Side length to draw at. The grid shrinks its pads rather than
+    /// scrolling, so that every key stays visible however many are mapped.
+    pub size: f32,
 }
 
 /// Draw one performance pad.
@@ -44,9 +49,9 @@ pub fn performance_pad(ui: &mut Ui, theme: &Theme, view: &PadView<'_>) -> PadAct
         peaks,
         selected,
         sounding,
+        size,
     } = *view;
-    let (rect, response) =
-        ui.allocate_exact_size(vec2(PAD_SIZE, PAD_SIZE), Sense::click_and_drag());
+    let (rect, response) = ui.allocate_exact_size(vec2(size, size), Sense::click_and_drag());
 
     let state = if selected {
         SurfaceState::Selected
@@ -96,7 +101,7 @@ pub fn performance_pad(ui: &mut Ui, theme: &Theme, view: &PadView<'_>) -> PadAct
             ),
             vec2(
                 rect.width() - theme.spacing_sm * 2.0 - 2.0,
-                THUMBNAIL_HEIGHT,
+                rect.height() * THUMBNAIL_SHARE,
             ),
         );
         painter.rect_filled(thumb.expand(2.0), theme.radius_sm, theme.waveform_bg);

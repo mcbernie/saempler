@@ -1,15 +1,17 @@
-use nih_plug_egui::egui::{epaint::PathShape, pos2, vec2, Align2, FontId, Sense, Stroke, Ui};
+use nih_plug_egui::egui::{self, epaint::PathShape, pos2, vec2, Align2, FontId, Sense, Stroke, Ui};
 use saempler_model::{
     note_name, Division, EnvelopeDefinition, LfoDefinition, LfoShape, ModDestination, ModSource,
     ModulationRoute, PerformanceCell, PlaybackMode, MAX_COLLAPSE, MAX_PITCH_SEMITONES, MAX_ROUTES,
     MAX_SPEED, MIN_COLLAPSE, MIN_SPEED,
 };
 
-use crate::screens::main::{hint, placeholder, section, ViewState, THEME};
+use crate::screens::main::{
+    band, hint, hint_light, placeholder, region, section, ViewState, THEME,
+};
 use crate::screens::performance::sync_cells;
 use crate::widgets::{
-    button, dropdown, envelope_display, lfo_display, toggle, value_knob, value_slider, KnobSpec,
-    SliderSpec, Taper, Unit,
+    dropdown, envelope_display, icon_button, lfo_display, toggle, value_knob, value_slider, Icon,
+    KnobSpec, SliderSpec, Taper, Unit,
 };
 
 /// Diameter of the playback and envelope knobs.
@@ -22,6 +24,8 @@ const ROUTE_SELECTOR: f32 = 112.0;
 const CURVE_SIZE: (f32, f32) = (150.0, 58.0);
 /// Width of the arrow column between a route's source and destination.
 const ARROW_WIDTH: f32 = 20.0;
+/// Height of the playback panel. The modulation panel takes what is left.
+const PLAYBACK_HEIGHT: f32 = 112.0;
 /// Longest stage any envelope control reaches, in milliseconds.
 const MAX_STAGE_MS: f32 = 4_000.0;
 /// Range of the LFO rate control, in hertz.
@@ -46,9 +50,23 @@ pub fn cell_section(ui: &mut Ui, state: &ViewState<'_>) {
     let mut changed = false;
     let live = Live::read(state);
 
-    changed |= playback_section(ui, &mut project, &mut cell, live);
-    changed |= modulation_section(ui, &mut cell, live);
-    changed |= matrix_section(ui, &mut cell, live);
+    // The column is split the same way the window is: a panel fills the
+    // rectangle it was handed, so two stacked panels each need one of their
+    // own rather than both claiming the whole column.
+    let full = ui.available_rect_before_wrap();
+    let playback = band(full, full.min.y, PLAYBACK_HEIGHT);
+    let modulation = nih_plug_egui::egui::Rect::from_min_max(
+        pos2(full.min.x, playback.max.y + THEME.spacing_md),
+        full.max,
+    );
+
+    region(ui, playback, |ui| {
+        changed |= playback_section(ui, &mut project, &mut cell, live);
+    });
+    region(ui, modulation, |ui| {
+        changed |= modulation_section(ui, &mut cell, live);
+    });
+    changed |= matrix_window(ui, &mut cell);
 
     if changed {
         let id = cell.id;
@@ -93,11 +111,11 @@ fn pager(
             .unwrap_or(0);
 
         let mut step: isize = 0;
-        if button(ui, &THEME, "‹") {
+        if icon_button(ui, &THEME, Icon::Previous, "Vorheriges Pad") {
             step = -1;
         }
         light(ui, &format!("{} / {count}", position + 1));
-        if button(ui, &THEME, "›") {
+        if icon_button(ui, &THEME, Icon::Next, "Nächstes Pad") {
             step = 1;
         }
         if step != 0 && count > 0 {
@@ -383,27 +401,77 @@ fn modulation_section(ui: &mut Ui, cell: &mut PerformanceCell, live: Live) -> bo
 
     let running = live.envelopes.iter().any(|level| *level > 0.001)
         || live.lfos.iter().any(|value| value.abs() > 0.001);
-    section(ui, "MODULATION", live.lamp(running), |ui| {
-        ui.spacing_mut().item_spacing.y = THEME.spacing_sm;
-        for (index, name) in ["ENV A", "ENV B"].into_iter().enumerate() {
-            ui.horizontal(|ui| {
-                let level = live.sounding.then_some(live.envelopes[index]);
-                envelope_display(ui, &THEME, name, cell.envelopes[index], level, CURVE_SIZE);
-                ui.add_space(THEME.spacing_sm);
-                changed |= envelope_controls(ui, &mut cell.envelopes[index]);
-            });
-        }
-        for (index, name) in ["LFO 1", "LFO 2"].into_iter().enumerate() {
-            ui.horizontal(|ui| {
-                let value = live.sounding.then_some(live.lfos[index]);
-                lfo_display(ui, &THEME, name, cell.lfos[index].shape, value, CURVE_SIZE);
-                ui.add_space(THEME.spacing_sm);
-                changed |= lfo_controls(ui, index, &mut cell.lfos[index]);
-            });
-        }
-    });
+    let mut open_matrix = false;
+    crate::screens::main::section_with(
+        ui,
+        "MODULATION",
+        live.lamp(running),
+        |ui| {
+            // The matrix belongs to this panel but not on it: eight rows of
+            // three controls would be taller than everything above them.
+            if icon_button(ui, &THEME, Icon::Edit, "Mod-Matrix bearbeiten") {
+                open_matrix = true;
+            }
+        },
+        |ui| {
+            ui.spacing_mut().item_spacing.y = THEME.spacing_sm;
+            for (index, name) in ["ENV A", "ENV B"].into_iter().enumerate() {
+                ui.horizontal(|ui| {
+                    let level = live.sounding.then_some(live.envelopes[index]);
+                    envelope_display(ui, &THEME, name, cell.envelopes[index], level, CURVE_SIZE);
+                    ui.add_space(THEME.spacing_sm);
+                    changed |= envelope_controls(ui, &mut cell.envelopes[index]);
+                });
+            }
+            for (index, name) in ["LFO 1", "LFO 2"].into_iter().enumerate() {
+                ui.horizontal(|ui| {
+                    let value = live.sounding.then_some(live.lfos[index]);
+                    lfo_display(ui, &THEME, name, cell.lfos[index].shape, value, CURVE_SIZE);
+                    ui.add_space(THEME.spacing_sm);
+                    changed |= lfo_controls(ui, index, &mut cell.lfos[index]);
+                });
+            }
+
+            // One line saying where the modulation actually goes, so the panel
+            // does not look like four modules wired to nothing.
+            hint(ui, &matrix_summary(cell));
+        },
+    );
+
+    if open_matrix {
+        ui.memory_mut(|memory| {
+            let open: bool = memory.data.get_temp(matrix_open_id()).unwrap_or(false);
+            memory.data.insert_temp(matrix_open_id(), !open);
+        });
+    }
 
     changed
+}
+
+/// Memory key for whether the matrix window is open.
+fn matrix_open_id() -> nih_plug_egui::egui::Id {
+    nih_plug_egui::egui::Id::new("mod-matrix-open")
+}
+
+/// What the matrix does, in one line.
+fn matrix_summary(cell: &PerformanceCell) -> String {
+    match cell.routes.len() {
+        0 => "Keine Route — diese Zelle bleibt stumm".to_owned(),
+        count => {
+            let first = cell.routes[0];
+            let rest = match count - 1 {
+                0 => String::new(),
+                more => format!("  +{more}"),
+            };
+            // Spelled out rather than an arrow: the interface font has no
+            // arrow glyph, and a missing one renders as an empty box.
+            format!(
+                "{} auf {}{rest}",
+                first.source.label(),
+                first.destination.label()
+            )
+        }
+    }
 }
 
 /// The four stage knobs of one envelope.
@@ -515,36 +583,32 @@ fn lfo_controls(ui: &mut Ui, index: usize, lfo: &mut LfoDefinition) -> bool {
     changed
 }
 
-/// The modulation matrix, as a table of sentences.
+/// The modulation matrix, as a table of sentences in a window of its own.
 ///
-/// A route is hard to read as three unlabelled controls in a row, so the table
-/// carries column headings and an arrow between source and destination: the
-/// row says "this source moves that destination by this much".
-fn matrix_section(ui: &mut Ui, cell: &mut PerformanceCell, live: Live) -> bool {
+/// A row is hard to read as three unlabelled controls, so the table carries
+/// column headings and an arrow between source and destination: the row says
+/// "this source moves that destination by this much".
+fn matrix_window(ui: &mut Ui, cell: &mut PerformanceCell) -> bool {
+    let mut open = ui.memory(|memory| memory.data.get_temp(matrix_open_id()).unwrap_or(false));
+    if !open {
+        return false;
+    }
+
     let mut changed = false;
-    let mut add_requested = false;
-    let room = cell.routes.len() < MAX_ROUTES;
+    let sources: Vec<&str> = ModSource::ALL.iter().map(|source| source.label()).collect();
+    let destinations: Vec<&str> = ModDestination::ALL
+        .iter()
+        .map(|destination| destination.label())
+        .collect();
 
-    let routing = !cell.routes.is_empty();
-    crate::screens::main::section_with(
-        ui,
-        "MOD MATRIX",
-        live.lamp(routing),
-        |ui| {
-            if room && button(ui, &THEME, "+ Route") {
-                add_requested = true;
-            }
-        },
-        |ui| {
-            // Down to the column's floor: this panel's lower edge is the
-            // baseline the pads across the aisle line up with.
-            ui.set_min_height(ui.available_height() - 12.0);
-            let sources: Vec<&str> = ModSource::ALL.iter().map(|source| source.label()).collect();
-            let destinations: Vec<&str> = ModDestination::ALL
-                .iter()
-                .map(|destination| destination.label())
-                .collect();
-
+    egui::Window::new("Mod-Matrix")
+        .id(egui::Id::new("mod-matrix"))
+        .open(&mut open)
+        .collapsible(false)
+        .resizable(false)
+        .default_pos(pos2(420.0, 300.0))
+        .show(ui.ctx(), |ui| {
+            ui.spacing_mut().item_spacing = vec2(THEME.spacing_sm, THEME.spacing_sm);
             matrix_headings(ui);
 
             let mut remove: Option<usize> = None;
@@ -586,7 +650,7 @@ fn matrix_section(ui: &mut Ui, cell: &mut PerformanceCell, live: Live) -> bool {
                         changed = true;
                     }
 
-                    // The bar is labelled by the heading above it, not by itself.
+                    // The bar is labelled by the heading above it.
                     changed |= value_slider(
                         ui,
                         &THEME,
@@ -600,16 +664,12 @@ fn matrix_section(ui: &mut Ui, cell: &mut PerformanceCell, live: Live) -> bool {
                         &mut route.amount,
                     );
 
-                    if button(ui, &THEME, "×") {
+                    if icon_button(ui, &THEME, Icon::Cross, "Diese Route entfernen") {
                         remove = Some(index);
                     }
 
-                    hint(ui, route_summary(*route));
+                    hint_light(ui, route_summary(*route));
                 });
-            }
-
-            if cell.routes.is_empty() {
-                hint(ui, "Keine Route — diese Zelle bleibt stumm");
             }
 
             if let Some(index) = remove {
@@ -617,23 +677,32 @@ fn matrix_section(ui: &mut Ui, cell: &mut PerformanceCell, live: Live) -> bool {
                 changed = true;
             }
 
-            // Volume is a route like any other, so it can be taken out. The cell
-            // is then silent, which is worth saying rather than letting the user
-            // hunt for a voice that never sounds.
+            ui.add_space(THEME.spacing_sm);
+            ui.horizontal(|ui| {
+                if cell.routes.len() < MAX_ROUTES
+                    && icon_button(ui, &THEME, Icon::Plus, "Route hinzufügen")
+                {
+                    cell.add_route(ModulationRoute::default());
+                    changed = true;
+                }
+                hint_light(
+                    ui,
+                    &format!("{} von {MAX_ROUTES} Routen belegt", cell.routes.len()),
+                );
+            });
+
+            // Volume is a route like any other, so it can be taken out. The
+            // cell is then silent, which is worth saying rather than letting
+            // the user hunt for a voice that never sounds.
             if !cell.routes.is_empty() && !cell.has_amplitude() {
-                hint(
-                ui,
-                "Keine Route auf Volume — diese Zelle bleibt stumm. ENV A → Volume stellt sie wieder her.",
-            );
+                hint_light(
+                    ui,
+                    "Keine Route auf Volume — diese Zelle bleibt stumm. ENV A auf Volume stellt sie wieder her.",
+                );
             }
-        },
-    );
+        });
 
-    if add_requested {
-        cell.add_route(ModulationRoute::default());
-        changed = true;
-    }
-
+    ui.memory_mut(|memory| memory.data.insert_temp(matrix_open_id(), open));
     changed
 }
 
@@ -656,7 +725,7 @@ fn matrix_headings(ui: &mut Ui) {
                 Align2::LEFT_CENTER,
                 caption,
                 FontId::proportional(THEME.font_sm),
-                THEME.label,
+                THEME.text_dim,
             );
         }
     });
@@ -678,7 +747,7 @@ fn arrow(ui: &mut Ui) {
             pos2(centre.x - half, centre.y),
             pos2(centre.x + half, centre.y),
         ],
-        Stroke::new(THEME.stroke_thin, THEME.label),
+        Stroke::new(THEME.stroke_thin, THEME.text_dim),
     );
     painter.add(PathShape::convex_polygon(
         vec![
@@ -686,7 +755,7 @@ fn arrow(ui: &mut Ui) {
             pos2(centre.x + half, centre.y),
             pos2(centre.x + half - 4.0, centre.y + 3.0),
         ],
-        THEME.label,
+        THEME.text_dim,
         Stroke::NONE,
     ));
 }
