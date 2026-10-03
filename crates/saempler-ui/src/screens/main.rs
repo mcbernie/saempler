@@ -6,6 +6,7 @@ use saempler_audio::{CellSpec, CommandProducer, EngineCommand, Meters, SampleBuf
 use saempler_core::PeakCache;
 use saempler_model::ProjectFile;
 
+use crate::screens::modifiers::modifier_section;
 use crate::screens::performance::{cell_section, performance_section, sync_cells};
 use crate::theme::Theme;
 use crate::widgets::{
@@ -115,6 +116,8 @@ pub fn draw(ctx: &egui::Context, setter: &ParamSetter, state: &ViewState<'_>) ->
                 performance_section(ui, state);
                 ui.add_space(THEME.spacing_md);
                 cell_section(ui, state);
+                ui.add_space(THEME.spacing_md);
+                modifier_section(ui, state);
                 ui.add_space(THEME.spacing_md);
                 output_section(ui, setter, state);
             });

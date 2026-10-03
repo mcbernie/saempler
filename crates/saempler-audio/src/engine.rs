@@ -1,7 +1,10 @@
 use std::sync::Arc;
 
+use saempler_model::{Modifier, ModifierMode};
+
 use crate::command::{CellSpec, CommandConsumer, DisposalProducer, EngineCommand};
 use crate::meters::Meters;
+use crate::modifiers::{ModifierState, DEFAULT_TEMPO};
 use crate::sample::SampleBuffer;
 use crate::voice::Voice;
 
@@ -34,6 +37,11 @@ pub struct Engine {
     /// What each MIDI note plays. A fixed array rather than a map, so that a
     /// note on is a single index instead of a lookup.
     cells: [Option<CellSpec>; NOTE_COUNT],
+    /// What each MIDI note does to the *next* performance note.
+    modifier_notes: [Option<(Modifier, ModifierMode)>; NOTE_COUNT],
+    modifiers: ModifierState,
+    /// Host tempo, for the musical lengths stutter and brake work in.
+    tempo: f64,
     voices: [Voice; MAX_VOICES],
     /// Monotonic counter assigning an age to each started voice.
     next_age: u64,
@@ -49,6 +57,9 @@ impl Engine {
             sample_rate: DEFAULT_SAMPLE_RATE,
             sample: None,
             cells: [None; NOTE_COUNT],
+            modifier_notes: [None; NOTE_COUNT],
+            modifiers: ModifierState::new(),
+            tempo: DEFAULT_TEMPO,
             voices: [Voice::default(); MAX_VOICES],
             next_age: 0,
             commands,
@@ -70,9 +81,28 @@ impl Engine {
             voice.kill();
         }
         self.next_age = 0;
+        self.modifiers.clear();
         self.meters.store_peaks(0.0, 0.0);
         self.meters.store_active_voices(0);
         self.meters.clear_playheads();
+        self.meters.store_modifiers(0);
+    }
+
+    /// Tell the engine the host tempo. Called once per block, off no lock.
+    pub fn set_tempo(&mut self, tempo: f64) {
+        if tempo.is_finite() && tempo > 1.0 {
+            self.tempo = tempo;
+        }
+    }
+
+    /// Which modifiers would affect the next performance note.
+    pub fn engaged_modifiers(&self) -> u32 {
+        self.modifiers.bits()
+    }
+
+    /// What `note` does as a modifier, if anything.
+    pub fn modifier_note(&self, note: u8) -> Option<(Modifier, ModifierMode)> {
+        self.modifier_notes.get(note as usize).copied().flatten()
     }
 
     /// Whether a sample buffer is loaded.
@@ -118,6 +148,15 @@ impl Engine {
                     }
                 }
                 EngineCommand::ClearCells => self.cells = [None; NOTE_COUNT],
+                EngineCommand::SetModifier { note, assignment } => {
+                    if let Some(slot) = self.modifier_notes.get_mut(note as usize) {
+                        *slot = assignment;
+                    }
+                }
+                EngineCommand::ClearModifiers => {
+                    self.modifier_notes = [None; NOTE_COUNT];
+                    self.modifiers.clear();
+                }
                 EngineCommand::Preview(spec) => self.trigger(PREVIEW_NOTE, 1.0, spec),
                 EngineCommand::AllNotesOff => {
                     for voice in &mut self.voices {
@@ -156,11 +195,23 @@ impl Engine {
         }
     }
 
-    /// Start the cell sitting on `note`, if there is one.
+    /// Handle a note going down.
+    ///
+    /// A modifier note changes state and makes no sound. A performance note
+    /// starts its cell with whatever modifiers are engaged, which also
+    /// consumes any one shot that was waiting.
     pub fn note_on(&mut self, note: u8, velocity: f32) {
+        if let Some((modifier, mode)) = self.modifier_note(note) {
+            self.modifiers.press(modifier, mode);
+            self.meters.store_modifiers(self.modifiers.bits());
+            return;
+        }
+
         let Some(spec) = self.cell(note) else {
             return;
         };
+        let spec = self.modifiers.apply(spec, self.tempo, self.sample_rate);
+        self.meters.store_modifiers(self.modifiers.bits());
         self.trigger(note, velocity, spec);
     }
 
@@ -192,6 +243,12 @@ impl Engine {
 
     /// Release every voice currently holding `note`.
     pub fn note_off(&mut self, note: u8) {
+        if let Some((modifier, mode)) = self.modifier_note(note) {
+            self.modifiers.release(modifier, mode);
+            self.meters.store_modifiers(self.modifiers.bits());
+            return;
+        }
+
         for voice in &mut self.voices {
             if voice.is_playing_note(note) {
                 voice.release();
@@ -865,6 +922,223 @@ mod tests {
         render(&mut h.engine, 4_800);
 
         assert!(!h.meters.any_playhead());
+    }
+
+    /// Put the default modifier layout on the keyboard.
+    fn map_modifiers(harness: &mut Harness, mode: ModifierMode) {
+        for assignment in saempler_model::default_layout() {
+            harness
+                .commands
+                .push(EngineCommand::SetModifier {
+                    note: assignment.note,
+                    assignment: Some((assignment.modifier, mode)),
+                })
+                .expect("the queue has capacity");
+        }
+        harness.engine.apply_commands();
+    }
+
+    /// Note the default layout puts a modifier on.
+    fn modifier_note(modifier: Modifier) -> u8 {
+        saempler_model::default_layout()
+            .into_iter()
+            .find(|entry| entry.modifier == modifier)
+            .expect("every modifier is in the layout")
+            .note
+    }
+
+    #[test]
+    fn a_modifier_note_makes_no_sound() {
+        let mut h = harness();
+        load(&mut h, 48_000);
+        map_modifiers(&mut h, ModifierMode::Hold);
+
+        h.engine.note_on(modifier_note(Modifier::Reverse), 1.0);
+
+        assert_eq!(
+            h.engine.active_voices(),
+            0,
+            "a modifier is not an instrument"
+        );
+        assert_ne!(h.engine.engaged_modifiers(), 0);
+    }
+
+    #[test]
+    fn a_held_modifier_changes_the_notes_played_under_it() {
+        let mut h = harness();
+        load(&mut h, 48_000);
+        map_modifiers(&mut h, ModifierMode::Hold);
+
+        h.engine.note_on(modifier_note(Modifier::Reverse), 1.0);
+        h.engine.note_on(60, 1.0);
+        render(&mut h.engine, 512);
+
+        let playhead = h.meters.playheads().next().expect("a voice is sounding");
+        assert!(
+            playhead > 40_000,
+            "a reversed voice starts at the far end, got {playhead}"
+        );
+    }
+
+    #[test]
+    fn releasing_a_held_modifier_restores_plain_playback() {
+        let mut h = harness();
+        load(&mut h, 48_000);
+        map_modifiers(&mut h, ModifierMode::Hold);
+        let note = modifier_note(Modifier::Reverse);
+
+        h.engine.note_on(note, 1.0);
+        h.engine.note_off(note);
+        h.engine.note_on(60, 1.0);
+        render(&mut h.engine, 512);
+
+        let playhead = h.meters.playheads().next().expect("a voice is sounding");
+        assert!(
+            playhead < 10_000,
+            "expected forward playback, got {playhead}"
+        );
+    }
+
+    #[test]
+    fn a_one_shot_applies_to_the_next_note_only() {
+        let mut h = harness();
+        load(&mut h, 48_000);
+        map_modifiers(&mut h, ModifierMode::OneShot);
+        let note = modifier_note(Modifier::Reverse);
+
+        h.engine.note_on(note, 1.0);
+        h.engine.note_off(note);
+
+        h.engine.note_on(60, 1.0);
+        render(&mut h.engine, 512);
+        let first = h.meters.playheads().next().expect("a voice is sounding");
+        assert!(first > 40_000, "the armed one shot was not used: {first}");
+
+        h.engine.note_off(60);
+        render(&mut h.engine, 9_600);
+        h.engine.note_on(60, 1.0);
+        render(&mut h.engine, 512);
+        let second = h.meters.playheads().next().expect("a voice is sounding");
+        assert!(second < 10_000, "the one shot outlived its note: {second}");
+    }
+
+    #[test]
+    fn a_toggle_survives_the_key_coming_up() {
+        let mut h = harness();
+        load(&mut h, 48_000);
+        map_modifiers(&mut h, ModifierMode::Toggle);
+        let note = modifier_note(Modifier::Reverse);
+
+        h.engine.note_on(note, 1.0);
+        h.engine.note_off(note);
+        assert_ne!(h.engine.engaged_modifiers(), 0);
+
+        h.engine.note_on(note, 1.0);
+        assert_eq!(h.engine.engaged_modifiers(), 0);
+    }
+
+    #[test]
+    fn half_time_makes_a_cell_last_longer() {
+        let mut h = harness();
+        load(&mut h, 48_000);
+        map_modifiers(&mut h, ModifierMode::Hold);
+
+        h.engine.note_on(60, 1.0);
+        render(&mut h.engine, 4_800);
+        let plain = h.meters.playheads().next().expect("sounding");
+        h.engine.note_off(60);
+        render(&mut h.engine, 9_600);
+
+        h.engine.note_on(modifier_note(Modifier::HalfTime), 1.0);
+        h.engine.note_on(60, 1.0);
+        render(&mut h.engine, 4_800);
+        let halved = h.meters.playheads().next().expect("sounding");
+
+        assert!(
+            halved < plain,
+            "half time should read slower: {halved} vs {plain}"
+        );
+    }
+
+    #[test]
+    fn stutter_holds_a_voice_near_its_trigger_point() {
+        let mut h = harness();
+        load(&mut h, 48_000);
+        map_modifiers(&mut h, ModifierMode::Hold);
+        h.engine.set_tempo(120.0);
+
+        h.engine.note_on(modifier_note(Modifier::Stutter), 1.0);
+        h.engine.note_on(60, 1.0);
+
+        // Far longer than a sixteenth at 120 bpm, which is 6000 frames.
+        for _ in 0..40 {
+            render(&mut h.engine, 1_024);
+            let playhead = h.meters.playheads().next().expect("sounding");
+            assert!(
+                playhead <= 6_100,
+                "the stutter escaped its loop: {playhead}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_modifier_note_is_not_also_a_performance_note() {
+        let mut h = harness();
+        h.commands
+            .push(EngineCommand::SetSample(dc_sample(48_000)))
+            .expect("the queue has capacity");
+        let note = modifier_note(Modifier::Reverse);
+        // Both a cell and a modifier on the same key: the modifier wins, so a
+        // mistaken mapping cannot make a modifier audible.
+        h.commands
+            .push(EngineCommand::SetCell {
+                note,
+                spec: Some(spec(0, 48_000)),
+            })
+            .expect("the queue has capacity");
+        h.engine.apply_commands();
+        map_modifiers(&mut h, ModifierMode::Hold);
+
+        h.engine.note_on(note, 1.0);
+
+        assert_eq!(h.engine.active_voices(), 0);
+    }
+
+    #[test]
+    fn clearing_the_modifiers_releases_what_was_engaged() {
+        let mut h = harness();
+        load(&mut h, 48_000);
+        map_modifiers(&mut h, ModifierMode::Toggle);
+        h.engine.note_on(modifier_note(Modifier::Reverse), 1.0);
+        assert_ne!(h.engine.engaged_modifiers(), 0);
+
+        h.commands
+            .push(EngineCommand::ClearModifiers)
+            .expect("the queue has capacity");
+        h.engine.apply_commands();
+
+        assert_eq!(h.engine.engaged_modifiers(), 0);
+        assert!(h
+            .engine
+            .modifier_note(modifier_note(Modifier::Reverse))
+            .is_none());
+    }
+
+    #[test]
+    fn brake_brings_a_voice_to_a_stop() {
+        let mut h = harness();
+        load(&mut h, 48_000);
+        map_modifiers(&mut h, ModifierMode::Hold);
+        h.engine.set_tempo(120.0);
+
+        h.engine.note_on(modifier_note(Modifier::Brake), 1.0);
+        h.engine.note_on(60, 1.0);
+        assert_eq!(h.engine.active_voices(), 1);
+
+        // One whole note at 120 bpm is two seconds.
+        render(&mut h.engine, 96_000 + 4_800);
+
+        assert_eq!(h.engine.active_voices(), 0, "the brake must come to rest");
     }
 
     #[test]

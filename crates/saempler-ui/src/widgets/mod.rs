@@ -7,7 +7,7 @@ mod knob;
 mod meter;
 mod pad;
 mod segmented;
-mod surface;
+pub(crate) mod surface;
 mod value_knob;
 mod view_range;
 pub(crate) mod waveform;

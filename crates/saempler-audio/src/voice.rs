@@ -37,7 +37,15 @@ pub struct Voice {
     /// Frames advanced per output frame. Always positive; direction is
     /// carried by `reverse`.
     rate: f64,
+    /// Multiplier a tape stop applies to the rate, falling from 1 to 0.
+    rate_scale: f64,
+    /// How much `rate_scale` falls per output frame. Zero means no tape stop.
+    rate_decay: f64,
     reverse: bool,
+    /// Frame playback jumps back to while looping, and the length of that
+    /// loop. Zero means the voice plays straight through.
+    loop_start: u64,
+    loop_frames: u64,
     spec: CellSpec,
 }
 
@@ -53,7 +61,11 @@ impl Default for Voice {
             release_step: 1.0,
             position: 0.0,
             rate: 1.0,
+            rate_scale: 1.0,
+            rate_decay: 0.0,
             reverse: false,
+            loop_start: 0,
+            loop_frames: 0,
             spec: CellSpec::default(),
         }
     }
@@ -93,6 +105,19 @@ impl Voice {
         self.level = 0.0;
         self.sustain_level = (velocity.clamp(0.0, 1.0) * spec.gain).clamp(0.0, 4.0);
         self.rate = spec.rate.max(f32::MIN_POSITIVE) as f64;
+        self.rate_scale = 1.0;
+        self.rate_decay = if spec.tape_stop_frames > 0 {
+            1.0 / spec.tape_stop_frames as f64
+        } else {
+            0.0
+        };
+        // A loop as long as the slice, or longer, is no loop at all: there is
+        // nothing to come back to before the end arrives.
+        self.loop_frames = if spec.loop_frames > 0 && spec.loop_frames < spec.bounds.len_frames() {
+            spec.loop_frames
+        } else {
+            0
+        };
 
         // The envelope has to fit inside the slice. A cell whose attack and
         // release together outlast the material gets both scaled down in
@@ -117,6 +142,7 @@ impl Voice {
         } else {
             spec.bounds.start_frame as f64
         };
+        self.loop_start = self.position as u64;
     }
 
     /// Move the voice into its release stage.
@@ -144,13 +170,27 @@ impl Voice {
             return (0.0, 0.0);
         }
 
-        let remaining = self.frames_to_edge();
-        if remaining <= 0.0 {
-            self.kill();
-            return (0.0, 0.0);
+        if self.rate_decay > 0.0 {
+            self.rate_scale -= self.rate_decay;
+            if self.rate_scale <= 0.0 {
+                // The tape has come to rest; there is nothing left to read.
+                self.kill();
+                return (0.0, 0.0);
+            }
         }
-        if self.stage != Stage::Release && remaining <= self.release_frames() {
-            self.release();
+
+        if self.wrap_loop() {
+            // A looping voice never approaches the slice edge, so the fade out
+            // is left to the note off.
+        } else {
+            let remaining = self.frames_to_edge();
+            if remaining <= 0.0 {
+                self.kill();
+                return (0.0, 0.0);
+            }
+            if self.stage != Stage::Release && remaining <= self.release_frames() {
+                self.release();
+            }
         }
 
         match self.stage {
@@ -166,7 +206,11 @@ impl Voice {
                 // one the remaining audio allows. A release longer than the
                 // slice simply fades across all of it.
                 let wanted = self.release_step * self.sustain_level;
-                let forced = self.level / remaining.max(1.0) as f32;
+                let forced = if self.loop_frames > 0 {
+                    0.0
+                } else {
+                    self.level / self.frames_to_edge().max(1.0) as f32
+                };
                 self.level -= wanted.max(forced);
                 if self.level <= 0.0 {
                     self.kill();
@@ -178,13 +222,36 @@ impl Voice {
 
         let (left, right) = interpolated(sample, self.position);
 
+        let step = self.rate * self.rate_scale;
         if self.reverse {
-            self.position -= self.rate;
+            self.position -= step;
         } else {
-            self.position += self.rate;
+            self.position += step;
         }
 
         (left * self.level, right * self.level)
+    }
+
+    /// Jump back to the loop start when the loop runs out.
+    ///
+    /// Returns whether this voice is looping at all, which decides whether the
+    /// slice edge is something it can ever reach.
+    fn wrap_loop(&mut self) -> bool {
+        if self.loop_frames == 0 {
+            return false;
+        }
+
+        let start = self.loop_start as f64;
+        let travelled = if self.reverse {
+            start - self.position
+        } else {
+            self.position - start
+        };
+        if travelled >= self.loop_frames as f64 {
+            self.position = start;
+        }
+
+        true
     }
 
     /// Output frames left before the read position leaves the slice.
@@ -195,7 +262,10 @@ impl Voice {
             self.spec.bounds.end_frame as f64 - self.position
         };
 
-        (remaining_source / self.rate).max(0.0)
+        // The scaled rate, so a braking voice is not told it has moments left
+        // when in truth it has almost stopped moving.
+        let rate = (self.rate * self.rate_scale).max(1e-9);
+        (remaining_source / rate).max(0.0)
     }
 
     /// Output frames a full fade out would take at the configured release.
@@ -585,6 +655,165 @@ mod tests {
                 assert!(left.is_finite() && right.is_finite(), "rate {rate}");
                 assert!(left.abs() <= 1.5, "rate {rate} produced {left}");
             }
+        }
+    }
+
+    #[test]
+    fn a_loop_keeps_returning_to_the_trigger_point() {
+        let buffer = ramp_buffer(100_000);
+        let mut voice = Voice::default();
+        voice.start(
+            60,
+            1.0,
+            0,
+            CellSpec {
+                loop_frames: 1_000,
+                ..spec(0, 50_000)
+            },
+            SAMPLE_RATE,
+        );
+
+        for _ in 0..10_000 {
+            voice.next_frame(&buffer);
+            assert!(
+                voice.position() <= 1_000,
+                "a looping voice left its loop at {}",
+                voice.position()
+            );
+        }
+        assert!(voice.is_active(), "a loop plays until the key is released");
+    }
+
+    #[test]
+    fn a_loop_longer_than_the_slice_is_no_loop() {
+        let buffer = dc_buffer(100_000);
+        let mut voice = Voice::default();
+        voice.start(
+            60,
+            1.0,
+            0,
+            CellSpec {
+                loop_frames: 1_000_000,
+                ..spec(0, 5_000)
+            },
+            SAMPLE_RATE,
+        );
+
+        for _ in 0..50_000 {
+            voice.next_frame(&buffer);
+        }
+
+        assert!(!voice.is_active(), "it must still end at the slice");
+    }
+
+    #[test]
+    fn a_looping_voice_still_stops_on_note_off() {
+        let buffer = dc_buffer(100_000);
+        let mut voice = Voice::default();
+        voice.start(
+            60,
+            1.0,
+            0,
+            CellSpec {
+                loop_frames: 1_000,
+                ..spec(0, 50_000)
+            },
+            SAMPLE_RATE,
+        );
+        for _ in 0..5_000 {
+            voice.next_frame(&buffer);
+        }
+
+        voice.release();
+        for _ in 0..10_000 {
+            voice.next_frame(&buffer);
+        }
+
+        assert!(!voice.is_active());
+    }
+
+    #[test]
+    fn a_reversed_loop_returns_to_its_own_start() {
+        let buffer = ramp_buffer(100_000);
+        let mut voice = Voice::default();
+        voice.start(
+            60,
+            1.0,
+            0,
+            CellSpec {
+                reverse: true,
+                loop_frames: 1_000,
+                ..spec(0, 50_000)
+            },
+            SAMPLE_RATE,
+        );
+
+        for _ in 0..10_000 {
+            voice.next_frame(&buffer);
+            assert!(
+                (48_999..=49_999).contains(&voice.position()),
+                "a reversed loop wandered to {}",
+                voice.position()
+            );
+        }
+    }
+
+    #[test]
+    fn a_tape_stop_slows_down_and_ends() {
+        let buffer = ramp_buffer(200_000);
+        let mut voice = Voice::default();
+        voice.start(
+            60,
+            1.0,
+            0,
+            CellSpec {
+                tape_stop_frames: 4_800,
+                ..spec(0, 200_000)
+            },
+            SAMPLE_RATE,
+        );
+
+        let mut positions = Vec::new();
+        for frame in 0..4_800 {
+            voice.next_frame(&buffer);
+            if frame % 800 == 0 {
+                positions.push(voice.position());
+            }
+        }
+
+        // Each step covers less ground than the one before it.
+        let steps: Vec<u64> = positions.windows(2).map(|p| p[1] - p[0]).collect();
+        for pair in steps.windows(2) {
+            assert!(pair[1] < pair[0], "the brake did not slow down: {steps:?}");
+        }
+        assert!(!voice.is_active(), "the tape must come to rest");
+    }
+
+    #[test]
+    fn a_tape_stop_never_runs_backwards() {
+        let buffer = ramp_buffer(200_000);
+        let mut voice = Voice::default();
+        voice.start(
+            60,
+            1.0,
+            0,
+            CellSpec {
+                tape_stop_frames: 2_400,
+                ..spec(1_000, 200_000)
+            },
+            SAMPLE_RATE,
+        );
+
+        let mut previous = voice.position();
+        loop {
+            voice.next_frame(&buffer);
+            if !voice.is_active() {
+                // An ended voice reports no position at all.
+                break;
+            }
+            let current = voice.position();
+            assert!(current >= previous, "{previous} -> {current}");
+            previous = current;
         }
     }
 

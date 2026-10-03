@@ -10,5 +10,6 @@ pub mod theme;
 pub mod widgets;
 
 pub use screens::main::{draw, SampleView, ViewState};
+pub use screens::modifiers::sync_modifiers;
 pub use theme::Theme;
 pub use widgets::ViewRange;

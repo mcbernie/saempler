@@ -23,8 +23,7 @@ themselves.
 
 ## Status
 
-Phase 3 of the plan: slices sit on notes, and each note plays its slice its
-own way.
+Phase 4 of the plan: modifier keys change how the next note is performed.
 
 What works today:
 
@@ -34,11 +33,13 @@ What works today:
 - slices: equal divisions, split by double click, drag or remove the markers
 - performance cells: slices laid out across the keyboard, several notes able to
   share one slice, each with its own reverse, speed, pitch, gain and envelope
-- polyphonic playback with a playhead shown on the waveform and the pads
-- master gain as a host parameter; sample reference, slices and cells as
-  versioned plugin state, reloaded when a project is opened
+- modifier keys below the playing range: reverse, stutter, repeat, half-time
+  and brake, each in hold, toggle or one-shot mode
+- polyphonic playback with a playhead per voice on the waveform and the pads
+- master gain as a host parameter; sample reference, slices, cells and the
+  modifier layout as versioned plugin state, reloaded when a project is opened
 
-Not there yet: modifier notes, stutter, tape stop and effects.
+Not there yet: effects, gestures and the preset side of things.
 
 See `docs/architecture.md` for the decisions behind this and
 `docs/realtime.md` for the rules the audio thread follows.

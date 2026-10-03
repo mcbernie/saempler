@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::cell::{CellId, PerformanceCell, PlaybackSettings};
+use crate::modifier::{default_layout, Modifier, ModifierAssignment, ModifierMode};
 use crate::slice::{Slice, SliceId};
 
 /// Version of the serialized project layout understood by this build.
@@ -45,7 +46,7 @@ impl SampleRef {
 
 /// Editable project state that is not exposed as a host parameter.
 // `Eq` is deliberately absent: playback settings carry floats.
-#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Project {
     pub sample: Option<SampleRef>,
@@ -53,6 +54,8 @@ pub struct Project {
     selection: Option<SliceId>,
     cells: Vec<PerformanceCell>,
     cell_selection: Option<CellId>,
+    #[serde(default = "default_layout")]
+    modifiers: Vec<ModifierAssignment>,
     /// Hands out the next slice identity. Kept in the project so identities
     /// stay unique across a session even when slices are deleted.
     next_slice_id: u32,
@@ -355,6 +358,59 @@ impl Project {
         self.cells.len() != before
     }
 
+    /// Every modifier note, in keyboard order.
+    pub fn modifiers(&self) -> &[ModifierAssignment] {
+        &self.modifiers
+    }
+
+    /// The modifier a note carries, if any.
+    pub fn modifier_for_note(&self, note: u8) -> Option<&ModifierAssignment> {
+        self.modifiers.iter().find(|entry| entry.note == note)
+    }
+
+    /// Change how a modifier responds to its key.
+    pub fn set_modifier_mode(&mut self, modifier: Modifier, mode: ModifierMode) -> bool {
+        match self
+            .modifiers
+            .iter_mut()
+            .find(|entry| entry.modifier == modifier)
+        {
+            Some(entry) => {
+                entry.mode = mode;
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Move a modifier to another note.
+    ///
+    /// Refused when the note already carries a performance cell or another
+    /// modifier: one key, one job.
+    pub fn set_modifier_note(&mut self, modifier: Modifier, note: u8) -> bool {
+        let taken = self
+            .modifiers
+            .iter()
+            .any(|entry| entry.note == note && entry.modifier != modifier)
+            || self.cells.iter().any(|cell| cell.midi_note == note);
+        if taken {
+            return false;
+        }
+
+        match self
+            .modifiers
+            .iter_mut()
+            .find(|entry| entry.modifier == modifier)
+        {
+            Some(entry) => {
+                entry.note = note;
+                self.modifiers.sort_by_key(|entry| entry.note);
+                true
+            }
+            None => false,
+        }
+    }
+
     /// Take every cell off the keyboard.
     pub fn clear_cells(&mut self) {
         self.cells.clear();
@@ -444,6 +500,21 @@ impl Project {
 pub struct ProjectFile {
     pub version: u32,
     pub project: Project,
+}
+
+impl Default for Project {
+    fn default() -> Self {
+        Self {
+            sample: None,
+            slices: Vec::new(),
+            selection: None,
+            cells: Vec::new(),
+            cell_selection: None,
+            modifiers: default_layout(),
+            next_slice_id: 0,
+            next_cell_id: 0,
+        }
+    }
 }
 
 impl Default for ProjectFile {
@@ -1112,6 +1183,87 @@ mod tests {
             .expect("selection survives");
         assert!(restored_cell.playback.reverse);
         assert_eq!(restored_cell.playback.pitch_semitones, -5.0);
+    }
+
+    #[test]
+    fn a_new_project_comes_with_the_modifier_layout() {
+        let project = Project::default();
+
+        assert_eq!(project.modifiers().len(), crate::MODIFIER_COUNT);
+        assert!(project.modifier_for_note(36).is_some());
+    }
+
+    #[test]
+    fn a_modifier_mode_can_be_changed() {
+        let mut project = Project::default();
+
+        assert!(project.set_modifier_mode(Modifier::Stutter, ModifierMode::OneShot));
+
+        let entry = project
+            .modifiers()
+            .iter()
+            .find(|entry| entry.modifier == Modifier::Stutter)
+            .expect("stutter is in the layout");
+        assert_eq!(entry.mode, ModifierMode::OneShot);
+    }
+
+    #[test]
+    fn a_modifier_can_be_moved_to_a_free_note() {
+        let mut project = Project::default();
+
+        assert!(project.set_modifier_note(Modifier::Brake, 30));
+
+        assert_eq!(
+            project.modifier_for_note(30).map(|e| e.modifier),
+            Some(Modifier::Brake)
+        );
+    }
+
+    #[test]
+    fn a_modifier_cannot_take_another_modifiers_note() {
+        let mut project = Project::default();
+        let occupied = project.modifiers()[0].note;
+
+        assert!(!project.set_modifier_note(Modifier::Brake, occupied));
+    }
+
+    #[test]
+    fn a_modifier_cannot_take_a_note_a_cell_plays() {
+        let mut project = project_with_sample(1_000);
+        let slice = project.add_slice(0, 500);
+        project.assign(72, slice);
+
+        assert!(!project.set_modifier_note(Modifier::Brake, 72));
+    }
+
+    #[test]
+    fn modifiers_survive_a_round_trip() {
+        let mut project = Project::default();
+        project.set_modifier_mode(Modifier::Reverse, ModifierMode::Toggle);
+        project.set_modifier_note(Modifier::Reverse, 24);
+        let original = ProjectFile {
+            version: PROJECT_VERSION,
+            project,
+        };
+
+        let json = serde_json::to_string(&original).expect("serialization must succeed");
+        let restored: ProjectFile = serde_json::from_str(&json).expect("must deserialize");
+
+        assert_eq!(restored, original);
+        let entry = restored
+            .project
+            .modifier_for_note(24)
+            .expect("the moved modifier came back");
+        assert_eq!(entry.mode, ModifierMode::Toggle);
+    }
+
+    #[test]
+    fn state_without_a_modifier_layout_gets_the_default_one() {
+        // Projects written before modifiers existed carry no such field.
+        let restored: ProjectFile =
+            serde_json::from_str(r#"{"version":1,"project":{}}"#).expect("must deserialize");
+
+        assert_eq!(restored.project.modifiers().len(), crate::MODIFIER_COUNT);
     }
 
     #[test]

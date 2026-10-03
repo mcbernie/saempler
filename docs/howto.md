@@ -138,6 +138,27 @@ and release. Speed and pitch both change the read rate, so a transposed cell is
 also shorter. Duplicating a cell and changing only the copy is the quickest way
 to the idea the instrument is built on.
 
+The modifier keys, an octave below the pads:
+
+```
+C1   Reverse      play the slice backwards
+D1   Stutter      loop a sixteenth from the trigger point
+E1   Repeat       loop an eighth from the trigger point
+F1   Half-Time    read at half speed
+G1   Brake        slow to a stop over one whole note
+```
+
+Click a modifier pad to cycle its mode:
+
+```
+Hold       in effect while the key is down
+Toggle     in effect until the key is pressed again
+One Shot   in effect for the next performance note, then cleared
+```
+
+Stutter, repeat and brake follow the host tempo. In the standalone that is the
+`--tempo` option, which defaults to 120.
+
 The gain knob:
 
 ```
@@ -221,8 +242,8 @@ breaks the restore, and the error appears under the waveform.
 
 ## What you are actually testing right now
 
-This is phase 3: slices on notes, each played its own way. The thing worth
-trying is the one the instrument exists for — put one slice on two notes, set
-one of them to reverse or half speed, and play them against each other.
+This is phase 4: modifier keys that change the performance as it happens. Hold
+C1 and play a run of pads; set D1 to one shot and arm a single stutter in the
+middle of a phrase; hold G1 and let a chop brake to a stop.
 
-Modifier notes, stutter, tape stop and the effects come next.
+Effects and gestures come next.

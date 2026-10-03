@@ -1,5 +1,7 @@
 use std::sync::Arc;
 
+use saempler_model::{Modifier, ModifierMode};
+
 use crate::sample::SampleBuffer;
 
 /// Number of commands the queue can hold between two audio callbacks.
@@ -56,6 +58,12 @@ pub struct CellSpec {
     pub gain: f32,
     pub attack_ms: f32,
     pub release_ms: f32,
+    /// Length of the loop a stutter imposes, in frames. Zero plays straight
+    /// through. Set by modifiers, never by the cell itself.
+    pub loop_frames: u64,
+    /// Output frames over which playback slows to a stop. Zero plays at a
+    /// steady rate. Set by modifiers, never by the cell itself.
+    pub tape_stop_frames: u64,
 }
 
 impl Default for CellSpec {
@@ -67,6 +75,8 @@ impl Default for CellSpec {
             gain: 1.0,
             attack_ms: 3.0,
             release_ms: 30.0,
+            loop_frames: 0,
+            tape_stop_frames: 0,
         }
     }
 }
@@ -86,6 +96,13 @@ pub enum EngineCommand {
     SetCell { note: u8, spec: Option<CellSpec> },
     /// Take every cell off the keyboard.
     ClearCells,
+    /// Put a modifier on a MIDI note, or take one off with `None`.
+    SetModifier {
+        note: u8,
+        assignment: Option<(Modifier, ModifierMode)>,
+    },
+    /// Take every modifier off the keyboard and release the ones in effect.
+    ClearModifiers,
     /// Play this region once, without a note.
     ///
     /// Used by the interface to audition a slice on click. The voice ends by

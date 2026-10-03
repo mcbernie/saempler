@@ -14,6 +14,7 @@ use saempler_audio::{
     EngineCommand, Meters,
 };
 use saempler_core::{cell_spec, load_sample};
+use saempler_model::{Modifier, ModifierMode};
 use saempler_ui::{SampleView, ViewState};
 
 mod params;
@@ -147,6 +148,7 @@ impl Plugin for Saempler {
             // The keyboard mapping is rebuilt from the project: a restored
             // project brings its own cells, a fresh import has none yet.
             let mut specs: Vec<(u8, CellSpec)> = Vec::new();
+            let mut modifiers: Vec<(u8, (Modifier, ModifierMode))> = Vec::new();
             {
                 let mut project = match project.lock() {
                     Ok(project) => project,
@@ -162,6 +164,9 @@ impl Plugin for Saempler {
                         specs.push((cell.midi_note, spec));
                     }
                 }
+                for entry in project.project.modifiers() {
+                    modifiers.push((entry.note, (entry.modifier, entry.mode)));
+                }
             }
 
             if let Ok(mut commands) = commands.lock() {
@@ -171,6 +176,13 @@ impl Plugin for Saempler {
                     let _ = commands.push(EngineCommand::SetCell {
                         note,
                         spec: Some(spec),
+                    });
+                }
+                let _ = commands.push(EngineCommand::ClearModifiers);
+                for (note, assignment) in modifiers {
+                    let _ = commands.push(EngineCommand::SetModifier {
+                        note,
+                        assignment: Some(assignment),
                     });
                 }
             }
@@ -244,6 +256,20 @@ impl Plugin for Saempler {
 
         self.engine.prepare(buffer_config.sample_rate);
 
+        // The modifier layout exists before any sample does, so it is pushed
+        // here rather than from the import task alone.
+        if let Ok(project) = self.params.project.lock() {
+            if let Ok(mut commands) = self.commands.lock() {
+                let _ = commands.push(EngineCommand::ClearModifiers);
+                for entry in project.project.modifiers() {
+                    let _ = commands.push(EngineCommand::SetModifier {
+                        note: entry.note,
+                        assignment: Some((entry.modifier, entry.mode)),
+                    });
+                }
+            }
+        }
+
         // A saved project only stores the path to its sample, so the audio has
         // to be decoded again. `execute` runs the task on this thread and
         // returns when it is done, which keeps offline rendering correct.
@@ -269,6 +295,11 @@ impl Plugin for Saempler {
         context: &mut impl ProcessContext<Self>,
     ) -> ProcessStatus {
         self.engine.apply_commands();
+        // Stutter and brake work in musical lengths, so the engine needs to
+        // know the tempo. A plain field write, cheap enough for every block.
+        if let Some(tempo) = context.transport().tempo {
+            self.engine.set_tempo(tempo);
+        }
 
         let num_samples = buffer.samples();
         let channels = buffer.as_slice();

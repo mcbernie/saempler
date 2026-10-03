@@ -177,6 +177,42 @@ Linear interpolation dulls the top end and adds a little distortion at large
 transpositions; a better interpolator is the first thing `saempler-dsp` will
 hold when it exists.
 
+## Modifier notes
+
+A modifier key makes no sound. It changes how the *next* performance note
+behaves, which is what turns the keyboard into a performance surface rather
+than a set of fixed playback buttons.
+
+A note is either a modifier or a performance cell, never both: the engine
+checks the modifier table first, so a mistaken mapping cannot make a modifier
+audible.
+
+The three modes differ only in when the state clears:
+
+```text
+Hold      while the key is down
+Toggle    until the key is pressed again
+OneShot   until a performance note has actually used it
+```
+
+One shot is consumed by the trigger rather than by the key release. That is
+what makes it mean "the next note" however long that takes.
+
+Modifiers are applied to the flattened `CellSpec` at trigger time, so a cell
+is never modified in place and the same cell can be played plainly and
+modified in the same breath. The state itself is two fixed arrays of booleans,
+so reading it on the audio thread costs an index.
+
+## Musical lengths
+
+Stutter, repeat and brake work in note values, so they need the host tempo.
+`Plugin::process` writes it into the engine once per block, which is a plain
+field store.
+
+Stutter and repeat are deliberately one mechanism — a loop taken from the
+trigger point — at two lengths, a sixteenth and an eighth. Two separate
+implementations of the same loop would be two places to get it wrong.
+
 ## Voice model
 
 Voices are a fixed array of 16 preallocated `Voice` values. A note that finds
@@ -190,6 +226,9 @@ into the tail and would show a playhead running past the region it plays.
 An envelope longer than its slice is scaled down in proportion rather than
 truncated, so a long release on a short chop fades across all of it instead of
 silencing the voice on its first frame.
+
+A looping voice never approaches the slice edge, so it plays until the key is
+released. A braking voice ends when its rate reaches zero.
 
 ## Time representation
 

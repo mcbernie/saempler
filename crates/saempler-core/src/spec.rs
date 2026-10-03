@@ -23,6 +23,10 @@ pub fn cell_spec(project: &Project, cell: &PerformanceCell) -> Option<CellSpec> 
         gain: playback.gain,
         attack_ms: playback.attack_ms,
         release_ms: playback.release_ms,
+        // Looping and braking come from modifier keys at trigger time, never
+        // from the cell itself.
+        loop_frames: 0,
+        tape_stop_frames: 0,
     })
 }
 

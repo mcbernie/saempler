@@ -20,6 +20,8 @@ pub struct Meters {
     peak_right: AtomicU32,
     active_voices: AtomicU32,
     playheads: [AtomicU64; PLAYHEAD_SLOTS],
+    /// One bit per modifier that would affect the next performance note.
+    modifiers: AtomicU32,
 }
 
 impl Default for Meters {
@@ -29,6 +31,7 @@ impl Default for Meters {
             peak_right: AtomicU32::new(0),
             active_voices: AtomicU32::new(0),
             playheads: std::array::from_fn(|_| AtomicU64::new(NO_PLAYHEAD)),
+            modifiers: AtomicU32::new(0),
         }
     }
 }
@@ -94,6 +97,16 @@ impl Meters {
     pub fn any_playhead(&self) -> bool {
         self.playheads().next().is_some()
     }
+
+    /// Publish which modifiers are engaged, one bit each.
+    pub fn store_modifiers(&self, bits: u32) {
+        self.modifiers.store(bits, Ordering::Relaxed);
+    }
+
+    /// Which modifiers are engaged, one bit each.
+    pub fn modifiers(&self) -> u32 {
+        self.modifiers.load(Ordering::Relaxed)
+    }
 }
 
 #[cfg(test)]
@@ -116,6 +129,16 @@ mod tests {
         assert_eq!(meters.active_voices(), 0);
         assert_eq!(meters.playheads().count(), 0);
         assert!(!meters.any_playhead());
+        assert_eq!(meters.modifiers(), 0);
+    }
+
+    #[test]
+    fn engaged_modifiers_round_trip() {
+        let meters = Meters::new();
+
+        meters.store_modifiers(0b1010);
+
+        assert_eq!(meters.modifiers(), 0b1010);
     }
 
     #[test]
