@@ -1,4 +1,4 @@
-use saempler_audio::{CellSpec, SliceBounds};
+use saempler_audio::{CellSpec, ModulationSpec, SliceBounds};
 use saempler_model::{PerformanceCell, Project};
 
 /// Flatten a cell into the form the engine plays.
@@ -21,8 +21,11 @@ pub fn cell_spec(project: &Project, cell: &PerformanceCell) -> Option<CellSpec> 
         rate: playback.rate(),
         reverse: playback.reverse,
         gain: playback.gain,
-        attack_ms: playback.attack_ms,
-        release_ms: playback.release_ms,
+        modulation: ModulationSpec::new(
+            cell.envelopes.map(|envelope| envelope.sanitized()),
+            cell.lfos.map(|lfo| lfo.sanitized()),
+            &cell.routes,
+        ),
         // Looping and braking come from modifier keys at trigger time, never
         // from the cell itself.
         loop_frames: 0,
@@ -52,7 +55,7 @@ mod tests {
     fn the_slice_becomes_frame_bounds() {
         let (mut project, slice) = project_with_slice();
         let id = project.assign(60, slice).expect("the slice exists");
-        let cell = *project.cell(id).expect("cell exists");
+        let cell = project.cell(id).expect("cell exists").clone();
 
         let spec = cell_spec(&project, &cell).expect("the slice is still there");
 
@@ -72,7 +75,7 @@ mod tests {
                 ..Default::default()
             },
         );
-        let cell = *project.cell(id).expect("cell exists");
+        let cell = project.cell(id).expect("cell exists").clone();
 
         let spec = cell_spec(&project, &cell).expect("the slice is still there");
 
@@ -88,26 +91,62 @@ mod tests {
             PlaybackSettings {
                 reverse: true,
                 gain: 0.5,
-                attack_ms: 20.0,
-                release_ms: 150.0,
                 ..Default::default()
             },
         );
-        let cell = *project.cell(id).expect("cell exists");
+        let cell = project.cell(id).expect("cell exists").clone();
 
         let spec = cell_spec(&project, &cell).expect("the slice is still there");
 
         assert!(spec.reverse);
         assert_eq!(spec.gain, 0.5);
-        assert_eq!(spec.attack_ms, 20.0);
-        assert_eq!(spec.release_ms, 150.0);
+    }
+
+    #[test]
+    fn the_modulation_travels_with_the_cell() {
+        let (mut project, slice) = project_with_slice();
+        let id = project.assign(60, slice).expect("the slice exists");
+        project.set_envelope(
+            id,
+            0,
+            saempler_model::EnvelopeDefinition {
+                attack_ms: 123.0,
+                ..Default::default()
+            },
+        );
+        let cell = project.cell(id).expect("cell exists").clone();
+
+        let spec = cell_spec(&project, &cell).expect("the slice is still there");
+
+        assert_eq!(spec.modulation.envelopes[0].attack_ms, 123.0);
+        assert_eq!(
+            spec.modulation.routes.iter().flatten().count(),
+            1,
+            "the amplitude route comes along"
+        );
+    }
+
+    #[test]
+    fn broken_modulation_never_reaches_the_engine() {
+        let (mut project, slice) = project_with_slice();
+        let id = project.assign(60, slice).expect("the slice exists");
+        project.with_cell_mut(id, |cell| {
+            cell.envelopes[0].sustain = f32::NAN;
+            cell.lfos[0].rate_hz = -1.0;
+        });
+        let cell = project.cell(id).expect("cell exists").clone();
+
+        let spec = cell_spec(&project, &cell).expect("the slice is still there");
+
+        assert!(spec.modulation.envelopes[0].sustain.is_finite());
+        assert!(spec.modulation.lfos[0].rate_hz > 0.0);
     }
 
     #[test]
     fn a_cell_without_its_slice_produces_nothing() {
         let (mut project, slice) = project_with_slice();
         let id = project.assign(60, slice).expect("the slice exists");
-        let cell = *project.cell(id).expect("cell exists");
+        let cell = project.cell(id).expect("cell exists").clone();
         project.remove_slice(slice);
 
         assert!(cell_spec(&project, &cell).is_none());
@@ -118,7 +157,7 @@ mod tests {
         let (mut project, slice) = project_with_slice();
         let id = project.assign(60, slice).expect("the slice exists");
         // `set_playback` sanitizes, so the only way in is a hand-built cell.
-        let mut cell = *project.cell(id).expect("cell exists");
+        let mut cell = project.cell(id).expect("cell exists").clone();
         cell.playback.speed = 0.0;
         cell.playback.gain = f32::NAN;
 

@@ -5,6 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::cell::{CellId, PerformanceCell, PlaybackSettings};
 use crate::modifier::{default_layout, Modifier, ModifierAssignment, ModifierMode};
+use crate::modulation::{EnvelopeDefinition, LfoDefinition};
 use crate::slice::{Slice, SliceId};
 
 /// Version of the serialized project layout understood by this build.
@@ -336,7 +337,7 @@ impl Project {
             id,
             midi_note: note,
             slice,
-            playback: PlaybackSettings::default(),
+            ..PerformanceCell::placeholder()
         });
         self.sort_cells();
         Some(id)
@@ -347,10 +348,14 @@ impl Project {
     /// This is how one slice ends up performed several ways: duplicate the
     /// cell, then change the copy.
     pub fn copy_cell_to_note(&mut self, id: CellId, note: u8) -> Option<CellId> {
-        let source = *self.cell(id)?;
+        let source = self.cell(id)?.clone();
         let new_id = self.assign(note, source.slice)?;
         if let Some(cell) = self.cells.iter_mut().find(|cell| cell.id == new_id) {
+            // Everything but the identity and the key it sits on.
             cell.playback = source.playback;
+            cell.envelopes = source.envelopes;
+            cell.lfos = source.lfos;
+            cell.routes = source.routes;
         }
         Some(new_id)
     }
@@ -494,6 +499,45 @@ impl Project {
         match self.cells.iter_mut().find(|cell| cell.id == id) {
             Some(cell) => {
                 cell.playback = playback.sanitized();
+                true
+            }
+            None => false,
+        }
+    }
+
+    /// Change one of a cell's envelopes.
+    pub fn set_envelope(&mut self, id: CellId, index: usize, envelope: EnvelopeDefinition) -> bool {
+        match self.cells.iter_mut().find(|cell| cell.id == id) {
+            Some(cell) => match cell.envelopes.get_mut(index) {
+                Some(slot) => {
+                    *slot = envelope.sanitized();
+                    true
+                }
+                None => false,
+            },
+            None => false,
+        }
+    }
+
+    /// Change one of a cell's LFOs.
+    pub fn set_lfo(&mut self, id: CellId, index: usize, lfo: LfoDefinition) -> bool {
+        match self.cells.iter_mut().find(|cell| cell.id == id) {
+            Some(cell) => match cell.lfos.get_mut(index) {
+                Some(slot) => {
+                    *slot = lfo.sanitized();
+                    true
+                }
+                None => false,
+            },
+            None => false,
+        }
+    }
+
+    /// Edit the modulation matrix of a cell.
+    pub fn with_cell_mut(&mut self, id: CellId, edit: impl FnOnce(&mut PerformanceCell)) -> bool {
+        match self.cells.iter_mut().find(|cell| cell.id == id) {
+            Some(cell) => {
+                edit(cell);
                 true
             }
             None => false,
@@ -1043,8 +1087,8 @@ mod tests {
             .expect("source exists");
 
         assert_ne!(copy, source);
-        let original = *project.cell(source).expect("original survives");
-        let copied = *project.cell(copy).expect("copy exists");
+        let original = project.cell(source).expect("original survives").clone();
+        let copied = project.cell(copy).expect("copy exists").clone();
         assert_eq!(copied.slice, original.slice);
         assert_eq!(copied.playback, original.playback);
         assert_eq!(copied.midi_note, 61);
@@ -1199,6 +1243,132 @@ mod tests {
 
         let stored = project.cell(cell).expect("cell exists");
         assert!(stored.playback.rate() > 0.0);
+    }
+
+    #[test]
+    fn a_new_cell_comes_with_an_amplitude_route() {
+        let mut project = project_with_sample(1_000);
+        let slice = project.add_slice(0, 500);
+        let id = project.assign(60, slice).expect("the slice exists");
+
+        let cell = project.cell(id).expect("cell exists");
+
+        assert!(cell.has_amplitude());
+        assert_eq!(cell.routes.len(), 1);
+    }
+
+    #[test]
+    fn a_cell_without_a_volume_route_reports_no_amplitude() {
+        let mut project = project_with_sample(1_000);
+        let slice = project.add_slice(0, 500);
+        let id = project.assign(60, slice).expect("the slice exists");
+
+        project.with_cell_mut(id, |cell| {
+            cell.routes.clear();
+        });
+
+        assert!(!project.cell(id).expect("cell exists").has_amplitude());
+    }
+
+    #[test]
+    fn routes_can_be_added_removed_and_changed() {
+        let mut project = project_with_sample(1_000);
+        let slice = project.add_slice(0, 500);
+        let id = project.assign(60, slice).expect("the slice exists");
+
+        project.with_cell_mut(id, |cell| {
+            assert!(cell.add_route(crate::ModulationRoute {
+                source: crate::ModSource::Lfo1,
+                destination: crate::ModDestination::Pitch,
+                amount: 0.5,
+            }));
+            assert_eq!(cell.routes.len(), 2);
+
+            assert!(cell.set_route(
+                1,
+                crate::ModulationRoute {
+                    source: crate::ModSource::Lfo2,
+                    destination: crate::ModDestination::Pan,
+                    amount: -0.25,
+                }
+            ));
+            assert_eq!(cell.routes[1].destination, crate::ModDestination::Pan);
+
+            assert!(cell.remove_route(1));
+            assert_eq!(cell.routes.len(), 1);
+            assert!(!cell.remove_route(9));
+        });
+    }
+
+    #[test]
+    fn the_matrix_has_a_ceiling() {
+        let mut project = project_with_sample(1_000);
+        let slice = project.add_slice(0, 500);
+        let id = project.assign(60, slice).expect("the slice exists");
+
+        project.with_cell_mut(id, |cell| {
+            while cell.routes.len() < crate::MAX_ROUTES {
+                assert!(cell.add_route(crate::ModulationRoute::default()));
+            }
+            assert!(
+                !cell.add_route(crate::ModulationRoute::default()),
+                "the engine holds a fixed number of routes"
+            );
+        });
+    }
+
+    #[test]
+    fn copying_a_cell_carries_its_modulation() {
+        let mut project = project_with_sample(1_000);
+        let slice = project.add_slice(0, 500);
+        let source = project.assign(60, slice).expect("the slice exists");
+        project.with_cell_mut(source, |cell| {
+            cell.envelopes[1].attack_ms = 500.0;
+            cell.lfos[0].shape = crate::LfoShape::Square;
+            cell.add_route(crate::ModulationRoute {
+                source: crate::ModSource::Lfo1,
+                destination: crate::ModDestination::Pitch,
+                amount: 0.5,
+            });
+        });
+
+        let copy = project
+            .copy_cell_to_note(source, 61)
+            .expect("the source exists");
+
+        let copied = project.cell(copy).expect("the copy exists");
+        assert_eq!(copied.envelopes[1].attack_ms, 500.0);
+        assert_eq!(copied.lfos[0].shape, crate::LfoShape::Square);
+        assert_eq!(copied.routes.len(), 2);
+    }
+
+    #[test]
+    fn envelopes_and_lfos_can_be_changed() {
+        let mut project = project_with_sample(1_000);
+        let slice = project.add_slice(0, 500);
+        let id = project.assign(60, slice).expect("the slice exists");
+
+        assert!(project.set_envelope(
+            id,
+            1,
+            EnvelopeDefinition {
+                attack_ms: 100.0,
+                ..Default::default()
+            }
+        ));
+        assert!(project.set_lfo(
+            id,
+            0,
+            LfoDefinition {
+                sync: true,
+                ..Default::default()
+            }
+        ));
+        assert!(!project.set_envelope(id, 9, EnvelopeDefinition::default()));
+
+        let cell = project.cell(id).expect("cell exists");
+        assert_eq!(cell.envelopes[1].attack_ms, 100.0);
+        assert!(cell.lfos[0].sync);
     }
 
     #[test]

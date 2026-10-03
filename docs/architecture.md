@@ -247,6 +247,22 @@ An envelope longer than its slice is scaled down in proportion rather than
 truncated, so a long release on a short chop fades across all of it instead of
 silencing the voice on its first frame.
 
+## Modulation
+
+A cell owns two envelopes, two LFOs and a list of routes. None of the sources
+is tied to a parameter; a route names a source, a destination and an amount,
+and the engine sums the routes that share a destination.
+
+Volume is a destination like any other. A new cell is given one route, envelope
+A to volume, so it has an amplitude envelope, but that route can be edited or
+removed like the rest. Nothing reaching volume means a silent cell, which the
+interface says out loud rather than leaving to be discovered.
+
+The engine holds the whole thing in a `Copy` value: fixed arrays of envelope
+and LFO definitions and `[Option<RouteSpec>; MAX_ROUTES]`. A cell therefore
+crosses to the audio thread without allocating, and a voice evaluates its
+modulation per frame out of preallocated state.
+
 A looping voice never approaches the slice edge, so it plays until the key is
 released. A braking voice ends when its rate reaches zero.
 

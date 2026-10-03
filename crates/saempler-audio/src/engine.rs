@@ -88,10 +88,19 @@ impl Engine {
         self.meters.store_modifiers(0);
     }
 
-    /// Tell the engine the host tempo. Called once per block, off no lock.
+    /// Tell the engine the host tempo. Called once per block, no lock taken.
     pub fn set_tempo(&mut self, tempo: f64) {
-        if tempo.is_finite() && tempo > 1.0 {
-            self.tempo = tempo;
+        if !tempo.is_finite() || tempo <= 1.0 || tempo == self.tempo {
+            return;
+        }
+
+        self.tempo = tempo;
+        // Synced LFOs follow without restarting: a tempo change mid-note is a
+        // change of speed, not a new note.
+        for voice in &mut self.voices {
+            if voice.is_active() {
+                voice.set_tempo(tempo);
+            }
         }
     }
 
@@ -260,7 +269,15 @@ impl Engine {
                 .unwrap_or(0),
         };
 
-        self.voices[slot].start_with_base(note, velocity, age, base, spec, self.sample_rate);
+        self.voices[slot].start(
+            note,
+            velocity,
+            age,
+            base,
+            spec,
+            self.sample_rate,
+            self.tempo,
+        );
     }
 
     /// Release every voice currently holding `note`.

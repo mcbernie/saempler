@@ -2,6 +2,7 @@ use std::sync::Arc;
 
 use saempler_model::{Modifier, ModifierMode};
 
+use crate::modulation::ModulationSpec;
 use crate::sample::SampleBuffer;
 
 /// Number of commands the queue can hold between two audio callbacks.
@@ -56,8 +57,8 @@ pub struct CellSpec {
     pub rate: f32,
     pub reverse: bool,
     pub gain: f32,
-    pub attack_ms: f32,
-    pub release_ms: f32,
+    /// Envelopes, LFOs and the matrix that joins them to parameters.
+    pub modulation: ModulationSpec,
     /// Length of the loop a stutter imposes, in frames. Zero plays straight
     /// through. Set by modifiers, never by the cell itself.
     pub loop_frames: u64,
@@ -73,8 +74,7 @@ impl Default for CellSpec {
             rate: 1.0,
             reverse: false,
             gain: 1.0,
-            attack_ms: 3.0,
-            release_ms: 30.0,
+            modulation: ModulationSpec::default(),
             loop_frames: 0,
             tape_stop_frames: 0,
         }

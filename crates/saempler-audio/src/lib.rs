@@ -16,6 +16,7 @@ mod command;
 mod engine;
 mod meters;
 mod modifiers;
+mod modulation;
 mod sample;
 mod voice;
 
@@ -26,4 +27,7 @@ pub use command::{
 pub use engine::{Engine, MAX_VOICES, NOTE_COUNT};
 pub use meters::{Meters, PLAYHEAD_SLOTS};
 pub use modifiers::{division_frames, ModifierState, DEFAULT_TEMPO};
+pub use modulation::{
+    division_hz, Modulation, ModulationFrame, ModulationSpec, RouteSpec, PITCH_RANGE_SEMITONES,
+};
 pub use sample::SampleBuffer;

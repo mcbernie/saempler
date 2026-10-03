@@ -14,6 +14,19 @@ const END_ANGLE: f32 = 0.75 * std::f32::consts::PI;
 /// Number of line segments used to draw the value arc.
 const ARC_SEGMENTS: usize = 48;
 
+/// Unit a knob's readout is written in.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub enum Unit {
+    /// A bare number.
+    #[default]
+    Plain,
+    /// A factor on something else, as speed is on the recorded rate.
+    Multiplier,
+    Milliseconds,
+    Semitones,
+    Hertz,
+}
+
 /// How a control maps its position to a value.
 #[derive(Debug, Clone, Copy)]
 pub enum Taper {
@@ -25,6 +38,21 @@ pub enum Taper {
     Logarithmic,
 }
 
+/// What a value knob shows, apart from the value it edits.
+///
+/// Grouped into one value because the page carries a dozen knobs and a list of
+/// positional arguments stopped saying which was which.
+#[derive(Debug, Clone, Copy)]
+pub struct KnobSpec<'a> {
+    pub label: &'a str,
+    pub range: (f32, f32),
+    /// Value a double click returns to.
+    pub default: f32,
+    pub taper: Taper,
+    pub unit: Unit,
+    pub diameter: f32,
+}
+
 /// A rotary control over a plain value, not a host parameter.
 ///
 /// Cell settings are not automatable, so they cannot go through `ParamSetter`
@@ -32,17 +60,16 @@ pub enum Taper {
 /// vertical drag, shift for fine adjustment, double click to reset.
 ///
 /// Returns true when the value changed this frame.
-#[allow(clippy::too_many_arguments)]
-pub fn value_knob(
-    ui: &mut Ui,
-    theme: &Theme,
-    label: &str,
-    value: &mut f32,
-    range: (f32, f32),
-    default: f32,
-    taper: Taper,
-    diameter: f32,
-) -> bool {
+pub fn value_knob(ui: &mut Ui, theme: &Theme, spec: KnobSpec<'_>, value: &mut f32) -> bool {
+    let KnobSpec {
+        label,
+        range,
+        default,
+        taper,
+        unit,
+        diameter,
+    } = spec;
+
     let label_height = theme.font_sm * 2.6;
     let (rect, response) = ui.allocate_exact_size(
         vec2(diameter.max(theme.font_sm * 5.0), diameter + label_height),
@@ -122,7 +149,7 @@ pub fn value_knob(
     painter.text(
         Pos2::new(centre.x, dial.max.y + theme.font_sm + theme.spacing_sm),
         Align2::CENTER_TOP,
-        format_value(*value, taper),
+        format_value(*value, unit),
         FontId::proportional(theme.font_sm),
         theme.text,
     );
@@ -167,14 +194,28 @@ fn from_normalized(normalized: f32, range: (f32, f32), taper: Taper) -> f32 {
 }
 
 /// Short display form of a value.
-fn format_value(value: f32, taper: Taper) -> String {
-    match taper {
-        Taper::Logarithmic => format!("{value:.2}×"),
-        Taper::Linear => {
+///
+/// Readouts are kept to a handful of characters: they sit under a knob barely
+/// wider than the text, and a long number would run into its neighbour.
+pub(crate) fn format_value(value: f32, unit: Unit) -> String {
+    match unit {
+        Unit::Multiplier => format!("{value:.2}×"),
+        Unit::Milliseconds => {
+            if value >= 1_000.0 {
+                format!("{:.2} s", value / 1_000.0)
+            } else if value >= 100.0 {
+                format!("{value:.0} ms")
+            } else {
+                format!("{value:.1} ms")
+            }
+        }
+        Unit::Semitones => format!("{value:+.1} st"),
+        Unit::Hertz => format!("{value:.2} Hz"),
+        Unit::Plain => {
             if value.abs() >= 100.0 {
                 format!("{value:.0}")
             } else {
-                format!("{value:.1}")
+                format!("{value:.2}")
             }
         }
     }
@@ -251,6 +292,18 @@ mod tests {
         assert_eq!(to_normalized(5.0, range, Taper::Linear), 0.0);
         assert_eq!(to_normalized(5.0, range, Taper::Logarithmic), 0.0);
         assert!(from_normalized(0.5, range, Taper::Linear).is_finite());
+    }
+
+    #[test]
+    fn a_readout_says_what_the_number_means() {
+        assert_eq!(format_value(1.0, Unit::Multiplier), "1.00×");
+        assert_eq!(format_value(3.0, Unit::Milliseconds), "3.0 ms");
+        assert_eq!(format_value(250.0, Unit::Milliseconds), "250 ms");
+        assert_eq!(format_value(2_000.0, Unit::Milliseconds), "2.00 s");
+        assert_eq!(format_value(-7.0, Unit::Semitones), "-7.0 st");
+        assert_eq!(format_value(0.0, Unit::Semitones), "+0.0 st");
+        assert_eq!(format_value(2.0, Unit::Hertz), "2.00 Hz");
+        assert_eq!(format_value(0.5, Unit::Plain), "0.50");
     }
 
     #[test]

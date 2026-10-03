@@ -6,6 +6,7 @@
 
 mod cell;
 mod modifier;
+mod modulation;
 mod project;
 mod slice;
 
@@ -14,6 +15,10 @@ pub use cell::{
 };
 pub use modifier::{
     default_layout, Modifier, ModifierAssignment, ModifierMode, MODIFIER_BASE_NOTE, MODIFIER_COUNT,
+};
+pub use modulation::{
+    default_routes, Division, EnvelopeDefinition, LfoDefinition, LfoShape, ModDestination,
+    ModSource, ModulationRoute, DESTINATION_COUNT, ENVELOPE_COUNT, LFO_COUNT, MAX_ROUTES,
 };
 pub use project::{Project, ProjectError, ProjectFile, SampleRef, PROJECT_VERSION};
 pub use slice::{Slice, SliceId};

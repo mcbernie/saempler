@@ -7,8 +7,9 @@ use saempler_audio::{CellSpec, CommandProducer, EngineCommand, Meters, SampleBuf
 use saempler_core::PeakCache;
 use saempler_model::{Modifier, ProjectFile};
 
+use crate::screens::cell::cell_section;
 use crate::screens::modifiers::modifier_section;
-use crate::screens::performance::{cell_section, performance_section};
+use crate::screens::performance::performance_section;
 use crate::screens::source::source_section;
 use crate::theme::Theme;
 use crate::widgets::{knob, led, readout, stereo_meter, tab_bar, ViewRange};
@@ -156,7 +157,9 @@ pub fn draw(ctx: &egui::Context, setter: &ParamSetter, state: &ViewState<'_>) ->
 
                     // The page scrolls; the header and the footer stay put, so
                     // the meters and modifier lamps are always in view.
-                    let footer = KNOB_DIAMETER + THEME.font_sm * 10.0 + THEME.spacing_lg * 2.0;
+                    // Height of the footer below: its knob plus the knob's two
+                    // label lines, the section title and the frame margins.
+                    let footer = KNOB_DIAMETER + THEME.font_sm * 4.6 + THEME.spacing_lg * 2.0;
                     egui::ScrollArea::vertical()
                         .max_height((ui.available_height() - footer).max(140.0))
                         .auto_shrink([false, false])
@@ -322,9 +325,22 @@ pub(crate) fn section(ui: &mut Ui, title: &str, contents: impl FnOnce(&mut Ui)) 
 }
 
 /// A dimmed line of explanatory text.
+///
+/// Sized to the text rather than to the available width, so a hint placed in a
+/// row leaves room for what follows it.
 pub(crate) fn hint(ui: &mut Ui, text: &str) {
+    let width = ui.fonts(|fonts| {
+        fonts
+            .layout_no_wrap(
+                text.to_owned(),
+                FontId::proportional(THEME.font_sm),
+                THEME.text_dim,
+            )
+            .size()
+            .x
+    });
     let (rect, _) = ui.allocate_exact_size(
-        vec2(ui.available_width(), THEME.font_sm * 1.7),
+        vec2(width.min(ui.available_width()), THEME.font_sm * 1.7),
         Sense::hover(),
     );
     ui.painter().text(

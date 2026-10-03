@@ -133,10 +133,23 @@ Kopie auf naechste Note     duplicate the selected cell one semitone up
 play that note              the cell sounds, polyphonically
 ```
 
-The CELL section edits the selected pad: reverse, speed, pitch, gain, attack
-and release. Speed and pitch both change the read rate, so a transposed cell is
-also shorter. Duplicating a cell and changing only the copy is the quickest way
-to the idea the instrument is built on.
+The CELL page edits the selected pad. Playback holds reverse, speed, pitch and
+gain; speed and pitch both change the read rate, so a transposed cell is also
+shorter. Duplicating a cell and changing only the copy is the quickest way to
+the idea the instrument is built on.
+
+Below that sit two envelopes, two LFOs and the modulation matrix. None of the
+four modules is wired to anything by itself: a route in the matrix decides what
+it changes and by how much. A new cell starts with one route, ENV A to volume,
+which is the amplitude envelope. Take it out and the cell falls silent, and the
+page says so.
+
+```
+cycle a selector    left click steps forwards, right click steps back
+drag an amount      the bar fills from zero, either way for an LFO
+Sync                locks an LFO to the host tempo and swaps hertz for notes
+Retrigger           restarts the LFO phase with every note
+```
 
 The editor has four pages. The output meters and the modifier lamps stay
 visible under all of them, because you need to see what the modifiers are doing
@@ -262,8 +275,12 @@ breaks the restore, and the error appears under the waveform.
 
 ## What you are actually testing right now
 
-This is phase 4: modifier keys that change the performance as it happens, both
-for the next note and for the notes already ringing. Play a chop, and while it
-sounds press reverse, then stutter, then brake. That sequence is the instrument.
+This is phase 5: every cell carries two envelopes, two LFOs and a matrix that
+decides what they reach. Try an LFO on the playback rate of one cell while the
+cell next to it, on the same slice, has none.
 
-Envelopes, LFOs, a modulation matrix and the advanced playback modes come next.
+The modifier keys still change the performance as it happens, both for the next
+note and for the notes already ringing. Play a chop, and while it sounds press
+reverse, then stutter, then brake. That sequence is the instrument.
+
+The advanced playback modes, regions and effects come next.

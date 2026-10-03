@@ -193,6 +193,7 @@ mod tests {
             midi_note: 60,
             slice: SliceId(0),
             playback,
+            ..PerformanceCell::placeholder()
         }
     }
 
