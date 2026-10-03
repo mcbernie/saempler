@@ -210,6 +210,14 @@ fn source_section(ui: &mut Ui, state: &ViewState<'_>) -> bool {
         if let Some(id) = action.select {
             project.project.select(Some(id));
             selection_changed = true;
+            // A click auditions what it selected; the voice ends by itself at
+            // the end of the slice, so nothing has to release it.
+            if let Some(slice) = project.project.slice(id) {
+                state.send(EngineCommand::Preview(SliceBounds {
+                    start_frame: slice.start_frame,
+                    end_frame: slice.end_frame,
+                }));
+            }
         }
 
         if let Some((id, frame)) = action.split {
@@ -220,6 +228,12 @@ fn source_section(ui: &mut Ui, state: &ViewState<'_>) -> bool {
 
         if let Some((from, to)) = action.move_boundary {
             if project.project.move_boundary(from, to, total) {
+                selection_changed = true;
+            }
+        }
+
+        if let Some(frame) = action.remove_boundary {
+            if project.project.remove_boundary(frame) {
                 selection_changed = true;
             }
         }
@@ -354,7 +368,7 @@ fn status_line(
     let gestures = if total == 0 {
         String::new()
     } else {
-        "   |   Rad: Zoom  ·  rechte Maustaste ziehen: verschieben  ·           Doppelklick: teilen"
+        "   |   Rad: Zoom  ·  ziehen: verschieben  ·  Marker ziehen: Grenze  ·  Rechtsklick auf Marker: entfernen  ·  Doppelklick: teilen"
             .to_owned()
     };
 

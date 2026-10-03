@@ -55,6 +55,11 @@ pub enum EngineCommand {
     ClearSample,
     /// Set the region that newly triggered voices play.
     SetSlice(SliceBounds),
+    /// Play this region once, without a note.
+    ///
+    /// Used by the interface to audition a slice on click. The voice ends by
+    /// itself at the end of the region, so no release command follows.
+    Preview(SliceBounds),
     /// Release every sounding voice immediately.
     AllNotesOff,
 }

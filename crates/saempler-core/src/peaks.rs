@@ -2,10 +2,11 @@ use saempler_audio::SampleBuffer;
 
 /// Frames summarised by one peak at the finest level.
 ///
-/// At 48 kHz this makes level 0 about 5 ms per peak, which is finer than any
-/// pixel the waveform is ever drawn at, while costing 1/256th of the audio in
-/// memory.
-pub const BASE_FRAMES_PER_PEAK: u64 = 256;
+/// At 48 kHz this makes level 0 about 1.3 ms per peak. The cache costs one
+/// minimum/maximum pair per 64 frames, so a stereo minute takes roughly
+/// 720 kB — cheap enough to buy a visibly finer trace at moderate zoom, and
+/// the point from which the widget switches to reading the audio itself.
+pub const BASE_FRAMES_PER_PEAK: u64 = 64;
 
 /// Smallest number of peaks a level may have before the pyramid stops growing.
 const MIN_LEVEL_LEN: usize = 2;

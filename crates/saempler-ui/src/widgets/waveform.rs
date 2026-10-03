@@ -1,6 +1,6 @@
 use nih_plug_egui::egui::{
-    pos2, vec2, Align2, Color32, CursorIcon, FontId, PointerButton, Rect, Response, Sense, Stroke,
-    StrokeKind, Ui,
+    pos2, vec2, Align2, Color32, CursorIcon, FontId, Painter, PointerButton, Pos2, Rect, Response,
+    Sense, Stroke, StrokeKind, Ui,
 };
 use saempler_audio::SampleBuffer;
 use saempler_core::{PeakCache, BASE_FRAMES_PER_PEAK};
@@ -44,10 +44,12 @@ pub struct WaveformSource<'a> {
 /// what a gesture means for the project.
 #[derive(Debug, Default)]
 pub struct WaveformAction {
-    /// A slice was clicked and should become the selection.
+    /// A slice was clicked: select it and play it once.
     pub select: Option<SliceId>,
     /// A boundary was dragged: move the one at `.0` to `.1`.
     pub move_boundary: Option<(u64, u64)>,
+    /// A boundary was right clicked and should be taken out.
+    pub remove_boundary: Option<u64>,
     /// A slice was double clicked at this frame and should be split there.
     pub split: Option<(SliceId, u64)>,
     /// The view was zoomed or panned.
@@ -56,14 +58,16 @@ pub struct WaveformAction {
     pub hovered_frame: Option<u64>,
 }
 
-/// The boundary a drag grabbed, remembered for the length of that drag.
+/// What a drag that is underway is doing.
 ///
-/// Without this the widget would look for a marker near the *current* pointer
-/// on every frame, and lose the boundary as soon as the pointer moved past the
-/// grab radius.
+/// Decided once when the button goes down, because the gesture depends on
+/// what sat under the pointer at that moment, and the pointer moves on.
 #[derive(Debug, Clone, Copy)]
-struct GrabbedBoundary {
-    frame: u64,
+enum Dragging {
+    /// Moving the boundary that currently sits at this frame.
+    Boundary(u64),
+    /// Shifting the view itself.
+    View,
 }
 
 /// Draw the source waveform with its slice markers.
@@ -170,15 +174,28 @@ fn draw_slice_backgrounds(
 }
 
 /// Draw the waveform itself, from peaks or from the audio.
+///
+/// One column per *device* pixel rather than per layout point, so the trace
+/// keeps its detail on a scaled display instead of being drawn once per
+/// logical point and stretched across several pixels.
 fn draw_trace(ui: &Ui, theme: &Theme, rect: Rect, view: ViewRange, source: &WaveformSource<'_>) {
-    let columns = rect.width().floor().max(1.0) as u32;
-    let frames_per_pixel = view.len_frames() as f64 / columns as f64;
+    let scale = ui.ctx().pixels_per_point().max(1.0);
+    let columns = (rect.width() * scale).floor().max(1.0) as u32;
+    let frames_per_column = view.len_frames() as f64 / columns as f64;
+    let step = 1.0 / scale;
 
     match source.buffer {
-        Some(buffer) if frames_per_pixel < DETAIL_THRESHOLD => {
-            draw_detailed(ui, theme, rect, view, buffer, columns, frames_per_pixel)
-        }
-        _ => draw_from_peaks(ui, theme, rect, view, source.peaks, columns),
+        Some(buffer) if frames_per_column < DETAIL_THRESHOLD => draw_detailed(
+            ui,
+            theme,
+            rect,
+            view,
+            buffer,
+            columns,
+            step,
+            frames_per_column,
+        ),
+        _ => draw_from_peaks(ui, theme, rect, view, source.peaks, columns, step),
     }
 }
 
@@ -190,6 +207,7 @@ fn draw_from_peaks(
     view: ViewRange,
     peaks: &PeakCache,
     columns: u32,
+    step: f32,
 ) {
     let painter = ui.painter();
     let level = peaks.level_for(view.len_frames(), columns as f32);
@@ -201,12 +219,22 @@ fn draw_from_peaks(
         let end = frame_at_column(view, columns, column + 1).max(start + 1);
         let peak = peaks.peak_in(level, start, end);
 
-        let x = rect.min.x + column as f32 + 0.5;
-        draw_column(painter, theme, x, centre, half_height, peak.min, peak.max);
+        let x = rect.min.x + column as f32 * step;
+        draw_column(
+            painter,
+            theme,
+            x,
+            centre,
+            half_height,
+            step,
+            peak.min,
+            peak.max,
+        );
     }
 }
 
 /// Read the audio directly, for zoom levels the peak cache cannot resolve.
+#[allow(clippy::too_many_arguments)]
 fn draw_detailed(
     ui: &Ui,
     theme: &Theme,
@@ -214,12 +242,14 @@ fn draw_detailed(
     view: ViewRange,
     buffer: &SampleBuffer,
     columns: u32,
-    frames_per_pixel: f64,
+    step: f32,
+    frames_per_column: f64,
 ) {
     let painter = ui.painter();
     let half_height = rect.height() * 0.5;
     let centre = rect.center().y;
     let samples = buffer.channel(0);
+    let mut previous: Option<Pos2> = None;
 
     for column in 0..columns {
         let start = frame_at_column(view, columns, column) as usize;
@@ -236,13 +266,21 @@ fn draw_detailed(
             max = max.max(*sample);
         }
 
-        let x = rect.min.x + column as f32 + 0.5;
-        draw_column(painter, theme, x, centre, half_height, min, max);
+        let x = rect.min.x + column as f32 * step;
+        draw_column(painter, theme, x, centre, half_height, step, min, max);
 
-        // Zoomed in far enough that individual samples are distinguishable.
-        if frames_per_pixel < SAMPLE_DOT_THRESHOLD {
-            let y = centre - samples[from].clamp(-1.0, 1.0) * half_height;
-            painter.circle_filled(pos2(x, y), 1.5, theme.accent);
+        // Close enough that a column no longer covers a whole cycle: join the
+        // sample values so the shape reads as a curve rather than as spikes.
+        if frames_per_column < 1.0 {
+            let point = pos2(x, centre - samples[from].clamp(-1.0, 1.0) * half_height);
+            if let Some(previous) = previous {
+                painter.line_segment([previous, point], Stroke::new(step, theme.waveform));
+            }
+            previous = Some(point);
+
+            if frames_per_column < SAMPLE_DOT_THRESHOLD {
+                painter.circle_filled(point, 1.5, theme.accent);
+            }
         }
     }
 }
@@ -253,12 +291,14 @@ fn frame_at_column(view: ViewRange, columns: u32, column: u32) -> u64 {
 }
 
 /// Draw one vertical minimum/maximum segment.
+#[allow(clippy::too_many_arguments)]
 fn draw_column(
-    painter: &nih_plug_egui::egui::Painter,
+    painter: &Painter,
     theme: &Theme,
     x: f32,
     centre: f32,
     half_height: f32,
+    width: f32,
     min: f32,
     max: f32,
 ) {
@@ -266,15 +306,15 @@ fn draw_column(
     let bottom = centre - min.clamp(-1.0, 1.0) * half_height;
 
     // A silent column would be an invisible zero-length segment.
-    let (top, bottom) = if (bottom - top).abs() < 1.0 {
-        (centre - 0.5, centre + 0.5)
+    let (top, bottom) = if (bottom - top).abs() < width {
+        (centre - width * 0.5, centre + width * 0.5)
     } else {
         (top, bottom)
     };
 
     painter.line_segment(
         [pos2(x, top), pos2(x, bottom)],
-        Stroke::new(1.0, theme.waveform),
+        Stroke::new(width, theme.waveform),
     );
 }
 
@@ -324,6 +364,19 @@ fn draw_playhead(ui: &Ui, theme: &Theme, rect: Rect, view: ViewRange, source: &W
 }
 
 /// Turn pointer activity into an intent for the caller.
+///
+/// The gestures are:
+///
+/// ```text
+/// wheel                        zoom around the pointer
+/// shift + wheel                shift the view
+/// left drag on a marker        move that boundary
+/// left drag anywhere else      shift the view
+/// right drag                   shift the view
+/// left click on a slice        select it and play it once
+/// right click on a marker      take that boundary out
+/// double click in a slice      split it there
+/// ```
 fn handle_input(
     ui: &Ui,
     rect: Rect,
@@ -333,7 +386,7 @@ fn handle_input(
     action: &mut WaveformAction,
 ) {
     let total = source.peaks.frames();
-    let grab_id = response.id.with("grabbed-boundary");
+    let drag_id = response.id.with("drag-gesture");
 
     // Zoom follows the pointer even without a click.
     if response.hovered() {
@@ -367,21 +420,6 @@ fn handle_input(
     let frame = x_to_frame(rect, view, pointer.x);
     action.hovered_frame = Some(frame);
 
-    // Holding the right button drags the view itself, the way a map pans.
-    if response.dragged_by(PointerButton::Secondary) {
-        let pixels = response.drag_delta().x;
-        if pixels != 0.0 {
-            let per_pixel = view.len_frames() as f64 / rect.width().max(1.0) as f64;
-            let delta = -(pixels as f64 * per_pixel) as i64;
-            let next = view.panned(delta, total);
-            if next != view {
-                action.view = Some(next);
-            }
-        }
-        ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
-        return;
-    }
-
     if response.drag_started() {
         // Where the button went down, not where the pointer is now: egui only
         // reports a drag once it has moved, by which time the pointer may
@@ -389,33 +427,46 @@ fn handle_input(
         let origin = ui
             .input(|input| input.pointer.press_origin())
             .unwrap_or(pointer);
-        let grabbed = nearest_boundary(rect, view, source.slices, origin.x)
-            .map(|frame| GrabbedBoundary { frame });
-        ui.memory_mut(|memory| memory.data.insert_temp(grab_id, grabbed));
+        let gesture = match nearest_boundary(rect, view, source.slices, origin.x) {
+            Some(boundary) if response.dragged_by(PointerButton::Primary) => {
+                Dragging::Boundary(boundary)
+            }
+            _ => Dragging::View,
+        };
+        ui.memory_mut(|memory| memory.data.insert_temp(drag_id, gesture));
     }
 
-    if response.dragged_by(PointerButton::Primary) {
-        // The boundary is the one grabbed when the drag started, not whatever
-        // happens to be near the pointer now.
-        let grabbed: Option<GrabbedBoundary> =
-            ui.memory(|memory| memory.data.get_temp(grab_id)).flatten();
-        if let Some(grabbed) = grabbed {
-            if frame != grabbed.frame {
-                action.move_boundary = Some((grabbed.frame, frame));
-                // Follow the boundary so the next frame grabs the same one.
-                ui.memory_mut(|memory| {
-                    memory
-                        .data
-                        .insert_temp(grab_id, Some(GrabbedBoundary { frame }))
-                });
+    if response.dragged() {
+        let gesture: Option<Dragging> = ui.memory(|memory| memory.data.get_temp(drag_id));
+        match gesture {
+            Some(Dragging::Boundary(grabbed)) => {
+                if frame != grabbed {
+                    action.move_boundary = Some((grabbed, frame));
+                    // Follow the boundary so the next frame moves the same one.
+                    ui.memory_mut(|memory| {
+                        memory.data.insert_temp(drag_id, Dragging::Boundary(frame))
+                    });
+                }
+                ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
+            }
+            _ => {
+                pan_by_drag(ui, rect, view, total, response, action);
             }
         }
-        ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
         return;
     }
 
     if response.drag_stopped() {
-        ui.memory_mut(|memory| memory.data.remove::<Option<GrabbedBoundary>>(grab_id));
+        ui.memory_mut(|memory| memory.data.remove::<Dragging>(drag_id));
+    }
+
+    // Right clicking a marker takes it out; elsewhere the right button is for
+    // dragging the view and a bare click means nothing.
+    if response.clicked_by(PointerButton::Secondary) {
+        if let Some(boundary) = nearest_boundary(rect, view, source.slices, pointer.x) {
+            action.remove_boundary = Some(boundary);
+        }
+        return;
     }
 
     if response.double_clicked() {
@@ -432,9 +483,33 @@ fn handle_input(
     }
 
     // Keeps the pointer shape honest about what a drag would do.
-    if nearest_boundary(rect, view, source.slices, pointer.x).is_some() {
-        ui.ctx().set_cursor_icon(CursorIcon::ResizeHorizontal);
+    let icon = if nearest_boundary(rect, view, source.slices, pointer.x).is_some() {
+        CursorIcon::ResizeHorizontal
+    } else {
+        CursorIcon::Grab
+    };
+    ui.ctx().set_cursor_icon(icon);
+}
+
+/// Shift the view by the distance the pointer moved this frame.
+fn pan_by_drag(
+    ui: &Ui,
+    rect: Rect,
+    view: ViewRange,
+    total: u64,
+    response: &Response,
+    action: &mut WaveformAction,
+) {
+    let pixels = response.drag_delta().x;
+    if pixels != 0.0 {
+        let per_pixel = view.len_frames() as f64 / rect.width().max(1.0) as f64;
+        let delta = -(pixels as f64 * per_pixel) as i64;
+        let next = view.panned(delta, total);
+        if next != view {
+            action.view = Some(next);
+        }
     }
+    ui.ctx().set_cursor_icon(CursorIcon::Grabbing);
 }
 
 /// Frames a wheel movement of `notches` should shift the view by.

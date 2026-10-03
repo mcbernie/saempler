@@ -183,6 +183,46 @@ impl Project {
         true
     }
 
+    /// Remove the slice boundary sitting at `from`.
+    ///
+    /// Between two slices this merges them into one. At an outer edge the
+    /// slice has nothing left to be bounded by, so it goes away entirely.
+    /// Returns whether anything changed.
+    pub fn remove_boundary(&mut self, frame: u64) -> bool {
+        let left = self
+            .slices
+            .iter()
+            .find(|slice| slice.end_frame == frame)
+            .map(|slice| slice.id);
+        let right = self
+            .slices
+            .iter()
+            .find(|slice| slice.start_frame == frame)
+            .map(|slice| slice.id);
+
+        match (left, right) {
+            (Some(left), Some(right)) => {
+                let end = match self.slice(right) {
+                    Some(slice) => slice.end_frame,
+                    None => return false,
+                };
+                if let Some(slice) = self.slices.iter_mut().find(|slice| slice.id == left) {
+                    slice.end_frame = end;
+                }
+                // The merged slice lives on as the left one, so a selection on
+                // the right half follows it rather than disappearing.
+                if self.selection == Some(right) {
+                    self.selection = Some(left);
+                }
+                self.remove_slice(right);
+                self.sort_slices();
+                true
+            }
+            (Some(id), None) | (None, Some(id)) => self.remove_slice(id),
+            (None, None) => false,
+        }
+    }
+
     /// The slice covering `frame`, if any.
     pub fn slice_at(&self, frame: u64) -> Option<&Slice> {
         self.slices.iter().find(|slice| slice.contains(frame))
@@ -575,6 +615,83 @@ mod tests {
         project.add_slice(400, 800);
 
         assert!(!project.move_boundary(400, 400, 1_000));
+    }
+
+    #[test]
+    fn removing_an_inner_boundary_merges_the_two_slices() {
+        let mut project = project_with_sample(1_000);
+        project.add_slice(0, 400);
+        project.add_slice(400, 900);
+
+        assert!(project.remove_boundary(400));
+
+        let slices = project.slices();
+        assert_eq!(slices.len(), 1);
+        assert_eq!((slices[0].start_frame, slices[0].end_frame), (0, 900));
+    }
+
+    #[test]
+    fn a_selection_on_the_right_half_survives_the_merge() {
+        let mut project = project_with_sample(1_000);
+        project.add_slice(0, 400);
+        let right = project.add_slice(400, 900);
+        project.select(Some(right));
+
+        project.remove_boundary(400);
+
+        let selected = project.selected().expect("the merged slice stays selected");
+        assert_eq!((selected.start_frame, selected.end_frame), (0, 900));
+    }
+
+    #[test]
+    fn removing_an_outer_boundary_removes_that_slice() {
+        let mut project = project_with_sample(1_000);
+        project.add_slice(0, 400);
+        project.add_slice(400, 900);
+
+        assert!(project.remove_boundary(0));
+
+        let slices = project.slices();
+        assert_eq!(slices.len(), 1);
+        assert_eq!((slices[0].start_frame, slices[0].end_frame), (400, 900));
+    }
+
+    #[test]
+    fn removing_the_last_boundary_removes_the_last_slice() {
+        let mut project = project_with_sample(1_000);
+        project.add_slice(0, 400);
+        project.add_slice(400, 900);
+
+        assert!(project.remove_boundary(900));
+
+        assert_eq!(project.slices().len(), 1);
+        assert_eq!(project.slices()[0].end_frame, 400);
+    }
+
+    #[test]
+    fn removing_a_boundary_that_does_not_exist_changes_nothing() {
+        let mut project = project_with_sample(1_000);
+        project.add_slice(0, 400);
+
+        assert!(!project.remove_boundary(777));
+        assert_eq!(project.slices().len(), 1);
+    }
+
+    #[test]
+    fn merging_repeatedly_ends_with_one_slice() {
+        let mut project = project_with_sample(8_000);
+        project.slice_evenly(8);
+        assert_eq!(project.slices().len(), 8);
+
+        // Always remove the boundary after the first slice.
+        for _ in 0..7 {
+            let boundary = project.slices()[0].end_frame;
+            assert!(project.remove_boundary(boundary));
+        }
+
+        let slices = project.slices();
+        assert_eq!(slices.len(), 1);
+        assert_eq!((slices[0].start_frame, slices[0].end_frame), (0, 8_000));
     }
 
     #[test]

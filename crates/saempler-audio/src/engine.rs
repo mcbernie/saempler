@@ -11,6 +11,12 @@ pub const MAX_VOICES: usize = 16;
 /// Fallback sample rate used before the host reports the real one.
 const DEFAULT_SAMPLE_RATE: f32 = 44_100.0;
 
+/// Note number a preview voice runs under.
+///
+/// Outside the MIDI range on purpose, so that releasing a played note can
+/// never cut an audition short.
+const PREVIEW_NOTE: u8 = u8::MAX;
+
 /// The realtime engine.
 ///
 /// All state is preallocated. [`Engine::render`] performs no allocation, takes
@@ -94,6 +100,7 @@ impl Engine {
                 EngineCommand::SetSample(sample) => self.swap_sample(Some(sample)),
                 EngineCommand::ClearSample => self.swap_sample(None),
                 EngineCommand::SetSlice(bounds) => self.bounds = bounds,
+                EngineCommand::Preview(bounds) => self.trigger(PREVIEW_NOTE, 1.0, bounds),
                 EngineCommand::AllNotesOff => {
                     for voice in &mut self.voices {
                         voice.release();
@@ -136,7 +143,12 @@ impl Engine {
     /// Does nothing without a loaded sample or an empty slice, so a trigger
     /// can never produce a voice that has nothing to play.
     pub fn note_on(&mut self, note: u8, velocity: f32) {
-        if self.sample.is_none() || self.bounds.is_empty() {
+        self.trigger(note, velocity, self.bounds);
+    }
+
+    /// Start a voice over `bounds`, stealing the oldest one if needed.
+    fn trigger(&mut self, note: u8, velocity: f32, bounds: SliceBounds) {
+        if self.sample.is_none() || bounds.is_empty() {
             return;
         }
 
@@ -157,7 +169,7 @@ impl Engine {
                 .unwrap_or(0),
         };
 
-        self.voices[slot].start(note, velocity, age, self.bounds, self.sample_rate);
+        self.voices[slot].start(note, velocity, age, bounds, self.sample_rate);
     }
 
     /// Release every voice currently holding `note`.
@@ -497,6 +509,73 @@ mod tests {
         h.engine.apply_commands();
 
         assert_eq!(h.engine.bounds().start_frame, 1_000);
+    }
+
+    #[test]
+    fn a_preview_plays_its_own_region_without_a_note() {
+        let mut h = harness();
+        load(&mut h, 48_000);
+        // The engine's selected region is deliberately somewhere else.
+        h.commands
+            .push(EngineCommand::SetSlice(SliceBounds {
+                start_frame: 0,
+                end_frame: 100,
+            }))
+            .expect("the queue has capacity");
+        h.engine.apply_commands();
+
+        h.commands
+            .push(EngineCommand::Preview(SliceBounds {
+                start_frame: 10_000,
+                end_frame: 20_000,
+            }))
+            .expect("the queue has capacity");
+        h.engine.apply_commands();
+
+        assert_eq!(h.engine.active_voices(), 1);
+        render(&mut h.engine, 512);
+        let playhead = h.meters.playhead().expect("the preview is sounding");
+        assert!(
+            (10_000..=10_600).contains(&playhead),
+            "the preview must play its own region, got {playhead}"
+        );
+    }
+
+    #[test]
+    fn releasing_a_note_does_not_cut_a_preview() {
+        let mut h = harness();
+        load(&mut h, 48_000);
+        h.commands
+            .push(EngineCommand::Preview(SliceBounds {
+                start_frame: 0,
+                end_frame: 48_000,
+            }))
+            .expect("the queue has capacity");
+        h.engine.apply_commands();
+        render(&mut h.engine, 256);
+
+        // Every MIDI note number, including the extremes.
+        for note in [0u8, 60, 127] {
+            h.engine.note_off(note);
+        }
+        render(&mut h.engine, 4_800);
+
+        assert_eq!(h.engine.active_voices(), 1);
+    }
+
+    #[test]
+    fn a_preview_without_a_sample_does_nothing() {
+        let mut h = harness();
+
+        h.commands
+            .push(EngineCommand::Preview(SliceBounds {
+                start_frame: 0,
+                end_frame: 1_000,
+            }))
+            .expect("the queue has capacity");
+        h.engine.apply_commands();
+
+        assert_eq!(h.engine.active_voices(), 0);
     }
 
     #[test]
