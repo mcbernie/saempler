@@ -52,7 +52,7 @@ pub fn performance_section(ui: &mut Ui, state: &ViewState<'_>) {
             return;
         }
 
-        let playhead = state.meters.playhead();
+        let playheads: Vec<u64> = state.meters.playheads().collect();
         let mut edit: Option<PadEdit> = None;
 
         let available = ui.available_width();
@@ -71,11 +71,11 @@ pub fn performance_section(ui: &mut Ui, state: &ViewState<'_>) {
                                 .position(|candidate| candidate.id == slice.id)
                         })
                         .unwrap_or(0);
-                    // A pad lights up while the engine is inside its slice.
-                    let sounding = match (playhead, slice) {
-                        (Some(frame), Some(slice)) => slice.contains(frame),
-                        _ => false,
-                    };
+                    // A pad lights up while any voice is inside its slice, so
+                    // notes played together all light up at once.
+                    let sounding = slice
+                        .map(|slice| playheads.iter().any(|frame| slice.contains(*frame)))
+                        .unwrap_or(false);
 
                     let action = performance_pad(
                         ui,

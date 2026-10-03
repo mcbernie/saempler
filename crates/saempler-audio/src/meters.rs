@@ -1,7 +1,13 @@
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
 
-/// Published when no voice is sounding, so that zero stays a valid frame.
+/// Published for an idle slot, so that frame zero stays a valid position.
 pub const NO_PLAYHEAD: u64 = u64::MAX;
+
+/// Number of playback positions published at once.
+///
+/// One per voice: with several notes sounding together the interface shows a
+/// playhead for each, not just for the newest.
+pub const PLAYHEAD_SLOTS: usize = 16;
 
 /// Values published by the audio thread for display in the user interface.
 ///
@@ -13,7 +19,7 @@ pub struct Meters {
     peak_left: AtomicU32,
     peak_right: AtomicU32,
     active_voices: AtomicU32,
-    playhead: AtomicU64,
+    playheads: [AtomicU64; PLAYHEAD_SLOTS],
 }
 
 impl Default for Meters {
@@ -22,7 +28,7 @@ impl Default for Meters {
             peak_left: AtomicU32::new(0),
             peak_right: AtomicU32::new(0),
             active_voices: AtomicU32::new(0),
-            playhead: AtomicU64::new(NO_PLAYHEAD),
+            playheads: std::array::from_fn(|_| AtomicU64::new(NO_PLAYHEAD)),
         }
     }
 }
@@ -56,18 +62,37 @@ impl Meters {
         self.active_voices.load(Ordering::Relaxed)
     }
 
-    /// Publish the frame the newest sounding voice is reading.
-    pub fn store_playhead(&self, frame: Option<u64>) {
-        self.playhead
-            .store(frame.unwrap_or(NO_PLAYHEAD), Ordering::Relaxed);
+    /// Publish where one voice is reading, or `None` while its slot is idle.
+    ///
+    /// Slots beyond [`PLAYHEAD_SLOTS`] are ignored rather than wrapping, so a
+    /// larger voice count cannot silently overwrite another voice's position.
+    pub fn store_playhead(&self, slot: usize, frame: Option<u64>) {
+        if let Some(cell) = self.playheads.get(slot) {
+            cell.store(frame.unwrap_or(NO_PLAYHEAD), Ordering::Relaxed);
+        }
     }
 
-    /// Frame of the newest sounding voice, or `None` while nothing sounds.
-    pub fn playhead(&self) -> Option<u64> {
-        match self.playhead.load(Ordering::Relaxed) {
-            NO_PLAYHEAD => None,
-            frame => Some(frame),
+    /// Clear every published position.
+    pub fn clear_playheads(&self) {
+        for cell in &self.playheads {
+            cell.store(NO_PLAYHEAD, Ordering::Relaxed);
         }
+    }
+
+    /// Where each sounding voice is reading.
+    ///
+    /// Borrows rather than collecting, so a caller that only wants to know
+    /// whether any voice is inside a region pays nothing.
+    pub fn playheads(&self) -> impl Iterator<Item = u64> + '_ {
+        self.playheads
+            .iter()
+            .map(|cell| cell.load(Ordering::Relaxed))
+            .filter(|frame| *frame != NO_PLAYHEAD)
+    }
+
+    /// Whether any voice is sounding, without reading every slot twice.
+    pub fn any_playhead(&self) -> bool {
+        self.playheads().next().is_some()
     }
 }
 
@@ -89,17 +114,54 @@ mod tests {
 
         assert_eq!(meters.peaks(), (0.0, 0.0));
         assert_eq!(meters.active_voices(), 0);
-        assert_eq!(meters.playhead(), None);
+        assert_eq!(meters.playheads().count(), 0);
+        assert!(!meters.any_playhead());
     }
 
     #[test]
-    fn the_playhead_distinguishes_frame_zero_from_silence() {
+    fn a_playhead_distinguishes_frame_zero_from_silence() {
         let meters = Meters::new();
 
-        meters.store_playhead(Some(0));
-        assert_eq!(meters.playhead(), Some(0));
+        meters.store_playhead(0, Some(0));
+        assert_eq!(meters.playheads().collect::<Vec<_>>(), vec![0]);
 
-        meters.store_playhead(None);
-        assert_eq!(meters.playhead(), None);
+        meters.store_playhead(0, None);
+        assert_eq!(meters.playheads().count(), 0);
+    }
+
+    #[test]
+    fn every_sounding_voice_gets_its_own_position() {
+        let meters = Meters::new();
+
+        meters.store_playhead(0, Some(100));
+        meters.store_playhead(1, Some(50_000));
+        meters.store_playhead(3, Some(7));
+
+        let mut positions: Vec<u64> = meters.playheads().collect();
+        positions.sort_unstable();
+
+        assert_eq!(positions, vec![7, 100, 50_000]);
+    }
+
+    #[test]
+    fn clearing_removes_every_position() {
+        let meters = Meters::new();
+        for slot in 0..PLAYHEAD_SLOTS {
+            meters.store_playhead(slot, Some(slot as u64));
+        }
+        assert_eq!(meters.playheads().count(), PLAYHEAD_SLOTS);
+
+        meters.clear_playheads();
+
+        assert_eq!(meters.playheads().count(), 0);
+    }
+
+    #[test]
+    fn a_slot_beyond_the_published_range_is_ignored() {
+        let meters = Meters::new();
+
+        meters.store_playhead(PLAYHEAD_SLOTS + 5, Some(42));
+
+        assert_eq!(meters.playheads().count(), 0);
     }
 }

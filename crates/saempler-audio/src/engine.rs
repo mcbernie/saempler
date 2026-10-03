@@ -6,7 +6,10 @@ use crate::sample::SampleBuffer;
 use crate::voice::Voice;
 
 /// Number of preallocated voices. Notes beyond this steal the oldest voice.
-pub const MAX_VOICES: usize = 16;
+///
+/// Tied to the number of published playback positions, so that every sounding
+/// voice has a slot to report from.
+pub const MAX_VOICES: usize = crate::meters::PLAYHEAD_SLOTS;
 
 /// Number of MIDI notes a cell can sit on.
 pub const NOTE_COUNT: usize = 128;
@@ -69,7 +72,7 @@ impl Engine {
         self.next_age = 0;
         self.meters.store_peaks(0.0, 0.0);
         self.meters.store_active_voices(0);
-        self.meters.store_playhead(None);
+        self.meters.clear_playheads();
     }
 
     /// Whether a sample buffer is loaded.
@@ -201,16 +204,11 @@ impl Engine {
         self.voices.iter().filter(|voice| voice.is_active()).count()
     }
 
-    /// Playback position of the most recently started sounding voice.
-    ///
-    /// With several voices at once the newest one is the one the player just
-    /// triggered, so that is the position worth showing.
-    fn playhead(&self) -> Option<u64> {
-        self.voices
-            .iter()
-            .filter(|voice| voice.is_active())
-            .max_by_key(|voice| voice.age())
-            .map(|voice| voice.position())
+    /// Publish where every voice is reading.
+    fn publish_playheads(&self) {
+        for (slot, voice) in self.voices.iter().enumerate() {
+            self.meters.store_playhead(slot, voice.active_position());
+        }
     }
 
     /// Render the mixed voices into `left` and `right`, applying a master gain
@@ -234,7 +232,7 @@ impl Engine {
             right[..frames].fill(0.0);
             self.meters.store_peaks(0.0, 0.0);
             self.meters.store_active_voices(0);
-            self.meters.store_playhead(None);
+            self.meters.clear_playheads();
             return;
         };
 
@@ -264,7 +262,7 @@ impl Engine {
 
         self.meters.store_peaks(peak_left, peak_right);
         self.meters.store_active_voices(self.active_voices() as u32);
-        self.meters.store_playhead(self.playhead());
+        self.publish_playheads();
     }
 }
 
@@ -398,7 +396,7 @@ mod tests {
         h.engine.note_on(62, 1.0);
         render(&mut h.engine, 256);
 
-        let playhead = h.meters.playhead().expect("a voice is sounding");
+        let playhead = h.meters.playheads().next().expect("a voice is sounding");
         assert!(
             (30_000..31_000).contains(&playhead),
             "note 62 must play its own region, got {playhead}"
@@ -668,7 +666,11 @@ mod tests {
 
         assert_eq!(h.engine.active_voices(), 1);
         render(&mut h.engine, 512);
-        let playhead = h.meters.playhead().expect("the preview is sounding");
+        let playhead = h
+            .meters
+            .playheads()
+            .next()
+            .expect("the preview is sounding");
         assert!(
             (10_000..=10_600).contains(&playhead),
             "the preview must play its own region, got {playhead}"
@@ -756,7 +758,7 @@ mod tests {
     }
 
     #[test]
-    fn the_playhead_follows_the_newest_voice() {
+    fn a_sounding_voice_publishes_its_position() {
         let mut h = harness();
         h.commands
             .push(EngineCommand::SetSample(dc_sample(48_000)))
@@ -768,14 +770,15 @@ mod tests {
             })
             .expect("the queue has capacity");
         h.engine.apply_commands();
-        assert_eq!(h.meters.playhead(), None);
+        assert!(!h.meters.any_playhead());
 
         h.engine.note_on(60, 1.0);
         render(&mut h.engine, 512);
 
         let first = h
             .meters
-            .playhead()
+            .playheads()
+            .next()
             .expect("a sounding voice has a position");
         assert!(
             (10_000..=10_600).contains(&first),
@@ -783,8 +786,71 @@ mod tests {
         );
 
         render(&mut h.engine, 512);
-        let later = h.meters.playhead().expect("still sounding");
+        let later = h.meters.playheads().next().expect("still sounding");
         assert!(later > first, "the playhead must advance");
+    }
+
+    #[test]
+    fn notes_played_together_each_publish_their_own_position() {
+        let mut h = harness();
+        h.commands
+            .push(EngineCommand::SetSample(dc_sample(48_000)))
+            .expect("the queue has capacity");
+        h.commands
+            .push(EngineCommand::SetCell {
+                note: 60,
+                spec: Some(spec(0, 20_000)),
+            })
+            .expect("the queue has capacity");
+        h.commands
+            .push(EngineCommand::SetCell {
+                note: 64,
+                spec: Some(spec(30_000, 48_000)),
+            })
+            .expect("the queue has capacity");
+        h.engine.apply_commands();
+
+        h.engine.note_on(60, 1.0);
+        h.engine.note_on(64, 1.0);
+        render(&mut h.engine, 512);
+
+        let mut positions: Vec<u64> = h.meters.playheads().collect();
+        positions.sort_unstable();
+
+        assert_eq!(positions.len(), 2, "both voices must be visible");
+        assert!((0..20_000).contains(&positions[0]), "{positions:?}");
+        assert!((30_000..48_000).contains(&positions[1]), "{positions:?}");
+    }
+
+    #[test]
+    fn a_voice_that_ends_takes_its_position_with_it() {
+        let mut h = harness();
+        h.commands
+            .push(EngineCommand::SetSample(dc_sample(48_000)))
+            .expect("the queue has capacity");
+        h.commands
+            .push(EngineCommand::SetCell {
+                note: 60,
+                spec: Some(spec(0, 48_000)),
+            })
+            .expect("the queue has capacity");
+        h.commands
+            .push(EngineCommand::SetCell {
+                note: 64,
+                spec: Some(spec(0, 2_000)),
+            })
+            .expect("the queue has capacity");
+        h.engine.apply_commands();
+
+        h.engine.note_on(60, 1.0);
+        h.engine.note_on(64, 1.0);
+        render(&mut h.engine, 512);
+        assert_eq!(h.meters.playheads().count(), 2);
+
+        // The short cell runs out while the long one keeps going.
+        render(&mut h.engine, 4_800);
+
+        assert_eq!(h.meters.playheads().count(), 1);
     }
 
     #[test]
@@ -793,12 +859,12 @@ mod tests {
         load(&mut h, 48_000);
         h.engine.note_on(60, 1.0);
         render(&mut h.engine, 512);
-        assert!(h.meters.playhead().is_some());
+        assert!(h.meters.any_playhead());
 
         h.engine.note_off(60);
         render(&mut h.engine, 4_800);
 
-        assert_eq!(h.meters.playhead(), None);
+        assert!(!h.meters.any_playhead());
     }
 
     #[test]

@@ -80,6 +80,11 @@ impl Voice {
         self.position.max(0.0) as u64
     }
 
+    /// Where this voice is reading, or `None` while it is idle.
+    pub fn active_position(&self) -> Option<u64> {
+        self.is_active().then(|| self.position())
+    }
+
     /// Start this voice, replacing whatever it was playing before.
     pub fn start(&mut self, note: u8, velocity: f32, age: u64, spec: CellSpec, sample_rate: f32) {
         self.stage = Stage::Attack;
@@ -87,9 +92,23 @@ impl Voice {
         self.age = age;
         self.level = 0.0;
         self.sustain_level = (velocity.clamp(0.0, 1.0) * spec.gain).clamp(0.0, 4.0);
-        self.attack_step = envelope_step(spec.attack_ms, sample_rate);
-        self.release_step = envelope_step(spec.release_ms, sample_rate);
         self.rate = spec.rate.max(f32::MIN_POSITIVE) as f64;
+
+        // The envelope has to fit inside the slice. A cell whose attack and
+        // release together outlast the material gets both scaled down in
+        // proportion, rather than a fade that starts before the level has
+        // risen and silences the voice on its first frame.
+        let available = (spec.bounds.len_frames() as f64 / self.rate) as f32;
+        let attack = spec.attack_ms / 1000.0 * sample_rate;
+        let release = spec.release_ms / 1000.0 * sample_rate;
+        let wanted = attack + release;
+        let scale = if wanted > available && wanted > 0.0 {
+            available / wanted
+        } else {
+            1.0
+        };
+        self.attack_step = envelope_step(attack * scale);
+        self.release_step = envelope_step(release * scale);
         self.reverse = spec.reverse;
         self.spec = spec;
         // Backwards playback starts at the last frame of the slice.
@@ -116,14 +135,21 @@ impl Voice {
 
     /// Render the next frame, advancing both playback position and envelope.
     ///
-    /// Reaching the end of the slice releases the voice rather than cutting it
-    /// off, so the envelope can fade out the last frames instead of clicking.
+    /// The fade out is started early enough to finish at the slice edge. A
+    /// voice therefore never reads past its own slice: doing so would mix the
+    /// neighbouring chop into the tail, and would show a playhead running on
+    /// past the region it is playing.
     pub fn next_frame(&mut self, sample: &SampleBuffer) -> (f32, f32) {
         if self.stage == Stage::Idle {
             return (0.0, 0.0);
         }
 
-        if self.past_the_end() {
+        let remaining = self.frames_to_edge();
+        if remaining <= 0.0 {
+            self.kill();
+            return (0.0, 0.0);
+        }
+        if self.stage != Stage::Release && remaining <= self.release_frames() {
             self.release();
         }
 
@@ -136,7 +162,12 @@ impl Voice {
                 }
             }
             Stage::Release => {
-                self.level -= self.release_step * self.sustain_level;
+                // Whichever is steeper: the release the cell asks for, or the
+                // one the remaining audio allows. A release longer than the
+                // slice simply fades across all of it.
+                let wanted = self.release_step * self.sustain_level;
+                let forced = self.level / remaining.max(1.0) as f32;
+                self.level -= wanted.max(forced);
                 if self.level <= 0.0 {
                     self.kill();
                     return (0.0, 0.0);
@@ -145,8 +176,6 @@ impl Voice {
             Stage::Idle | Stage::Sustain => {}
         }
 
-        // The position may run outside the slice while the release envelope is
-        // still active; reads past the buffer come back as silence.
         let (left, right) = interpolated(sample, self.position);
 
         if self.reverse {
@@ -158,13 +187,23 @@ impl Voice {
         (left * self.level, right * self.level)
     }
 
-    /// Whether playback has left the slice in its direction of travel.
-    fn past_the_end(&self) -> bool {
-        if self.reverse {
-            self.position < self.spec.bounds.start_frame as f64
+    /// Output frames left before the read position leaves the slice.
+    fn frames_to_edge(&self) -> f64 {
+        let remaining_source = if self.reverse {
+            self.position - self.spec.bounds.start_frame as f64
         } else {
-            self.position >= self.spec.bounds.end_frame as f64
+            self.spec.bounds.end_frame as f64 - self.position
+        };
+
+        (remaining_source / self.rate).max(0.0)
+    }
+
+    /// Output frames a full fade out would take at the configured release.
+    fn release_frames(&self) -> f64 {
+        if self.release_step <= 0.0 {
+            return 0.0;
         }
+        (1.0 / self.release_step) as f64
     }
 }
 
@@ -189,14 +228,12 @@ fn interpolated(sample: &SampleBuffer, position: f64) -> (f32, f32) {
     )
 }
 
-/// Per-sample increment that traverses the full envelope range in `time_ms`.
-fn envelope_step(time_ms: f32, sample_rate: f32) -> f32 {
-    let samples = (time_ms / 1000.0) * sample_rate;
-    if samples >= 1.0 {
-        1.0 / samples
+/// Per-frame increment that traverses the full envelope range in `frames`.
+fn envelope_step(frames: f32) -> f32 {
+    if frames >= 1.0 {
+        1.0 / frames
     } else {
-        // A zero-length stage, or a degenerate sample rate, must not stall the
-        // envelope forever.
+        // A zero-length stage must not stall the envelope forever.
         1.0
     }
 }

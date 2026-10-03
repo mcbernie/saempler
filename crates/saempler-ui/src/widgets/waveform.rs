@@ -33,8 +33,8 @@ pub struct WaveformSource<'a> {
     pub buffer: Option<&'a SampleBuffer>,
     pub slices: &'a [Slice],
     pub selected: Option<SliceId>,
-    /// Frame the engine is currently playing, if any.
-    pub playhead: Option<u64>,
+    /// Frames the engine is currently playing, one per sounding voice.
+    pub playheads: &'a [u64],
     pub view: ViewRange,
 }
 
@@ -347,20 +347,20 @@ fn draw_markers(ui: &Ui, theme: &Theme, rect: Rect, view: ViewRange, source: &Wa
     }
 }
 
-/// Draw the position the engine is playing.
+/// Draw a line for every position the engine is playing.
 fn draw_playhead(ui: &Ui, theme: &Theme, rect: Rect, view: ViewRange, source: &WaveformSource<'_>) {
-    let Some(frame) = source.playhead else {
-        return;
-    };
-    if frame < view.start_frame || frame > view.end_frame {
-        return;
-    }
+    let painter = ui.painter();
+    for frame in source.playheads.iter().copied() {
+        if frame < view.start_frame || frame > view.end_frame {
+            continue;
+        }
 
-    let x = frame_to_x(rect, view, frame);
-    ui.painter().line_segment(
-        [pos2(x, rect.min.y), pos2(x, rect.max.y)],
-        Stroke::new(theme.stroke_thick, theme.playhead),
-    );
+        let x = frame_to_x(rect, view, frame);
+        painter.line_segment(
+            [pos2(x, rect.min.y), pos2(x, rect.max.y)],
+            Stroke::new(theme.stroke_thick, theme.playhead),
+        );
+    }
 }
 
 /// Turn pointer activity into an intent for the caller.

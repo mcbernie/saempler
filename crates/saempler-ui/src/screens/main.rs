@@ -92,9 +92,9 @@ pub fn draw(ctx: &egui::Context, setter: &ParamSetter, state: &ViewState<'_>) ->
     apply_style(ctx, &THEME);
     let mut import_requested = false;
 
-    // The playhead moves with every processed block, so while something is
+    // The playheads move with every processed block, so while something is
     // sounding the editor cannot wait for the next input event to redraw.
-    if state.meters.playhead().is_some() {
+    if state.meters.any_playhead() {
         ctx.request_repaint();
     }
 
@@ -181,6 +181,9 @@ fn source_section(ui: &mut Ui, state: &ViewState<'_>) -> bool {
             sample.view = ViewRange::full(total);
         }
 
+        // Collected once per frame: the widget reads the positions several
+        // times while drawing, and they must not change underneath it.
+        let playheads: Vec<u64> = state.meters.playheads().collect();
         let action = waveform(
             ui,
             &THEME,
@@ -189,7 +192,7 @@ fn source_section(ui: &mut Ui, state: &ViewState<'_>) -> bool {
                 buffer: sample.buffer.as_deref(),
                 slices: project.project.slices(),
                 selected: project.project.selection(),
-                playhead: state.meters.playhead(),
+                playheads: &playheads,
                 view: sample.view,
             },
             WAVEFORM_HEIGHT,

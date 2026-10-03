@@ -76,10 +76,13 @@ Project state is shared the same way: `Arc<Mutex<ProjectFile>>`.
 
 ## Audio to UI communication
 
-`Meters` stores peak levels and the voice count in plain atomics. Floats are
-stored as bit patterns in `AtomicU32`. Readers may see a value one block stale,
-which is acceptable for metering and avoids any synchronisation on the audio
-thread.
+`Meters` stores peak levels, the voice count and one playback position per
+voice in plain atomics. Floats are stored as bit patterns in `AtomicU32`.
+Readers may see a value one block stale, which is acceptable for metering and
+avoids any synchronisation on the audio thread.
+
+There is a position per voice rather than one for the newest, so that notes
+played together each show their own playhead.
 
 ## Sample import
 
@@ -180,9 +183,13 @@ Voices are a fixed array of 16 preallocated `Voice` values. A note that finds
 no free slot steals the oldest voice. Nothing in the voice path allocates or
 drops owned data, so the audio thread never touches the allocator.
 
-A voice reaching the end of its slice releases rather than stopping, and the
-envelope fades out over the audio that follows the slice. Cutting at the
-boundary would click.
+A voice never reads past its own slice. The fade out is started early enough
+to finish at the boundary, because reading on would mix the neighbouring chop
+into the tail and would show a playhead running past the region it plays.
+
+An envelope longer than its slice is scaled down in proportion rather than
+truncated, so a long release on a short chop fades across all of it instead of
+silencing the voice on its first frame.
 
 ## Time representation
 

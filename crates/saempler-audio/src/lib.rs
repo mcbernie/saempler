@@ -23,5 +23,5 @@ pub use command::{
     DisposalProducer, EngineCommand, SliceBounds, DISPOSAL_CAPACITY, QUEUE_CAPACITY,
 };
 pub use engine::{Engine, MAX_VOICES, NOTE_COUNT};
-pub use meters::Meters;
+pub use meters::{Meters, PLAYHEAD_SLOTS};
 pub use sample::SampleBuffer;
