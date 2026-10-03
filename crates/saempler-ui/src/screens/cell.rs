@@ -46,6 +46,7 @@ pub fn cell_section(ui: &mut Ui, state: &ViewState<'_>) {
     let mut changed = false;
     let live = Live::read(state);
 
+    pager(ui, &mut project, &cell);
     changed |= playback_section(ui, &mut cell, live);
     changed |= envelopes_section(ui, &mut cell, live);
     changed |= lfos_section(ui, &mut cell, live);
@@ -57,6 +58,95 @@ pub fn cell_section(ui: &mut Ui, state: &ViewState<'_>) {
         project.project.with_cell_mut(id, |slot| *slot = edited);
         sync_cells(state, &project);
     }
+}
+
+/// The strip above the editor: which chop is up, and arrows to the others.
+///
+/// The mockup's `< 4/12 >` row. Stepping goes by key order, which is the order
+/// the pads sit in, so the arrows walk the grid.
+fn pager(ui: &mut Ui, project: &mut saempler_model::ProjectFile, cell: &PerformanceCell) {
+    // This row sits on the dark bezel between panels, not on metal, so its
+    // text is light where the panel legends are dark.
+    let light = |ui: &mut Ui, text: &str| {
+        let width = text.chars().count() as f32 * THEME.font_sm * 0.62 + 4.0;
+        let (rect, _) = ui.allocate_exact_size(vec2(width, THEME.font_sm * 1.7), Sense::hover());
+        ui.painter().text(
+            rect.left_center(),
+            Align2::LEFT_CENTER,
+            text,
+            FontId::proportional(THEME.font_sm),
+            THEME.text_dim,
+        );
+    };
+
+    ui.horizontal(|ui| {
+        let count = project.project.cells().len();
+        let position = project
+            .project
+            .cells()
+            .iter()
+            .position(|candidate| candidate.id == cell.id)
+            .unwrap_or(0);
+
+        let mut step: isize = 0;
+        if button(ui, &THEME, "‹") {
+            step = -1;
+        }
+        light(ui, &format!("{} / {count}", position + 1));
+        if button(ui, &THEME, "›") {
+            step = 1;
+        }
+        if step != 0 && count > 0 {
+            let next = (position as isize + step).rem_euclid(count as isize) as usize;
+            let id = project.project.cells()[next].id;
+            project.project.select_cell(Some(id));
+            let slice = project.project.cells()[next].slice;
+            project.project.select(Some(slice));
+        }
+
+        ui.add_space(THEME.spacing_md);
+
+        // The chop's chip, in its colour, and where it sits in the sample.
+        let Some(slice) = project.project.slice(cell.slice).copied() else {
+            return;
+        };
+        let index = project
+            .project
+            .slices()
+            .iter()
+            .position(|candidate| candidate.id == slice.id)
+            .unwrap_or(0);
+        let color = crate::widgets::slice_color(&THEME, index);
+        let name = note_name(cell.midi_note);
+        let width = name.chars().count() as f32 * THEME.font_sm * 0.68 + THEME.spacing_sm * 2.5;
+        let (chip, _) = ui.allocate_exact_size(vec2(width, THEME.font_sm + 6.0), Sense::hover());
+        ui.painter().rect_filled(chip, THEME.radius_sm, color);
+        ui.painter().text(
+            chip.center(),
+            Align2::CENTER_CENTER,
+            name,
+            FontId::proportional(THEME.font_sm),
+            THEME.title,
+        );
+
+        let rate = project
+            .project
+            .sample
+            .as_ref()
+            .map(|sample| sample.sample_rate)
+            .unwrap_or(0)
+            .max(1) as f64;
+        let start = slice.start_frame as f64 / rate;
+        let end = slice.end_frame as f64 / rate;
+        light(
+            ui,
+            &format!(
+                "S{}  ·  START {start:.2} s  ·  ENDE {end:.2} s  ·  LÄNGE {:.2} s",
+                index + 1,
+                end - start
+            ),
+        );
+    });
 }
 
 /// What the engine is doing right now, read once per frame.

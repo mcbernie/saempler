@@ -24,6 +24,8 @@ pub struct Meters {
     playheads: [AtomicU64; PLAYHEAD_SLOTS],
     /// One bit per modifier that would affect the next performance note.
     modifiers: AtomicU32,
+    /// Host tempo in hundredths of a beat per minute.
+    tempo: AtomicU32,
     /// Where the modulation of the newest voice stands.
     ///
     /// Published so the interface can show the modules running rather than
@@ -43,6 +45,7 @@ impl Default for Meters {
             active_voices: AtomicU32::new(0),
             playheads: std::array::from_fn(|_| AtomicU64::new(NO_PLAYHEAD)),
             modifiers: AtomicU32::new(0),
+            tempo: AtomicU32::new(12_000),
             envelopes: std::array::from_fn(|_| AtomicU32::new(0)),
             lfos: std::array::from_fn(|_| AtomicU32::new(0)),
             destinations: std::array::from_fn(|_| AtomicU32::new(0)),
@@ -53,6 +56,17 @@ impl Default for Meters {
 impl Meters {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Publish the host tempo, in beats per minute.
+    pub fn store_tempo(&self, tempo: f64) {
+        let hundredths = (tempo.clamp(1.0, 999.0) * 100.0) as u32;
+        self.tempo.store(hundredths, Ordering::Relaxed);
+    }
+
+    /// Host tempo in beats per minute.
+    pub fn tempo(&self) -> f64 {
+        f64::from(self.tempo.load(Ordering::Relaxed)) / 100.0
     }
 
     /// Publish where the newest voice's modulation stands.

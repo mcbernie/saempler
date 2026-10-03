@@ -2,7 +2,7 @@ use std::sync::{Arc, Mutex};
 
 use nih_plug::prelude::{FloatParam, ParamSetter};
 use nih_plug_egui::egui::{
-    self, pos2, vec2, Align2, Color32, FontId, Frame, Margin, Sense, Shape, Ui,
+    self, pos2, vec2, Align2, Color32, FontId, Frame, Margin, Sense, Shape, Stroke, Ui,
 };
 use nih_plug_egui::{resizable_window::ResizableWindow, EguiState};
 use saempler_audio::{CellSpec, CommandProducer, EngineCommand, Meters, SampleBuffer, SliceBounds};
@@ -12,11 +12,11 @@ use saempler_model::{Modifier, ProjectFile};
 use crate::screens::cell::cell_section;
 use crate::screens::modifiers::modifier_section;
 use crate::screens::performance::performance_section;
-use crate::screens::source::{note_map, source_section};
+use crate::screens::source::source_section;
 use crate::theme::Theme;
 use crate::widgets::{
-    inset, knob, lamp, metal_panel, panel_header, readout, slice_map, stereo_meter, tab_bar,
-    ViewRange, WaveformSource, HEADER_HEIGHT,
+    inset, knob, lamp, metal_panel, panel_header, readout, stereo_meter, tab_bar, ViewRange,
+    HEADER_HEIGHT,
 };
 
 pub(crate) const THEME: Theme = Theme::dark();
@@ -25,8 +25,6 @@ const KNOB_DIAMETER: f32 = 48.0;
 const METER_WIDTH: f32 = 150.0;
 /// Width of the readouts that say what is being triggered.
 const TRIGGER_WIDTH: f32 = 150.0;
-/// Height of the sample map that stays above the pages.
-const MAP_HEIGHT: f32 = 76.0;
 /// Share of the width the performance pads take.
 ///
 /// The pads and the editor are side by side rather than on separate pages:
@@ -38,23 +36,22 @@ pub const MIN_EDITOR_SIZE: (f32, f32) = (720.0, 470.0);
 
 /// The pages of the editor's right-hand side.
 ///
-/// The source sample and the pads are not among them: they stay on screen, so
-/// the chop being edited and the keys that play it are always visible.
+/// The source sample and the pads are not among them: everything about the
+/// sample is configured on the panel at the top, and the pads stay beside the
+/// editor, so what is played and what is edited are always both on screen.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub enum Tab {
     #[default]
     Cell,
-    Source,
     Modifiers,
 }
 
 impl Tab {
-    pub const ALL: [Tab; 3] = [Tab::Cell, Tab::Source, Tab::Modifiers];
+    pub const ALL: [Tab; 2] = [Tab::Cell, Tab::Modifiers];
 
     pub fn label(self) -> &'static str {
         match self {
             Tab::Cell => "SLICE / SOUND",
-            Tab::Source => "SOURCE",
             Tab::Modifiers => "MODIFIERS",
         }
     }
@@ -171,7 +168,7 @@ pub fn draw(ctx: &egui::Context, setter: &ParamSetter, state: &ViewState<'_>) ->
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing = vec2(THEME.spacing_md, THEME.spacing_md);
                     header(ui, state);
-                    sample_map(ui, state);
+                    import_requested = source_section(ui, state);
 
                     // Height of the footer below: its knob plus the knob's two
                     // label lines, the legend and the panel margins.
@@ -209,7 +206,6 @@ pub fn draw(ctx: &egui::Context, setter: &ParamSetter, state: &ViewState<'_>) ->
                                 .auto_shrink([false, false])
                                 .show(ui, |ui| match tab {
                                     Tab::Cell => cell_section(ui, state),
-                                    Tab::Source => import_requested = source_section(ui, state),
                                     Tab::Modifiers => modifier_section(ui, state),
                                 });
                         });
@@ -237,110 +233,56 @@ fn set_tab(state: &ViewState<'_>, tab: Tab) {
     }
 }
 
-/// The whole sample with the key every chop plays on.
+/// The masthead: name plate on the left, tempo display on the right.
 ///
-/// Above the tabs rather than inside the source page: without it the cell page
-/// is a set of controls with nothing to say which chop they belong to.
-fn sample_map(ui: &mut Ui, state: &ViewState<'_>) {
-    // The lamp is lit while anything is sounding, so the panel says at a
-    // glance whether the instrument is playing.
-    let sounding = state.meters.any_playhead().then_some(THEME.active);
-    section(ui, "SOURCE SAMPLE", sounding, |ui| {
-        let Ok(mut project) = state.project.lock() else {
-            return;
-        };
-        let Ok(sample) = state.sample.lock() else {
-            return;
-        };
-
-        let playheads: Vec<u64> = state.meters.playheads().collect();
-        let notes = note_map(&project.project);
-        let clicked = slice_map(
-            ui,
-            &THEME,
-            &WaveformSource {
-                peaks: &sample.peaks,
-                buffer: sample.buffer.as_deref(),
-                slices: project.project.slices(),
-                selected: selected_slice(&project.project),
-                playheads: &playheads,
-                view: ViewRange::full(sample.peaks.frames()),
-                notes: &notes,
-            },
-            MAP_HEIGHT,
-        );
-
-        if let Some(id) = clicked {
-            // Clicking a chop selects the cell that plays it, so the cell page
-            // follows the map. A chop on no key selects the slice alone.
-            project.project.select(Some(id));
-            let cell = project
-                .project
-                .cells()
-                .iter()
-                .find(|cell| cell.slice == id)
-                .map(|cell| cell.id);
-            if cell.is_some() {
-                project.project.select_cell(cell);
-            }
-
-            if let Some(slice) = project.project.slice(id) {
-                state.send(EngineCommand::Preview(preview_spec(
-                    slice.start_frame,
-                    slice.end_frame,
-                )));
-            }
-        }
-
-        hint(ui, &map_hint(&project.project));
-    });
-}
-
-/// The slice the map highlights: the one the selected cell plays, if there is
-/// one, and otherwise whatever the source page has selected.
-fn selected_slice(project: &saempler_model::Project) -> Option<saempler_model::SliceId> {
-    project
-        .selected_cell()
-        .map(|cell| cell.slice)
-        .or_else(|| project.selection())
-}
-
-/// One line saying what is selected and what clicking the map does.
-fn map_hint(project: &saempler_model::Project) -> String {
-    match project.selected_cell() {
-        Some(cell) => {
-            let index = project
-                .slices()
-                .iter()
-                .position(|slice| slice.id == cell.slice)
-                .map(|index| index + 1)
-                .unwrap_or(0);
-            format!(
-                "Cell auf {}  ·  Slice {index} von {}  ·  Klick: Slice wählen und vorhören",
-                saempler_model::note_name(cell.midi_note),
-                project.slices().len()
-            )
-        }
-        None => format!(
-            "{} Slices  ·  keine Cell gewählt  ·  Klick: Slice wählen und vorhören",
-            project.slices().len()
-        ),
-    }
-}
-
-/// Product name and the sample currently loaded.
+/// A metal strip like the panels below it, so the window reads as one chassis
+/// rather than panels floating over a void.
 fn header(ui: &mut Ui, state: &ViewState<'_>) {
-    let (rect, _) = ui.allocate_exact_size(
-        vec2(ui.available_width(), THEME.font_lg * 1.5),
-        Sense::hover(),
-    );
+    let background = ui.painter().add(Shape::Noop);
+    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 42.0), Sense::hover());
+    ui.painter().set(background, metal_panel(&THEME, rect));
     let painter = ui.painter();
 
+    // The name plate: a dark block with the logo mark and the product name.
+    let plate = egui::Rect::from_min_size(
+        pos2(rect.min.x + 10.0, rect.min.y + 7.0),
+        vec2(190.0, rect.height() - 14.0),
+    );
+    inset(painter, &THEME, plate, THEME.waveform_bg);
+    logo_mark(painter, pos2(plate.min.x + 16.0, plate.center().y));
     painter.text(
-        rect.left_center(),
+        pos2(plate.min.x + 32.0, plate.center().y - 4.0),
         Align2::LEFT_CENTER,
         "SÄMPLER",
         FontId::proportional(THEME.font_lg),
+        THEME.accent,
+    );
+    painter.text(
+        pos2(plate.min.x + 32.0, plate.max.y - 6.0),
+        Align2::LEFT_CENTER,
+        "SLICE & REMIX INSTRUMENT",
+        FontId::proportional(7.0),
+        THEME.text_dim,
+    );
+
+    // The tempo the engine is following, as a display cut into the metal.
+    let bpm = egui::Rect::from_min_size(
+        pos2(rect.max.x - 120.0, rect.min.y + 8.0),
+        vec2(110.0, rect.height() - 16.0),
+    );
+    inset(painter, &THEME, bpm, THEME.waveform_bg);
+    painter.text(
+        pos2(bpm.min.x + 8.0, bpm.center().y),
+        Align2::LEFT_CENTER,
+        "BPM",
+        FontId::proportional(THEME.font_sm),
+        THEME.text_dim,
+    );
+    painter.text(
+        pos2(bpm.max.x - 8.0, bpm.center().y),
+        Align2::RIGHT_CENTER,
+        format!("{:.2}", state.meters.tempo()),
+        FontId::monospace(THEME.font_md),
         THEME.accent,
     );
 
@@ -358,12 +300,25 @@ fn header(ui: &mut Ui, state: &ViewState<'_>) {
         Err(_) => String::new(),
     };
     painter.text(
-        rect.right_center(),
+        pos2(bpm.min.x - THEME.spacing_lg, rect.center().y),
         Align2::RIGHT_CENTER,
         subtitle,
         FontId::proportional(THEME.font_sm),
-        THEME.text_dim,
+        THEME.title,
     );
+}
+
+/// The little waveform glyph on the name plate.
+fn logo_mark(painter: &egui::Painter, centre: egui::Pos2) {
+    for (offset, height) in [(-6.0, 5.0), (-2.0, 9.0), (2.0, 7.0), (6.0, 4.0)] {
+        painter.line_segment(
+            [
+                pos2(centre.x + offset, centre.y - height),
+                pos2(centre.x + offset, centre.y + height),
+            ],
+            Stroke::new(2.0, THEME.accent),
+        );
+    }
 }
 
 /// Output level, voice count and the modifier lamps.

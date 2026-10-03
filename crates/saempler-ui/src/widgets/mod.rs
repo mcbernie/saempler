@@ -32,4 +32,4 @@ pub use tabs::{led, tab_bar};
 pub use value_knob::{value_knob, KnobSpec, Taper, Unit};
 pub use value_slider::{value_slider, SliderSpec};
 pub use view_range::{ViewRange, MIN_VISIBLE_FRAMES};
-pub use waveform::{slice_color, slice_map, waveform, WaveformAction, WaveformSource};
+pub use waveform::{slice_color, waveform, WaveformAction, WaveformSource};

@@ -46,6 +46,12 @@ pub fn source_section(ui: &mut Ui, state: &ViewState<'_>) -> bool {
                 playheads: &playheads,
                 view: sample.view,
                 notes: &notes,
+                sample_rate: project
+                    .project
+                    .sample
+                    .as_ref()
+                    .map(|sample| sample.sample_rate)
+                    .unwrap_or(0),
             },
             WAVEFORM_HEIGHT,
         );
@@ -58,6 +64,17 @@ pub fn source_section(ui: &mut Ui, state: &ViewState<'_>) -> bool {
 
         if let Some(id) = action.select {
             project.project.select(Some(id));
+            // The editor beside the pads follows: clicking a chop brings up
+            // the cell that plays it, when one does.
+            let cell = project
+                .project
+                .cells()
+                .iter()
+                .find(|cell| cell.slice == id)
+                .map(|cell| cell.id);
+            if cell.is_some() {
+                project.project.select_cell(cell);
+            }
             selection_changed = true;
             // A click auditions what it selected; the voice ends by itself at
             // the end of the slice, so nothing has to release it.
@@ -227,7 +244,7 @@ fn status_line(
     let color = if sample.status.is_some() {
         THEME.danger
     } else {
-        THEME.text_dim
+        THEME.label
     };
 
     let (rect, _) = ui.allocate_exact_size(

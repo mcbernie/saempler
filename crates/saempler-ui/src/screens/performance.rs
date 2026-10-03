@@ -104,6 +104,11 @@ pub fn performance_section(ui: &mut Ui, state: &ViewState<'_>) {
             }
             Some(PadEdit::Trigger(id)) => {
                 project.project.select_cell(Some(id));
+                // The waveform above follows: its highlighted span is the
+                // chop this pad plays.
+                if let Some(slice) = project.project.cell(id).map(|cell| cell.slice) {
+                    project.project.select(Some(slice));
+                }
                 if let Some(cell) = project.project.cell(id) {
                     if let Some(spec) = cell_spec(&project.project, cell) {
                         state.send(EngineCommand::Preview(spec));

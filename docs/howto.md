@@ -133,10 +133,14 @@ Kopie auf naechste Note     duplicate the selected cell one semitone up
 play that note              the cell sounds, polyphonically
 ```
 
-Above the tabs sits a map of the whole sample with the key every chop plays on.
-It stays there whichever page is open, so the cell being edited is always
-visible in the context of the sample it came from; clicking a chop selects it
-and plays it once.
+The sample lives on the panel at the top, loading and slicing included, and
+stays there whatever else is open. Every chop carries a chip with the key that
+plays it, in the chop's own colour; the same colour marks its pad and the
+editor's header, so one glance connects all three. Clicking a chop or a pad
+selects the same thing everywhere and plays it once.
+
+The editor's header row steps through the chops with its arrows and gives the
+selected one's position in the sample in seconds.
 
 The CELL page edits the selected pad. Playback holds reverse, speed, pitch and
 gain; speed and pitch both change the read rate, so a transposed cell is also
@@ -167,16 +171,17 @@ Sync                locks an LFO to the host tempo and swaps hertz for notes
 Retrigger           restarts the LFO phase with every note
 ```
 
-The editor has four pages. The output meters and the modifier lamps stay
-visible under all of them, because you need to see what the modifiers are doing
-whichever page is open. The window resizes from the corner.
+The right-hand side has two pages. The sample panel, the pads, the output
+meters and the modifier lamps stay visible over and under both, because you
+need to see what is playing whichever page is open. The window resizes from
+the corner.
 
 ```
-SAMPLE      load, slice and navigate the waveform
-PERFORM     the pads: which note plays which slice
-CELL        how the selected pad plays its slice
-MODIFIERS   which key does what, and how it responds
+SLICE / SOUND   how the selected pad plays its chop
+MODIFIERS       which key does what, and how it responds
 ```
+
+The pads have no page of their own: they sit beside the editor permanently.
 
 The modifier keys, by default an octave below the pads:
 

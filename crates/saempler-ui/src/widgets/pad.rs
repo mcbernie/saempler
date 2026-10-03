@@ -7,9 +7,9 @@ use crate::widgets::surface::{control_surface, SurfaceState};
 use crate::widgets::waveform::slice_color;
 
 /// Size of one performance pad.
-pub const PAD_SIZE: f32 = 86.0;
+pub const PAD_SIZE: f32 = 104.0;
 /// Height of the waveform thumbnail inside a pad.
-const THUMBNAIL_HEIGHT: f32 = 26.0;
+const THUMBNAIL_HEIGHT: f32 = 38.0;
 
 /// What the user did on a pad.
 #[derive(Debug, Default)]
@@ -62,54 +62,79 @@ pub fn performance_pad(ui: &mut Ui, theme: &Theme, view: &PadView<'_>) -> PadAct
     let accent = slice_color(theme, slice_index);
     let painter = ui.painter();
 
-    // A bar in the slice's colour ties the pad to the waveform above.
-    painter.rect_filled(
-        Rect::from_min_size(rect.min, vec2(rect.width(), 3.0)),
-        theme.radius_sm,
-        accent,
+    // The key on a chip in the slice's colour, as on the waveform above: the
+    // colour is what ties a pad to its chop.
+    let chip = Rect::from_min_size(
+        pos2(rect.min.x + 5.0, rect.min.y + 5.0),
+        vec2(
+            note_name(cell.midi_note).chars().count() as f32 * theme.font_sm * 0.68
+                + theme.spacing_sm * 2.5,
+            theme.font_sm + 6.0,
+        ),
     );
-
+    painter.rect_filled(chip, theme.radius_sm, accent);
     painter.text(
-        pos2(rect.min.x + theme.spacing_md, rect.min.y + theme.spacing_md),
-        Align2::LEFT_TOP,
+        chip.center(),
+        Align2::CENTER_CENTER,
         note_name(cell.midi_note),
-        FontId::proportional(theme.font_md),
-        if selected { theme.accent } else { theme.text },
-    );
-    painter.text(
-        pos2(rect.max.x - theme.spacing_md, rect.min.y + theme.spacing_md),
-        Align2::RIGHT_TOP,
-        format!("S{}", slice_index + 1),
         FontId::proportional(theme.font_sm),
-        theme.text_dim,
+        theme.title,
+    );
+    // Its lamp: lit while the chop sounds.
+    crate::widgets::panel::lamp(
+        painter,
+        theme,
+        pos2(rect.max.x - 11.0, rect.min.y + 11.0),
+        sounding.then_some(accent),
     );
 
     if let Some(slice) = slice {
         let thumb = Rect::from_min_size(
             pos2(
-                rect.min.x + theme.spacing_sm,
-                rect.min.y + theme.font_md + theme.spacing_md * 2.0,
+                rect.min.x + theme.spacing_sm + 1.0,
+                rect.min.y + theme.font_sm + 13.0,
             ),
-            vec2(rect.width() - theme.spacing_sm * 2.0, THUMBNAIL_HEIGHT),
+            vec2(
+                rect.width() - theme.spacing_sm * 2.0 - 2.0,
+                THUMBNAIL_HEIGHT,
+            ),
         );
+        painter.rect_filled(thumb.expand(2.0), theme.radius_sm, theme.waveform_bg);
         draw_thumbnail(ui, theme, thumb, peaks, slice, accent);
     }
 
-    // The badges say, at a glance, how this cell differs from plain playback.
+    // Below the thumbnail: the chop's number on the left, and the badges that
+    // say how this cell differs from plain playback on the right.
     let painter = ui.painter();
     painter.text(
         pos2(rect.min.x + theme.spacing_md, rect.max.y - theme.spacing_md),
         Align2::LEFT_BOTTOM,
+        format!("S{}", slice_index + 1),
+        FontId::proportional(theme.font_sm),
+        accent,
+    );
+    painter.text(
+        pos2(rect.max.x - theme.spacing_md, rect.max.y - theme.spacing_md),
+        Align2::RIGHT_BOTTOM,
         badges(cell),
         FontId::proportional(theme.font_sm),
         theme.text_dim,
     );
 
-    if sounding {
+    // The pad that is up in the editor carries the glowing frame the mockup
+    // gives it, in its own colour rather than a shared one.
+    if selected || sounding {
+        let color = if sounding { theme.active } else { accent };
+        painter.rect_stroke(
+            rect.expand(1.0),
+            theme.radius_sm,
+            Stroke::new(1.0, color.gamma_multiply(0.35)),
+            nih_plug_egui::egui::StrokeKind::Outside,
+        );
         painter.rect_stroke(
             rect,
             theme.radius_sm,
-            Stroke::new(theme.stroke_thick, theme.active),
+            Stroke::new(theme.stroke_thick, color),
             nih_plug_egui::egui::StrokeKind::Inside,
         );
     }

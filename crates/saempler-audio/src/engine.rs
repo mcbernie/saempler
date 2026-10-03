@@ -107,6 +107,7 @@ impl Engine {
         }
 
         self.tempo = tempo;
+        self.meters.store_tempo(tempo);
         // Synced LFOs follow without restarting: a tempo change mid-note is a
         // change of speed, not a new note.
         for voice in &mut self.voices {

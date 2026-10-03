@@ -41,6 +41,8 @@ pub struct WaveformSource<'a> {
     /// A slice may appear more than once: the same chop on several keys is the
     /// whole point of the instrument, and the label then counts the rest.
     pub notes: &'a [(SliceId, u8)],
+    /// Sample rate of the audio, for the time ruler. Zero draws no ruler.
+    pub sample_rate: u32,
 }
 
 impl WaveformSource<'_> {
@@ -128,8 +130,9 @@ pub fn waveform(
 
     draw_slice_backgrounds(ui, theme, rect, view, source);
     draw_trace(ui, theme, rect, view, source);
-    draw_slice_labels(ui, theme, rect, view, source);
     draw_markers(ui, theme, rect, view, source);
+    draw_ruler(ui, theme, rect, view, source.sample_rate);
+    draw_slice_labels(ui, theme, rect, view, source);
     draw_playhead(ui, theme, rect, view, source);
     outline(ui, theme, rect);
 
@@ -188,7 +191,9 @@ fn draw_slice_backgrounds(
 
         let span = Rect::from_min_max(pos2(left, rect.min.y), pos2(right, rect.max.y));
         let color = if source.selected == Some(slice.id) {
-            theme.slice_selected_fill
+            // The chop's own colour, barely: enough to say which one is in
+            // the editor without drowning the trace.
+            slice_color(theme, index).gamma_multiply(0.16)
         } else if index % 2 == 0 {
             theme.slice_fill
         } else {
@@ -343,10 +348,11 @@ fn draw_column(
     );
 }
 
-/// Write the note each slice plays on into its span.
+/// A chip in each span carrying the key that plays it, in the slice's colour.
 ///
-/// Skipped where the span is too narrow to hold the text, so a sample cut into
-/// a hundred pieces does not turn into a smear of overlapping labels.
+/// Skipped where the span is too narrow to hold it, so a sample cut into a
+/// hundred pieces does not turn into a smear of overlapping labels. A slice on
+/// no key gets a dimmed chip with its number, so it still reads as a chop.
 fn draw_slice_labels(
     ui: &Ui,
     theme: &Theme,
@@ -355,107 +361,99 @@ fn draw_slice_labels(
     source: &WaveformSource<'_>,
 ) {
     let painter = ui.painter();
-    for slice in source.slices {
+    for (index, slice) in source.slices.iter().enumerate() {
         if slice.end_frame <= view.start_frame || slice.start_frame >= view.end_frame {
             continue;
         }
 
-        let Some(label) = source.label(slice.id) else {
-            continue;
+        let (label, color) = match source.label(slice.id) {
+            Some(label) => (label, slice_color(theme, index)),
+            None => (format!("S{}", index + 1), theme.marker),
         };
         let left = frame_to_x(rect, view, slice.start_frame).max(rect.min.x);
         let right = frame_to_x(rect, view, slice.end_frame).min(rect.max.x);
-        let needed = label.chars().count() as f32 * theme.font_sm * 0.62 + theme.spacing_sm * 2.0;
-        if right - left < needed {
+        let width = label.chars().count() as f32 * theme.font_sm * 0.62 + theme.spacing_sm * 2.5;
+        if right - left < width + theme.spacing_sm {
             continue;
         }
 
-        let color = if source.selected == Some(slice.id) {
-            theme.accent
-        } else {
-            theme.text_dim
-        };
+        let chip = Rect::from_min_size(
+            pos2(left + 4.0, rect.min.y + 4.0),
+            vec2(width, theme.font_sm + 5.0),
+        );
+        painter.rect_filled(chip, theme.radius_sm, color);
         painter.text(
-            pos2(left + theme.spacing_sm, rect.min.y + theme.spacing_sm * 0.5),
-            Align2::LEFT_TOP,
+            chip.center(),
+            Align2::CENTER_CENTER,
             label,
             FontId::proportional(theme.font_sm),
-            color,
+            theme.title,
         );
+        if source.selected == Some(slice.id) {
+            painter.rect_stroke(
+                chip.expand(1.5),
+                theme.radius_sm,
+                Stroke::new(1.0, Color32::WHITE),
+                StrokeKind::Outside,
+            );
+        }
     }
 }
 
-/// A compact map of the whole sample, with the key each slice plays on.
+/// Seconds along the bottom edge of the waveform.
 ///
-/// Shown above the pages whichever one is open, so the chop being edited stays
-/// visible in the context of the sample it was cut from. It is an overview and
-/// nothing more: editing happens on the source page.
-///
-/// Returns the slice that was clicked, if any.
-pub fn slice_map(
-    ui: &mut Ui,
-    theme: &Theme,
-    source: &WaveformSource<'_>,
-    height: f32,
-) -> Option<SliceId> {
-    let width = ui.available_width();
-    let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::click());
+/// The step between labels is picked so that neighbours never collide,
+/// whatever the zoom: the finest of a fixed ladder that still leaves room.
+fn draw_ruler(ui: &Ui, theme: &Theme, rect: Rect, view: ViewRange, sample_rate: u32) {
+    if sample_rate == 0 {
+        return;
+    }
 
-    ui.painter()
-        .rect_filled(rect, theme.radius_md, theme.waveform_bg);
+    let painter = ui.painter();
+    let band = Rect::from_min_max(pos2(rect.min.x, rect.max.y - 14.0), rect.max);
+    painter.rect_filled(band, 0.0, Color32::from_black_alpha(120));
 
-    let total = source.peaks.frames();
-    let view = ViewRange::full(total);
-    if total == 0 || view.is_empty() || rect.width() < 1.0 {
-        ui.painter().text(
-            rect.center(),
-            Align2::CENTER_CENTER,
-            "Kein Sample geladen",
-            FontId::proportional(theme.font_sm),
+    let seconds_visible = view.len_frames() as f64 / sample_rate as f64;
+    let per_label = seconds_visible / (rect.width() as f64 / 64.0).max(1.0);
+    let step = [0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1.0, 2.0, 5.0, 10.0, 30.0]
+        .into_iter()
+        .find(|step| *step >= per_label)
+        .unwrap_or(60.0);
+
+    let start = view.start_frame as f64 / sample_rate as f64;
+    let mut tick = (start / step).ceil() * step;
+    let end = view.end_frame as f64 / sample_rate as f64;
+    while tick <= end {
+        let frame = (tick * sample_rate as f64) as u64;
+        let x = frame_to_x(rect, view, frame);
+        painter.line_segment(
+            [pos2(x, band.min.y), pos2(x, band.min.y + 4.0)],
+            Stroke::new(1.0, theme.text_dim),
+        );
+        painter.text(
+            pos2(x + 3.0, band.center().y),
+            Align2::LEFT_CENTER,
+            format!("{tick:.2}"),
+            FontId::proportional(theme.font_sm - 1.0),
             theme.text_dim,
         );
-        outline(ui, theme, rect);
-        return None;
+        tick += step;
     }
-
-    draw_slice_backgrounds(ui, theme, rect, view, source);
-    draw_trace(ui, theme, rect, view, source);
-    draw_slice_labels(ui, theme, rect, view, source);
-    draw_markers(ui, theme, rect, view, source);
-    draw_playhead(ui, theme, rect, view, source);
-    outline(ui, theme, rect);
-
-    if response.hovered() {
-        ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
-    }
-    let position = response.interact_pointer_pos()?;
-    response
-        .clicked()
-        .then(|| {
-            let frame = x_to_frame(rect, view, position.x);
-            source
-                .slices
-                .iter()
-                .find(|slice| slice.contains(frame))
-                .map(|slice| slice.id)
-        })
-        .flatten()
 }
 
 /// Draw the start and end marker of every visible slice.
+///
+/// Dashed and in the colour of the slice that starts there, so the divisions
+/// read as belonging to their chops rather than as a grid laid over them. The
+/// selected slice keeps solid markers: those are the two being grabbed.
 fn draw_markers(ui: &Ui, theme: &Theme, rect: Rect, view: ViewRange, source: &WaveformSource<'_>) {
     let painter = ui.painter();
-    for slice in source.slices {
+    for (index, slice) in source.slices.iter().enumerate() {
         let is_selected = source.selected == Some(slice.id);
         let color = if is_selected {
             theme.accent
         } else {
-            theme.marker
-        };
-        let width = if is_selected {
-            theme.stroke_thick
-        } else {
-            theme.stroke_thin
+            slice_color(theme, index).gamma_multiply(0.75)
         };
 
         for frame in [slice.start_frame, slice.end_frame] {
@@ -463,10 +461,17 @@ fn draw_markers(ui: &Ui, theme: &Theme, rect: Rect, view: ViewRange, source: &Wa
                 continue;
             }
             let x = frame_to_x(rect, view, frame);
-            painter.line_segment(
-                [pos2(x, rect.min.y), pos2(x, rect.max.y)],
-                Stroke::new(width, color),
-            );
+            let ends = [pos2(x, rect.min.y), pos2(x, rect.max.y)];
+            if is_selected {
+                painter.line_segment(ends, Stroke::new(theme.stroke_thick, color));
+            } else {
+                painter.extend(nih_plug_egui::egui::Shape::dashed_line(
+                    &ends,
+                    Stroke::new(1.0, color),
+                    5.0,
+                    4.0,
+                ));
+            }
         }
     }
 }
