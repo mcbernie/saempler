@@ -1,4 +1,4 @@
-use saempler_model::ModDestination;
+use saempler_model::{ModDestination, PlaybackMode};
 
 use crate::command::CellSpec;
 use crate::modulation::{Modulation, PITCH_RANGE_SEMITONES};
@@ -6,6 +6,15 @@ use crate::sample::SampleBuffer;
 
 /// Output frames a released brake takes to reach full speed again.
 const SPIN_UP_FRAMES: f64 = 6_000.0;
+
+/// Shortest loop any mode or modulation may produce, in source frames.
+///
+/// A collapse would otherwise shrink its loop without limit, and a loop of a
+/// few frames is a read position that never moves rather than a sound.
+const MIN_LOOP_FRAMES: f64 = 32.0;
+
+/// How far a full-amount route to the loop length reaches, in octaves.
+const LOOP_RANGE_OCTAVES: f32 = 2.0;
 
 /// A single sounding note.
 ///
@@ -37,11 +46,18 @@ pub struct Voice {
     /// winds back up to speed, zero holds.
     rate_decay: f64,
     reverse: bool,
-    /// Frame playback jumps back to while looping, and the length of that
-    /// loop. Zero means the voice plays straight through.
+    /// Frame playback jumps back to while looping.
     loop_start: u64,
-    loop_frames: u64,
+    /// Length of the loop the playback mode runs, in source frames. Zero means
+    /// the mode is not looping, either because it never does or because a
+    /// release trigger has not fired yet. A collapse shrinks this per pass.
+    mode_loop: u64,
+    /// Factor the loop length destination applies, carried over from the
+    /// previous frame because the loop is wrapped before this frame's
+    /// modulation has been evaluated.
+    loop_scale: f32,
     sample_rate: f32,
+    tempo: f64,
     modulation: Modulation,
     /// The cell as the keyboard maps it, before any modifier.
     ///
@@ -64,8 +80,10 @@ impl Default for Voice {
             rate_decay: 0.0,
             reverse: false,
             loop_start: 0,
-            loop_frames: 0,
+            mode_loop: 0,
+            loop_scale: 1.0,
             sample_rate: 48_000.0,
+            tempo: 120.0,
             modulation: Modulation::default(),
             base: CellSpec::default(),
             spec: CellSpec::default(),
@@ -124,6 +142,7 @@ impl Voice {
         self.note = note;
         self.age = age;
         self.sample_rate = sample_rate;
+        self.tempo = tempo;
         self.base = base;
         self.spec = spec;
 
@@ -135,7 +154,7 @@ impl Voice {
             0.0
         };
         self.reverse = spec.reverse;
-        self.loop_frames = usable_loop(spec);
+        self.loop_scale = 1.0;
 
         // Backwards playback starts at the last frame of the slice.
         self.position = if spec.reverse {
@@ -144,6 +163,10 @@ impl Voice {
             spec.bounds.start_frame as f64
         };
         self.loop_start = self.position.max(0.0) as u64;
+        self.mode_loop = 0;
+        if !spec.release_trigger {
+            self.engage_mode_loop();
+        }
 
         // An envelope that outlasts the slice is scaled down rather than
         // truncated, so a long release on a short chop fades across all of it
@@ -182,10 +205,9 @@ impl Voice {
 
         // A loop that has just been engaged starts under the playhead; one
         // that was already running keeps its place so the rhythm does not jump.
-        let had_loop = self.loop_frames > 0;
+        let had_loop = self.loop_length() > 0.0;
         self.spec = spec;
-        self.loop_frames = usable_loop(spec);
-        if self.loop_frames > 0 && !had_loop {
+        if self.loop_length() > 0.0 && !had_loop {
             self.loop_start = self.position.max(0.0) as u64;
         }
 
@@ -202,16 +224,96 @@ impl Voice {
     }
 
     /// Follow a tempo change without restarting anything.
+    ///
+    /// A repeat or collapse already under way keeps the length it started
+    /// with: changing it halfway would move the loop point under a playing
+    /// note.
     pub fn set_tempo(&mut self, tempo: f64) {
+        self.tempo = tempo;
         self.modulation.retune(self.sample_rate, tempo);
     }
 
-    /// Let the voice finish: the envelopes move into their release stage.
+    /// Handle the key coming up.
+    ///
+    /// What that means is the playback mode's business: one shot ignores it,
+    /// a release trigger treats it as the start of the effect rather than the
+    /// end of the note, and everything else fades out.
     pub fn release(&mut self) {
-        if self.active {
-            self.held = false;
-            self.modulation.release();
+        if !self.active {
+            return;
         }
+        if self.spec.mode == PlaybackMode::OneShot {
+            // The note plays out whatever the key does; the fade before the
+            // slice edge still ends it.
+            self.held = false;
+            return;
+        }
+        if self.spec.release_trigger && self.mode_loop == 0 {
+            self.engage_mode_loop();
+        }
+        self.fade_out();
+    }
+
+    /// Move the envelopes into their release stage.
+    fn fade_out(&mut self) {
+        self.held = false;
+        self.modulation.release();
+    }
+
+    /// Start the loop this playback mode runs, under the current playhead.
+    ///
+    /// Only the length is set up here; [`Voice::loop_length`] decides whether
+    /// it or a modifier loop is the one in force.
+    fn engage_mode_loop(&mut self) {
+        if !self.spec.mode.loops() {
+            return;
+        }
+
+        let length = if self.spec.mode.uses_division() {
+            self.cycle_frames()
+        } else {
+            self.spec.bounds.len_frames() as f64
+        };
+
+        self.loop_start = self.position.max(0.0) as u64;
+        self.mode_loop = length.max(MIN_LOOP_FRAMES) as u64;
+    }
+
+    /// Length of one repeat or collapse pass, in source frames.
+    ///
+    /// The note value is a length in real time, so it is multiplied by the
+    /// read rate: a repeat stays a sixteenth however far the cell is
+    /// transposed.
+    fn cycle_frames(&self) -> f64 {
+        // Four beats to a whole note, and sixty seconds to that many beats.
+        let seconds = self.spec.cycle_whole_notes as f64 * 240.0 / self.tempo.max(1.0);
+        seconds * self.sample_rate as f64 * self.rate
+    }
+
+    /// Length of the loop in force, in source frames. Zero means no loop.
+    ///
+    /// A modifier loop wins over the mode's own: the modifier is a gesture
+    /// made while playing, and it should be heard over a setting.
+    fn loop_length(&self) -> f64 {
+        let base = match usable_loop(self.spec) {
+            0 => self.mode_loop as f64,
+            modifier => modifier as f64,
+        };
+        if base <= 0.0 {
+            return 0.0;
+        }
+
+        // A loop has to stay inside the slice: reading past the edge would
+        // mix the neighbouring chop into the tail.
+        let available = if self.reverse {
+            self.loop_start.saturating_sub(self.spec.bounds.start_frame)
+        } else {
+            self.spec.bounds.end_frame.saturating_sub(self.loop_start)
+        } as f64;
+
+        (base * self.loop_scale as f64)
+            .max(MIN_LOOP_FRAMES)
+            .min(available)
     }
 
     /// Silence the voice immediately.
@@ -256,7 +358,7 @@ impl Voice {
                 return (0.0, 0.0);
             }
             if self.held && remaining <= self.modulation.release_frames() {
-                self.release();
+                self.fade_out();
             }
             if !self.held {
                 release_floor = (1.0 / remaining.max(1.0)) as f32;
@@ -285,6 +387,9 @@ impl Voice {
 
         // Volume is modulated rather than fixed: with nothing routed to it the
         // voice is silent, which is what an empty matrix means.
+        self.loop_scale =
+            2.0f32.powf(modulation.get(ModDestination::LoopLength) * LOOP_RANGE_OCTAVES);
+
         let level = (modulation.get(ModDestination::Volume) * self.spec.gain).clamp(0.0, 4.0);
         let pan = modulation.get(ModDestination::Pan).clamp(-1.0, 1.0);
         let (left_gain, right_gain) = pan_gains(pan);
@@ -297,7 +402,8 @@ impl Voice {
     /// Returns whether this voice is looping at all, which decides whether the
     /// slice edge is something it can ever reach.
     fn wrap_loop(&mut self) -> bool {
-        if self.loop_frames == 0 {
+        let length = self.loop_length();
+        if length <= 0.0 {
             return false;
         }
 
@@ -307,8 +413,15 @@ impl Voice {
         } else {
             self.position - start
         };
-        if travelled >= self.loop_frames as f64 {
+        if travelled >= length {
             self.position = start;
+
+            // A collapse shortens its own loop with every pass. Only its own:
+            // a modifier loop keeps the length the gesture asked for.
+            if usable_loop(self.spec) == 0 && self.spec.mode == PlaybackMode::Collapse {
+                let next = self.mode_loop as f64 * self.spec.collapse as f64;
+                self.mode_loop = next.max(MIN_LOOP_FRAMES) as u64;
+            }
         }
 
         true
@@ -398,8 +511,8 @@ mod tests {
     use crate::command::SliceBounds;
     use crate::modulation::ModulationSpec;
     use saempler_model::{
-        default_routes, EnvelopeDefinition, LfoDefinition, LfoShape, ModSource, ModulationRoute,
-        ENVELOPE_COUNT, LFO_COUNT,
+        default_routes, Division, EnvelopeDefinition, LfoDefinition, LfoShape, ModSource,
+        ModulationRoute, ENVELOPE_COUNT, LFO_COUNT,
     };
 
     const SAMPLE_RATE: f32 = 48_000.0;
@@ -643,6 +756,253 @@ mod tests {
 
             assert!((power - centre).abs() < 1e-5, "{step}: {power}");
         }
+    }
+
+    #[test]
+    fn a_gated_voice_stops_at_the_end_of_its_slice() {
+        let buffer = dc_buffer(10_000);
+        let mut voice = Voice::default();
+        start(&mut voice, spec(0, 1_000));
+
+        for _ in 0..2_000 {
+            voice.next_frame(&buffer);
+        }
+
+        assert!(!voice.is_active());
+    }
+
+    #[test]
+    fn a_looping_voice_keeps_going_until_the_key_comes_up() {
+        let buffer = dc_buffer(10_000);
+        let spec = CellSpec {
+            mode: PlaybackMode::Loop,
+            ..spec(0, 1_000)
+        };
+        let mut voice = Voice::default();
+        start(&mut voice, spec);
+
+        for _ in 0..10_000 {
+            voice.next_frame(&buffer);
+        }
+
+        assert!(voice.is_active(), "the loop should still be running");
+        assert!(
+            voice.position() <= 1_000,
+            "it should be inside the slice: {}",
+            voice.position()
+        );
+
+        voice.release();
+        for _ in 0..10_000 {
+            voice.next_frame(&buffer);
+        }
+
+        assert!(!voice.is_active(), "the release should have ended it");
+    }
+
+    #[test]
+    fn a_one_shot_voice_ignores_the_key_coming_up() {
+        let buffer = dc_buffer(10_000);
+        let spec = CellSpec {
+            mode: PlaybackMode::OneShot,
+            ..spec(0, 4_000)
+        };
+        let mut voice = Voice::default();
+        start(&mut voice, spec);
+
+        voice.next_frame(&buffer);
+        voice.release();
+        for _ in 0..1_000 {
+            voice.next_frame(&buffer);
+        }
+
+        assert!(voice.is_active(), "it should play on");
+        assert!(voice.position() > 900);
+
+        // It still ends at the slice edge rather than running on.
+        for _ in 0..5_000 {
+            voice.next_frame(&buffer);
+        }
+        assert!(!voice.is_active());
+    }
+
+    #[test]
+    fn a_repeat_loops_the_note_value_rather_than_the_slice() {
+        let buffer = dc_buffer(200_000);
+        // A sixteenth at 120 bpm is 125 ms, which is 6000 frames at 48 kHz.
+        let spec = CellSpec {
+            mode: PlaybackMode::Repeat,
+            cycle_whole_notes: Division::Sixteenth.whole_notes(),
+            ..spec(0, 100_000)
+        };
+        let mut voice = Voice::default();
+        start(&mut voice, spec);
+
+        let mut highest = 0;
+        for _ in 0..30_000 {
+            voice.next_frame(&buffer);
+            highest = highest.max(voice.position());
+        }
+
+        assert!(
+            (5_900..=6_100).contains(&highest),
+            "the loop should be one sixteenth long: {highest}"
+        );
+    }
+
+    #[test]
+    fn a_collapse_shortens_its_loop_with_every_pass() {
+        let buffer = dc_buffer(200_000);
+        let spec = CellSpec {
+            mode: PlaybackMode::Collapse,
+            cycle_whole_notes: Division::Sixteenth.whole_notes(),
+            collapse: 0.5,
+            ..spec(0, 100_000)
+        };
+        let mut voice = Voice::default();
+        start(&mut voice, spec);
+
+        let mut passes = Vec::new();
+        let mut highest = 0;
+        let mut previous = 0;
+        for _ in 0..40_000 {
+            voice.next_frame(&buffer);
+            let position = voice.position();
+            if position < previous {
+                passes.push(highest);
+                highest = 0;
+            }
+            highest = highest.max(position);
+            previous = position;
+        }
+
+        assert!(passes.len() >= 4, "expected several passes: {passes:?}");
+        // Each pass is shorter than the one before until the floor is reached,
+        // where the collapse holds rather than shrinking to nothing.
+        for pair in passes.windows(2) {
+            assert!(
+                pair[1] < pair[0] || pair[1] as f64 <= MIN_LOOP_FRAMES,
+                "a pass grew: {passes:?}"
+            );
+        }
+        assert!(
+            (passes[1] as f64 - passes[0] as f64 * 0.5).abs() < 2.0,
+            "a factor of a half should halve the pass: {passes:?}"
+        );
+    }
+
+    #[test]
+    fn a_collapse_does_not_shrink_to_nothing() {
+        let buffer = dc_buffer(200_000);
+        let spec = CellSpec {
+            mode: PlaybackMode::Collapse,
+            cycle_whole_notes: Division::Sixteenth.whole_notes(),
+            collapse: 0.25,
+            ..spec(0, 100_000)
+        };
+        let mut voice = Voice::default();
+        start(&mut voice, spec);
+
+        for _ in 0..200_000 {
+            voice.next_frame(&buffer);
+        }
+
+        assert!(voice.is_active(), "it should still be looping");
+        assert!(
+            voice.position() as f64 >= MIN_LOOP_FRAMES - 1.0 || voice.position() == 0,
+            "the loop should have a floor: {}",
+            voice.position()
+        );
+    }
+
+    #[test]
+    fn a_release_trigger_waits_for_the_key_to_come_up() {
+        let buffer = dc_buffer(200_000);
+        let spec = CellSpec {
+            mode: PlaybackMode::Repeat,
+            cycle_whole_notes: Division::Sixteenth.whole_notes(),
+            release_trigger: true,
+            ..spec(0, 100_000)
+        };
+        let mut voice = Voice::default();
+        start(&mut voice, spec);
+
+        // While held it plays straight through, past the loop length.
+        for _ in 0..20_000 {
+            voice.next_frame(&buffer);
+        }
+        assert!(
+            voice.position() > 10_000,
+            "it should not be looping yet: {}",
+            voice.position()
+        );
+
+        let before = voice.position();
+        voice.release();
+        let mut highest = 0;
+        for _ in 0..5_000 {
+            voice.next_frame(&buffer);
+            highest = highest.max(voice.position());
+        }
+
+        assert!(
+            highest < before + 7_000,
+            "the loop should have taken hold: {before} -> {highest}"
+        );
+    }
+
+    #[test]
+    fn a_loop_never_leaves_the_slice() {
+        // The ramp makes the output say which frame was read, so this measures
+        // the reads themselves rather than the playhead between two frames.
+        let frames = 200_000;
+        let buffer = ramp_buffer(frames);
+        let spec = CellSpec {
+            mode: PlaybackMode::Repeat,
+            // A whole bar is far longer than the slice this is given.
+            cycle_whole_notes: Division::OneBar.whole_notes(),
+            ..spec(1_000, 4_000)
+        };
+        let mut voice = Voice::default();
+        start(&mut voice, spec);
+
+        let edge = 4_000.0 / frames as f32;
+        for _ in 0..50_000 {
+            let (left, _) = voice.next_frame(&buffer);
+            assert!(left <= edge, "read past the slice end: {left} > {edge}");
+        }
+    }
+
+    #[test]
+    fn the_loop_length_destination_shortens_the_loop() {
+        let buffer = dc_buffer(200_000);
+        let mut routes = default_routes();
+        routes.push(ModulationRoute {
+            source: ModSource::Velocity,
+            destination: ModDestination::LoopLength,
+            amount: -1.0,
+        });
+        let spec = CellSpec {
+            mode: PlaybackMode::Repeat,
+            cycle_whole_notes: Division::Sixteenth.whole_notes(),
+            modulation: modulation(&routes),
+            ..spec(0, 100_000)
+        };
+
+        let mut voice = Voice::default();
+        voice.start(60, 1.0, 0, spec, spec, SAMPLE_RATE, TEMPO);
+
+        let mut highest = 0;
+        for _ in 0..30_000 {
+            voice.next_frame(&buffer);
+            highest = highest.max(voice.position());
+        }
+
+        // Full negative amount is two octaves down: a quarter of 6000 frames.
+        assert!(
+            (1_400..=1_700).contains(&highest),
+            "the loop should have been shortened: {highest}"
+        );
     }
 
     #[test]

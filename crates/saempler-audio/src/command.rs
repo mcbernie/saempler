@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use saempler_model::{Modifier, ModifierMode};
+use saempler_model::{Modifier, ModifierMode, PlaybackMode};
 
 use crate::modulation::ModulationSpec;
 use crate::sample::SampleBuffer;
@@ -65,6 +65,15 @@ pub struct CellSpec {
     /// Output frames over which playback slows to a stop. Zero plays at a
     /// steady rate. Set by modifiers, never by the cell itself.
     pub tape_stop_frames: u64,
+    /// How the cell moves through its slice.
+    pub mode: PlaybackMode,
+    /// Length of one repeat or collapse pass, in whole notes. Turned into
+    /// frames by the voice, which is where the tempo is known.
+    pub cycle_whole_notes: f32,
+    /// Factor the collapse loop is multiplied by on every pass.
+    pub collapse: f32,
+    /// Whether the mode's loop starts at the note off rather than the note on.
+    pub release_trigger: bool,
 }
 
 impl Default for CellSpec {
@@ -77,6 +86,10 @@ impl Default for CellSpec {
             modulation: ModulationSpec::default(),
             loop_frames: 0,
             tape_stop_frames: 0,
+            mode: PlaybackMode::Gate,
+            cycle_whole_notes: 0.0625,
+            collapse: 0.75,
+            release_trigger: false,
         }
     }
 }

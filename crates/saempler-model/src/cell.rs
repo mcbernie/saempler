@@ -1,8 +1,8 @@
 use serde::{Deserialize, Serialize};
 
 use crate::modulation::{
-    default_routes, EnvelopeDefinition, LfoDefinition, ModulationRoute, ENVELOPE_COUNT, LFO_COUNT,
-    MAX_ROUTES,
+    default_routes, Division, EnvelopeDefinition, LfoDefinition, ModulationRoute, ENVELOPE_COUNT,
+    LFO_COUNT, MAX_ROUTES,
 };
 use crate::slice::SliceId;
 
@@ -21,6 +21,67 @@ pub const MAX_SPEED: f32 = 16.0;
 /// Range of the pitch control, in semitones.
 pub const MAX_PITCH_SEMITONES: f32 = 24.0;
 
+/// Smallest and largest factor a collapse may shrink its loop by per pass.
+///
+/// At 1.0 the loop never shrinks, which is a plain repeat; below a quarter the
+/// loop reaches its floor within two passes and the effect is a click.
+pub const MIN_COLLAPSE: f32 = 0.25;
+pub const MAX_COLLAPSE: f32 = 1.0;
+
+/// How a cell moves through its slice.
+///
+/// Gate is what a sampler does by default and stays the default here. The rest
+/// are performance behaviours, and all of them are a loop at heart: what
+/// differs is where it comes from and whether it shrinks.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum PlaybackMode {
+    /// Play while the key is held, and stop at the end of the slice.
+    #[default]
+    Gate,
+    /// Play the whole slice whatever the key does.
+    OneShot,
+    /// Repeat the whole slice while the key is held.
+    Loop,
+    /// Retrigger a note value while the key is held.
+    Repeat,
+    /// Like repeat, with the loop shrinking on every pass.
+    Collapse,
+}
+
+impl PlaybackMode {
+    pub const ALL: [PlaybackMode; 5] = [
+        PlaybackMode::Gate,
+        PlaybackMode::OneShot,
+        PlaybackMode::Loop,
+        PlaybackMode::Repeat,
+        PlaybackMode::Collapse,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            PlaybackMode::Gate => "Gate",
+            PlaybackMode::OneShot => "One Shot",
+            PlaybackMode::Loop => "Loop",
+            PlaybackMode::Repeat => "Repeat",
+            PlaybackMode::Collapse => "Collapse",
+        }
+    }
+
+    /// Whether this mode runs a loop of its own.
+    pub fn loops(self) -> bool {
+        matches!(
+            self,
+            PlaybackMode::Loop | PlaybackMode::Repeat | PlaybackMode::Collapse
+        )
+    }
+
+    /// Whether the loop length comes from the note value rather than the slice.
+    pub fn uses_division(self) -> bool {
+        matches!(self, PlaybackMode::Repeat | PlaybackMode::Collapse)
+    }
+}
+
 /// How a cell plays its slice.
 ///
 /// Pitch and speed both change how fast the slice is read, so raising the
@@ -37,6 +98,14 @@ pub struct PlaybackSettings {
     pub pitch_semitones: f32,
     /// Level of this cell, as linear gain.
     pub gain: f32,
+    pub mode: PlaybackMode,
+    /// Length of one pass in repeat and collapse.
+    pub division: Division,
+    /// Factor the collapse loop is multiplied by on every pass.
+    pub collapse: f32,
+    /// Start the mode's loop when the key is released instead of when it is
+    /// pressed, so a phrase plays through and then collapses as it fades.
+    pub release_trigger: bool,
 }
 
 impl Default for PlaybackSettings {
@@ -46,6 +115,10 @@ impl Default for PlaybackSettings {
             speed: 1.0,
             pitch_semitones: 0.0,
             gain: 1.0,
+            mode: PlaybackMode::Gate,
+            division: Division::Sixteenth,
+            collapse: 0.75,
+            release_trigger: false,
         }
     }
 }
@@ -76,6 +149,10 @@ impl PlaybackSettings {
             .pitch_semitones
             .clamp(-MAX_PITCH_SEMITONES, MAX_PITCH_SEMITONES);
         self.gain = self.gain.clamp(0.0, 4.0);
+        if !self.collapse.is_finite() {
+            self.collapse = 0.75;
+        }
+        self.collapse = self.collapse.clamp(MIN_COLLAPSE, MAX_COLLAPSE);
         self
     }
 }
@@ -251,6 +328,7 @@ mod tests {
             speed: 0.0,
             pitch_semitones: f32::NAN,
             gain: f32::INFINITY,
+            ..Default::default()
         }
         .sanitized();
 
@@ -267,9 +345,49 @@ mod tests {
             speed: 0.5,
             pitch_semitones: 7.0,
             gain: 0.8,
+            ..Default::default()
         };
 
         assert_eq!(settings.sanitized(), settings);
+    }
+
+    #[test]
+    fn a_new_cell_plays_while_the_key_is_held() {
+        assert_eq!(PlaybackSettings::default().mode, PlaybackMode::Gate);
+    }
+
+    #[test]
+    fn only_the_looping_modes_loop() {
+        assert!(!PlaybackMode::Gate.loops());
+        assert!(!PlaybackMode::OneShot.loops());
+        assert!(PlaybackMode::Loop.loops());
+        assert!(PlaybackMode::Repeat.loops());
+        assert!(PlaybackMode::Collapse.loops());
+    }
+
+    #[test]
+    fn only_repeat_and_collapse_take_their_length_from_a_note_value() {
+        assert!(PlaybackMode::Repeat.uses_division());
+        assert!(PlaybackMode::Collapse.uses_division());
+        assert!(!PlaybackMode::Loop.uses_division());
+        assert!(!PlaybackMode::Gate.uses_division());
+    }
+
+    #[test]
+    fn a_collapse_factor_stays_within_its_range() {
+        let too_small = PlaybackSettings {
+            collapse: 0.01,
+            ..Default::default()
+        }
+        .sanitized();
+        let broken = PlaybackSettings {
+            collapse: f32::NAN,
+            ..Default::default()
+        }
+        .sanitized();
+
+        assert_eq!(too_small.collapse, MIN_COLLAPSE);
+        assert_eq!(broken.collapse, 0.75);
     }
 
     #[test]

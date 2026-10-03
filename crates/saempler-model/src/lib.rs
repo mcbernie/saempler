@@ -11,7 +11,8 @@ mod project;
 mod slice;
 
 pub use cell::{
-    note_name, CellId, PerformanceCell, PlaybackSettings, MAX_PITCH_SEMITONES, MAX_SPEED, MIN_SPEED,
+    note_name, CellId, PerformanceCell, PlaybackMode, PlaybackSettings, MAX_COLLAPSE,
+    MAX_PITCH_SEMITONES, MAX_SPEED, MIN_COLLAPSE, MIN_SPEED,
 };
 pub use modifier::{
     default_layout, Modifier, ModifierAssignment, ModifierMode, MODIFIER_BASE_NOTE, MODIFIER_COUNT,
