@@ -1,4 +1,4 @@
-use nih_plug_egui::egui::{vec2, Align2, FontId, Sense, Ui};
+use nih_plug_egui::egui::{epaint::PathShape, pos2, vec2, Align2, FontId, Sense, Stroke, Ui};
 use saempler_model::{
     note_name, Division, EnvelopeDefinition, LfoDefinition, LfoShape, ModDestination, ModSource,
     ModulationRoute, PerformanceCell, PlaybackMode, MAX_COLLAPSE, MAX_PITCH_SEMITONES, MAX_ROUTES,
@@ -513,13 +513,27 @@ fn arrow(ui: &mut Ui) {
         vec2(ARROW_WIDTH, THEME.font_md + THEME.spacing_md * 2.0),
         Sense::hover(),
     );
-    ui.painter().text(
-        rect.center(),
-        Align2::CENTER_CENTER,
-        "→",
-        FontId::proportional(THEME.font_md),
-        THEME.label,
+    // Drawn rather than written: the interface font has no arrow glyph, and a
+    // missing character renders as an empty box.
+    let painter = ui.painter();
+    let centre = rect.center();
+    let half = ARROW_WIDTH * 0.3;
+    painter.line_segment(
+        [
+            pos2(centre.x - half, centre.y),
+            pos2(centre.x + half, centre.y),
+        ],
+        Stroke::new(THEME.stroke_thin, THEME.label),
     );
+    painter.add(PathShape::convex_polygon(
+        vec![
+            pos2(centre.x + half - 4.0, centre.y - 3.0),
+            pos2(centre.x + half, centre.y),
+            pos2(centre.x + half - 4.0, centre.y + 3.0),
+        ],
+        THEME.label,
+        Stroke::NONE,
+    ));
 }
 
 /// What a route does, in words.
