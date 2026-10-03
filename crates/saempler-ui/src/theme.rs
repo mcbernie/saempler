@@ -39,6 +39,23 @@ pub struct Theme {
     pub active: Color32,
     /// Reserved for clipping and errors only.
     pub danger: Color32,
+
+    /// Background behind the waveform.
+    pub waveform_bg: Color32,
+    /// The waveform trace itself.
+    pub waveform: Color32,
+    /// Zero line through the middle of the waveform.
+    pub waveform_axis: Color32,
+    /// A slice boundary marker at rest.
+    pub marker: Color32,
+    /// Shading of an unselected slice.
+    pub slice_fill: Color32,
+    /// Shading of the neighbouring slice, so divisions read without markers.
+    pub slice_fill_alternate: Color32,
+    /// Shading of the selected slice.
+    pub slice_selected_fill: Color32,
+    /// Colours cycled through to tell slices apart in lists and pads.
+    pub slice_palette: [Color32; 6],
 }
 
 impl Theme {
@@ -74,6 +91,24 @@ impl Theme {
             accent: Color32::from_rgb(0x2d, 0xd4, 0xbf),
             active: Color32::from_rgb(0x4a, 0xde, 0x80),
             danger: Color32::from_rgb(0xef, 0x44, 0x44),
+
+            waveform_bg: Color32::from_rgb(0x13, 0x16, 0x1a),
+            waveform: Color32::from_rgb(0x5e, 0xea, 0xd4),
+            waveform_axis: Color32::from_rgb(0x30, 0x36, 0x3e),
+            marker: Color32::from_rgb(0x64, 0x6d, 0x7a),
+            // Slice shading sits behind the trace, so it stays very low
+            // contrast; the markers carry the actual division.
+            slice_fill: Color32::from_rgb(0x19, 0x1d, 0x22),
+            slice_fill_alternate: Color32::from_rgb(0x1e, 0x23, 0x29),
+            slice_selected_fill: Color32::from_rgb(0x24, 0x33, 0x36),
+            slice_palette: [
+                Color32::from_rgb(0x2d, 0xd4, 0xbf),
+                Color32::from_rgb(0xf4, 0x72, 0xb6),
+                Color32::from_rgb(0xfb, 0x92, 0x3c),
+                Color32::from_rgb(0x60, 0xa5, 0xfa),
+                Color32::from_rgb(0xa7, 0x8b, 0xfa),
+                Color32::from_rgb(0x4a, 0xde, 0x80),
+            ],
         }
     }
 

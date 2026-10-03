@@ -101,16 +101,21 @@ is why `just devices` forces the platform's native backend.
 
 ### What to try
 
-The editor shows a waveform selector, an "All Notes Off" button, a master gain
-knob, a stereo peak meter and the voice count.
+```
+Sample laden …                load a WAV, AIFF, FLAC, MP3 or OGG file
+4 / 8 / 16 / 32               divide the sample into that many equal slices
+click a slice                 select it; notes play the selection
+double click inside a slice   split it there, placing a marker by hand
+drag near a marker            move that slice boundary
+Slice löschen                 remove the selected slice
+play notes                    the selected slice sounds, polyphonically
+drag the gain knob            level changes          (host parameter -> engine)
+shift + drag                  fine adjustment
+double click the knob         back to the default
+```
 
-```
-play notes on the MIDI controller   voice count rises, meter moves, you hear the oscillator
-switch the waveform                 the sound changes      (UI -> command queue -> engine)
-drag the knob                       level changes          (host parameter -> engine)
-shift + drag                        fine adjustment
-double click the knob               back to the default
-```
+The line under the waveform shows the slice count, the selected slice with its
+length in frames, and the frame under the pointer. Import errors replace it.
 
 ### Checking realtime safety
 
@@ -174,15 +179,17 @@ loop while developing. `just uninstall` removes the bundles again.
 
 ### Checking that state survives
 
-Set the waveform to Square, save the Live Set, restart Live, reload the Set.
-The selector must still show Square. That exercises the serialized project
-state, including the version field and the migration step that runs when the
-plugin initializes.
+Load a sample, divide it into 8 slices, select one, save the Live Set, restart
+Live and reload the Set. The waveform, the slices and the selection must come
+back.
+
+Only the *path* of the sample is stored, not the audio: the file is decoded
+again when the project loads. Moving or deleting the file afterwards therefore
+breaks the restore, and the error appears under the waveform.
 
 ## What you are actually testing right now
 
-This is phase 1: the technical foundation, with a polyphonic test oscillator
-standing in for the sample engine. The point of running it is to confirm that
-the foundation holds — plugin loads in the host, MIDI arrives, UI and audio
-communicate without locks, state is saved and restored. Sample loading,
-slicing and performance cells come in later phases.
+This is phase 2: loading, slicing and playing a sample. Every note triggers the
+*selected* slice — mapping individual notes to their own slices, with their own
+playback settings, is what performance cells add in the next phase. Transforms,
+effects and modifier notes come after that.

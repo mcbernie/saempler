@@ -22,11 +22,24 @@ panics
 | Commands from the UI | `rtrb` SPSC queue, drained with `Consumer::pop` |
 | Values to the UI | `AtomicU32` in `Meters`, `Relaxed` ordering |
 | Voice storage | `[Voice; MAX_VOICES]`, `Copy`, allocated at construction |
+| Sample access | borrowed `Arc<SampleBuffer>`, read-only, never resized |
+| Retiring a buffer | handed back through a second queue, dropped elsewhere |
 | Parameter smoothing | nih-plug smoother advanced in `process`, passed as two endpoints |
 | Channel access | `Buffer::as_slice` plus `split_first_mut`, no indexing that can panic |
 
 `Engine::render` writes through `&mut [f32]` slices the host owns. It never
 grows anything and never drops an owned value.
+
+## Never drop a sample buffer on the audio thread
+
+Replacing the loaded sample would release the previous `Arc<SampleBuffer>` in
+the processing callback, freeing megabytes through the allocator.
+
+`Engine::apply_commands` therefore peeks at each command first. A command that
+would retire the current buffer is only popped when the disposal queue has a
+free slot; otherwise it stays queued and is retried in a later block. The
+retired buffer is pushed to that queue and dropped by the GUI thread or the
+import task.
 
 ## Verification
 

@@ -20,6 +20,8 @@ path = "src/main.rs"
 [dependencies]
 saempler-model.workspace = true
 saempler-audio.workspace = true
+saempler-core.workspace = true
 saempler-ui.workspace = true
 nih_plug = { workspace = true, features = ["assert_process_allocs", "standalone"] }
 nih_plug_egui.workspace = true
+rfd.workspace = true

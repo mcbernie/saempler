@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/saempler-model",
     "crates/saempler-audio",
+    "crates/saempler-core",
     "crates/saempler-ui",
     "crates/saempler-plugin",
     "xtask",
@@ -11,13 +12,14 @@ members = [
 [workspace.package]
 version = "0.1.0"
 edition = "2021"
-rust-version = "1.80"
+rust-version = "1.85"
 license = "GPL-3.0-or-later"
 repository = "https://github.com/mcbernie/saempler"
 
 [workspace.dependencies]
 saempler-model = { path = "crates/saempler-model" }
 saempler-audio = { path = "crates/saempler-audio" }
+saempler-core = { path = "crates/saempler-core" }
 saempler-ui = { path = "crates/saempler-ui" }
 
 # NIH-plug is not published on crates.io, so it is pinned to a reviewed revision.
@@ -29,6 +31,19 @@ nih_plug_xtask = { git = "https://github.com/robbert-vdh/nih-plug.git", rev = "d
 # workspace does not end up with two copies of the queue implementation.
 rtrb = "0.2"
 serde = { version = "1.0", features = ["derive"] }
+# Only the container and codec support the plugin actually needs; the default
+# feature set additionally pulls in MKV and the metadata readers.
+symphonia = { version = "0.6", default-features = false, features = [
+    "wav",
+    "aiff",
+    "pcm",
+    "adpcm",
+    "flac",
+    "ogg",
+    "vorbis",
+    "mp3",
+] }
+rfd = "0.17"
 serde_json = "1.0"
 
 [profile.release]

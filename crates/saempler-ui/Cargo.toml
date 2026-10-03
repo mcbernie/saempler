@@ -10,6 +10,7 @@ description = "egui interface for Sämpler"
 [dependencies]
 saempler-model.workspace = true
 saempler-audio.workspace = true
+saempler-core.workspace = true
 # `nih_plug` is used for the parameter types only; `nih_plug_egui` re-exports
 # the exact egui version the editor runs on, so egui is not a direct dependency.
 nih_plug.workspace = true

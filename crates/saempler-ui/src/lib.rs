@@ -9,5 +9,5 @@ pub mod screens;
 pub mod theme;
 pub mod widgets;
 
-pub use screens::main::{draw, ViewState};
+pub use screens::main::{draw, SampleView, ViewState};
 pub use theme::Theme;

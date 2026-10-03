@@ -1,17 +1,36 @@
 use std::sync::Mutex;
 
 use nih_plug::prelude::{FloatParam, ParamSetter};
-use nih_plug_egui::egui::{self, Align2, CentralPanel, FontId, Frame, Layout, Ui};
-use saempler_audio::{CommandProducer, EngineCommand, Meters};
-use saempler_model::{ProjectFile, Waveform};
+use nih_plug_egui::egui::{self, Align2, CentralPanel, FontId, Frame, Ui};
+use saempler_audio::{CommandProducer, EngineCommand, Meters, SliceBounds};
+use saempler_core::PeakCache;
+use saempler_model::ProjectFile;
 
 use crate::theme::Theme;
-use crate::widgets::{button, knob, readout, segmented, stereo_meter};
+use crate::widgets::{button, knob, readout, segmented, stereo_meter, waveform, MarkerEdge};
 
 const THEME: Theme = Theme::dark();
 
-const KNOB_DIAMETER: f32 = 56.0;
-const METER_WIDTH: f32 = 180.0;
+const KNOB_DIAMETER: f32 = 52.0;
+const METER_WIDTH: f32 = 170.0;
+const WAVEFORM_HEIGHT: f32 = 160.0;
+
+/// Slice counts offered by the quick division buttons.
+const EVEN_DIVISIONS: [u32; 4] = [4, 8, 16, 32];
+
+/// What the interface knows about the sample currently loaded.
+///
+/// Owned by the plugin and filled in by the import task. The peaks are what
+/// the waveform draws from; the decoded audio itself only ever reaches the
+/// audio engine.
+#[derive(Default)]
+pub struct SampleView {
+    pub peaks: PeakCache,
+    /// Message from the last import attempt, shown until the next one.
+    pub status: Option<String>,
+    /// Whether an import is running right now.
+    pub loading: bool,
+}
 
 /// Everything the editor needs to draw a frame.
 ///
@@ -20,6 +39,8 @@ const METER_WIDTH: f32 = 180.0;
 pub struct ViewState<'a> {
     /// Persisted project state. Locked on the UI thread only.
     pub project: &'a Mutex<ProjectFile>,
+    /// Peaks and import status. Written by the import task, read here.
+    pub sample: &'a Mutex<SampleView>,
     /// Producing end of the engine command queue. Locked on the UI thread
     /// only; the audio thread owns the consumer and never blocks on this.
     pub commands: &'a Mutex<CommandProducer>,
@@ -40,6 +61,11 @@ impl ViewState<'_> {
             let _ = producer.push(command);
         }
     }
+
+    /// Tell the engine which slice newly triggered notes should play.
+    fn send_selection(&self, bounds: Option<SliceBounds>) {
+        self.send(EngineCommand::SetSlice(bounds.unwrap_or_default()));
+    }
 }
 
 /// Apply the product theme to egui's own surfaces.
@@ -52,9 +78,10 @@ pub fn apply_style(ctx: &egui::Context, theme: &Theme) {
     ctx.set_visuals(visuals);
 }
 
-/// Draw the whole editor.
-pub fn draw(ctx: &egui::Context, setter: &ParamSetter, state: &ViewState<'_>) {
+/// Draw the whole editor. Returns true when the user asked to import a file.
+pub fn draw(ctx: &egui::Context, setter: &ParamSetter, state: &ViewState<'_>) -> bool {
     apply_style(ctx, &THEME);
+    let mut import_requested = false;
 
     CentralPanel::default()
         .frame(
@@ -65,63 +92,250 @@ pub fn draw(ctx: &egui::Context, setter: &ParamSetter, state: &ViewState<'_>) {
         .show(ctx, |ui| {
             ui.spacing_mut().item_spacing = egui::vec2(THEME.spacing_md, THEME.spacing_md);
 
-            header(ui);
+            header(ui, state);
             ui.add_space(THEME.spacing_md);
-            test_signal_section(ui, state);
+            import_requested = source_section(ui, state);
             ui.add_space(THEME.spacing_md);
             output_section(ui, setter, state);
         });
+
+    import_requested
 }
 
-/// Product name and build identity.
-fn header(ui: &mut Ui) {
-    ui.horizontal(|ui| {
-        ui.painter().text(
-            ui.cursor().min,
-            Align2::LEFT_TOP,
-            "SÄMPLER",
-            FontId::proportional(THEME.font_lg),
-            THEME.accent,
+/// Product name and the sample currently loaded.
+fn header(ui: &mut Ui, state: &ViewState<'_>) {
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), THEME.font_lg * 1.6),
+        egui::Sense::hover(),
+    );
+    let painter = ui.painter();
+
+    painter.text(
+        rect.left_center(),
+        Align2::LEFT_CENTER,
+        "SÄMPLER",
+        FontId::proportional(THEME.font_lg),
+        THEME.accent,
+    );
+
+    let subtitle = match state.project.lock() {
+        Ok(project) => match project.project.sample.as_ref() {
+            Some(sample) => format!(
+                "{}  ·  {:.2} s  ·  {} Hz  ·  {} ch",
+                sample.display_name(),
+                sample.duration_seconds(),
+                sample.sample_rate,
+                sample.channels
+            ),
+            None => "kein Sample geladen".to_owned(),
+        },
+        Err(_) => String::new(),
+    };
+    painter.text(
+        rect.right_center(),
+        Align2::RIGHT_CENTER,
+        subtitle,
+        FontId::proportional(THEME.font_sm),
+        THEME.text_dim,
+    );
+}
+
+/// Waveform, slicing controls and selection. Returns true on an import request.
+fn source_section(ui: &mut Ui, state: &ViewState<'_>) -> bool {
+    let mut import_requested = false;
+
+    section(ui, "SOURCE SAMPLE", |ui| {
+        import_requested = toolbar(ui, state);
+        ui.add_space(THEME.spacing_sm);
+
+        let Ok(mut project) = state.project.lock() else {
+            return;
+        };
+        let Ok(sample) = state.sample.lock() else {
+            return;
+        };
+
+        let action = waveform(
+            ui,
+            &THEME,
+            &sample.peaks,
+            project.project.slices(),
+            project.project.selection(),
+            WAVEFORM_HEIGHT,
         );
-        ui.add_space(170.0);
-        ui.with_layout(Layout::right_to_left(egui::Align::Min), |ui| {
-            ui.painter().text(
-                ui.cursor().max,
-                Align2::RIGHT_TOP,
-                concat!("v", env!("CARGO_PKG_VERSION")),
-                FontId::proportional(THEME.font_sm),
-                THEME.text_dim,
-            );
-        });
-    });
-    ui.add_space(THEME.font_lg);
-}
 
-/// Waveform selection and the panic button.
-fn test_signal_section(ui: &mut Ui, state: &ViewState<'_>) {
-    section(ui, "TEST SIGNAL", |ui| {
-        let labels: Vec<&str> = Waveform::ALL.iter().map(|w| w.label()).collect();
-        let selected = current_waveform(state);
-        let selected_index = Waveform::ALL
-            .iter()
-            .position(|w| *w == selected)
-            .unwrap_or(0);
+        let mut selection_changed = false;
 
-        let width = ui.available_width();
-        if let Some(index) = segmented(ui, &THEME, &labels, selected_index, width) {
-            let waveform = Waveform::ALL[index];
-            if waveform != selected {
-                if let Ok(mut project) = state.project.lock() {
-                    project.project.waveform = waveform;
-                }
-                state.send(EngineCommand::SetWaveform(waveform));
+        if let Some(id) = action.select {
+            project.project.select(Some(id));
+            selection_changed = true;
+        }
+
+        if let Some((id, frame)) = action.split {
+            if project.project.split_slice(id, frame).is_some() {
+                selection_changed = true;
             }
         }
 
-        if button(ui, &THEME, "All Notes Off", width) {
+        if let Some((id, edge, frame)) = action.move_marker {
+            if let Some(slice) = project.project.slice(id).copied() {
+                let (start, end) = match edge {
+                    MarkerEdge::Start => (frame, slice.end_frame),
+                    MarkerEdge::End => (slice.start_frame, frame),
+                };
+                project.project.set_slice_bounds(id, start, end);
+                if project.project.selection() == Some(id) {
+                    selection_changed = true;
+                }
+            }
+        }
+
+        if selection_changed {
+            let bounds = project.project.selected().map(|slice| SliceBounds {
+                start_frame: slice.start_frame,
+                end_frame: slice.end_frame,
+            });
+            state.send_selection(bounds);
+        }
+
+        ui.add_space(THEME.spacing_sm);
+        status_line(ui, &project, &sample, action.hovered_frame);
+    });
+
+    import_requested
+}
+
+/// Import button, quick divisions and the controls for the selected slice.
+fn toolbar(ui: &mut Ui, state: &ViewState<'_>) -> bool {
+    let mut import_requested = false;
+    let loading = state
+        .sample
+        .lock()
+        .map(|sample| sample.loading)
+        .unwrap_or(false);
+
+    ui.horizontal(|ui| {
+        let label = if loading {
+            "Lädt …"
+        } else {
+            "Sample laden …"
+        };
+        if button(ui, &THEME, label, 130.0) && !loading {
+            import_requested = true;
+        }
+
+        ui.add_space(THEME.spacing_md);
+
+        let has_sample = state
+            .project
+            .lock()
+            .map(|project| project.project.sample.is_some())
+            .unwrap_or(false);
+        if !has_sample {
+            return;
+        }
+
+        let labels: Vec<String> = EVEN_DIVISIONS
+            .iter()
+            .map(|count| format!("{count}"))
+            .collect();
+        let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+
+        // No division is "current", so the selector is drawn without one.
+        if let Some(index) = segmented(ui, &THEME, &refs, usize::MAX, 180.0) {
+            divide_evenly(state, EVEN_DIVISIONS[index]);
+        }
+
+        ui.add_space(THEME.spacing_md);
+        if button(ui, &THEME, "Slice löschen", 120.0) {
+            remove_selected(state);
+        }
+        if button(ui, &THEME, "All Notes Off", 120.0) {
             state.send(EngineCommand::AllNotesOff);
         }
     });
+
+    import_requested
+}
+
+/// Replace the slices with `count` equal divisions and select the first.
+fn divide_evenly(state: &ViewState<'_>, count: u32) {
+    let Ok(mut project) = state.project.lock() else {
+        return;
+    };
+    project.project.slice_evenly(count);
+    let first = project.project.slices().first().map(|slice| slice.id);
+    project.project.select(first);
+
+    let bounds = project.project.selected().map(|slice| SliceBounds {
+        start_frame: slice.start_frame,
+        end_frame: slice.end_frame,
+    });
+    drop(project);
+    state.send_selection(bounds);
+}
+
+/// Remove the selected slice and clear what the engine plays.
+fn remove_selected(state: &ViewState<'_>) {
+    let Ok(mut project) = state.project.lock() else {
+        return;
+    };
+    let Some(id) = project.project.selection() else {
+        return;
+    };
+    project.project.remove_slice(id);
+    drop(project);
+    state.send_selection(None);
+}
+
+/// One line of context under the waveform.
+fn status_line(
+    ui: &mut Ui,
+    project: &ProjectFile,
+    sample: &SampleView,
+    hovered_frame: Option<u64>,
+) {
+    let slices = project.project.slices().len();
+    let selection = project
+        .project
+        .selected()
+        .map(|slice| {
+            let index = project
+                .project
+                .slices()
+                .iter()
+                .position(|candidate| candidate.id == slice.id)
+                .map(|index| index + 1)
+                .unwrap_or(0);
+            format!("Slice {index}  ·  {} Frames", slice.len_frames())
+        })
+        .unwrap_or_else(|| "kein Slice gewählt".to_owned());
+
+    let position = hovered_frame
+        .map(|frame| format!("  ·  Frame {frame}"))
+        .unwrap_or_default();
+
+    let text = match sample.status.as_deref() {
+        Some(status) => status.to_owned(),
+        None => format!("{slices} Slices  ·  {selection}{position}"),
+    };
+    let color = if sample.status.is_some() {
+        THEME.danger
+    } else {
+        THEME.text_dim
+    };
+
+    let (rect, _) = ui.allocate_exact_size(
+        egui::vec2(ui.available_width(), THEME.font_sm * 1.6),
+        egui::Sense::hover(),
+    );
+    ui.painter().text(
+        rect.left_center(),
+        Align2::LEFT_CENTER,
+        text,
+        FontId::proportional(THEME.font_sm),
+        color,
+    );
 }
 
 /// Master gain plus the values published by the engine.
@@ -143,15 +357,6 @@ fn output_section(ui: &mut Ui, setter: &ParamSetter, state: &ViewState<'_>) {
             });
         });
     });
-}
-
-/// Waveform the project is currently set to.
-fn current_waveform(state: &ViewState<'_>) -> Waveform {
-    state
-        .project
-        .lock()
-        .map(|project| project.project.waveform)
-        .unwrap_or_default()
 }
 
 /// A titled, framed group of controls.

@@ -23,18 +23,19 @@ themselves.
 
 ## Status
 
-Phase 1 of the plan: the technical foundation. There is no sample engine yet.
-The plugin currently plays a polyphonic test oscillator so that the audio path,
-MIDI input, editor and state handling can be verified end to end.
+Phase 2 of the plan: samples can be loaded, sliced and played.
 
 What works today:
 
 - VST3, CLAP and standalone builds
-- egui editor with the product theme and custom widgets
-- MIDI note on/off/choke start and release voices
-- UI edits reach the engine through a wait-free queue
-- the engine publishes peak levels and voice count back to the UI
-- master gain as a host parameter, project state as versioned plugin state
+- sample import for WAV, AIFF, FLAC, MP3 and OGG, decoded off the audio thread
+- waveform display backed by a multi-level peak cache
+- slices: equal divisions, split by double click, drag the markers, select
+- MIDI notes play the selected slice, polyphonically
+- master gain as a host parameter; sample reference, slices and selection as
+  versioned plugin state, reloaded when a project is opened
+
+Not there yet: performance cells, transforms, effects and modifier notes.
 
 See `docs/architecture.md` for the decisions behind this and
 `docs/realtime.md` for the rules the audio thread follows.
@@ -60,7 +61,8 @@ the device quirks and how to load the plugin in a DAW.
 
 ```
 crates/saempler-model    serializable project state
-crates/saempler-audio    realtime engine, voices, command queue, meters
+crates/saempler-audio    realtime engine, voices, sample buffers, queues
+crates/saempler-core     sample import and the waveform peak cache
 crates/saempler-ui       theme, custom widgets, screens
 crates/saempler-plugin   host parameters and the VST3/CLAP/standalone exports
 xtask                    bundler entry point

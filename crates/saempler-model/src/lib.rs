@@ -5,5 +5,7 @@
 //! has no knowledge of audio processing, egui or any plugin format.
 
 mod project;
+mod slice;
 
-pub use project::{Project, ProjectError, ProjectFile, Waveform, PROJECT_VERSION};
+pub use project::{Project, ProjectError, ProjectFile, SampleRef, PROJECT_VERSION};
+pub use slice::{Slice, SliceId};

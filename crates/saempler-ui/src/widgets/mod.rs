@@ -6,7 +6,9 @@
 mod knob;
 mod meter;
 mod segmented;
+mod waveform;
 
 pub use knob::knob;
 pub use meter::{readout, stereo_meter};
 pub use segmented::{button, segmented};
+pub use waveform::{slice_color, waveform, MarkerEdge, WaveformAction};

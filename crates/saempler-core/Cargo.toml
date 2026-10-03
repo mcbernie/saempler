@@ -1,0 +1,13 @@
+[package]
+name = "saempler-core"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Sample import and waveform cache for Sämpler"
+
+[dependencies]
+saempler-model.workspace = true
+saempler-audio.workspace = true
+symphonia.workspace = true

@@ -4,12 +4,17 @@
 //! the realtime engine to the host's audio callback, hands the editor to
 //! [`saempler_ui`], and exports the VST3, CLAP and standalone targets.
 
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
 use nih_plug::prelude::*;
 use nih_plug_egui::create_egui_editor;
-use saempler_audio::{command_queue, CommandProducer, Engine, Meters};
-use saempler_ui::ViewState;
+use saempler_audio::{
+    command_queue, disposal_queue, CommandProducer, DisposalConsumer, Engine, EngineCommand,
+    Meters, SliceBounds,
+};
+use saempler_core::load_sample;
+use saempler_ui::{SampleView, ViewState};
 
 mod params;
 
@@ -21,25 +26,50 @@ pub use params::SaemplerParams;
 /// master gain ramp may run before it is recomputed.
 const MAX_BLOCK_SIZE: usize = 64;
 
+/// File types offered by the import dialog.
+const AUDIO_EXTENSIONS: [&str; 7] = ["wav", "flac", "mp3", "ogg", "oga", "aiff", "aif"];
+
+/// Work that must not happen on the audio or GUI thread.
+pub enum Task {
+    /// Ask the user for a file and import it, starting a fresh set of slices.
+    ///
+    /// The dialog is opened here rather than from the editor on purpose. A
+    /// modal dialog runs its own message loop, and opening one from inside the
+    /// editor callback re-enters the window procedure while the window handler
+    /// is still borrowed, which aborts the process.
+    PickAndImport,
+    /// Restore the sample a saved project refers to, keeping its slices.
+    Restore(PathBuf),
+}
+
 pub struct Saempler {
     params: Arc<SaemplerParams>,
     engine: Engine,
     meters: Arc<Meters>,
-    /// Shared with the editor. Locked on the UI thread only; the audio thread
-    /// holds the consuming end and never waits on this mutex.
+    /// Shared with the editor and the import task. Locked off the audio
+    /// thread only; the audio thread holds the consuming end and never waits
+    /// on this mutex.
     commands: Arc<Mutex<CommandProducer>>,
+    /// Buffers the engine has retired. Drained from the editor and after an
+    /// import, so that freeing them never happens on the audio thread.
+    disposal: Arc<Mutex<DisposalConsumer>>,
+    /// Peaks and import status for the interface.
+    sample_view: Arc<Mutex<SampleView>>,
 }
 
 impl Default for Saempler {
     fn default() -> Self {
-        let (producer, consumer) = command_queue();
+        let (command_producer, command_consumer) = command_queue();
+        let (disposal_producer, disposal_consumer) = disposal_queue();
         let meters = Arc::new(Meters::new());
 
         Self {
             params: Arc::new(SaemplerParams::default()),
-            engine: Engine::new(consumer, Arc::clone(&meters)),
+            engine: Engine::new(command_consumer, disposal_producer, Arc::clone(&meters)),
             meters,
-            commands: Arc::new(Mutex::new(producer)),
+            commands: Arc::new(Mutex::new(command_producer)),
+            disposal: Arc::new(Mutex::new(disposal_consumer)),
+            sample_view: Arc::new(Mutex::new(SampleView::default())),
         }
     }
 }
@@ -62,32 +92,117 @@ impl Plugin for Saempler {
     const SAMPLE_ACCURATE_AUTOMATION: bool = true;
 
     type SysExMessage = ();
-    type BackgroundTask = ();
+    type BackgroundTask = Task;
 
     fn params(&self) -> Arc<dyn Params> {
         self.params.clone()
     }
 
-    fn editor(&mut self, _async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
+    fn task_executor(&mut self) -> TaskExecutor<Self> {
+        let project = self.params.project.clone();
+        let sample_view = Arc::clone(&self.sample_view);
+        let commands = Arc::clone(&self.commands);
+        let disposal = Arc::clone(&self.disposal);
+
+        Box::new(move |task| {
+            let (path, keep_slices) = match task {
+                Task::PickAndImport => match pick_audio_file() {
+                    Some(path) => (path, false),
+                    None => {
+                        // Cancelled: release the button again and change nothing.
+                        if let Ok(mut view) = sample_view.lock() {
+                            view.loading = false;
+                        }
+                        return;
+                    }
+                },
+                Task::Restore(path) => (path, true),
+            };
+
+            let result = load_sample(&path);
+
+            // Freeing whatever the engine retired for the previous sample
+            // belongs here, on a thread that is allowed to call the allocator.
+            drain_disposal(&disposal);
+
+            let mut view = match sample_view.lock() {
+                Ok(view) => view,
+                Err(_) => return,
+            };
+            view.loading = false;
+
+            let loaded = match result {
+                Ok(loaded) => loaded,
+                Err(error) => {
+                    nih_error!("Sample konnte nicht geladen werden: {error}");
+                    view.status = Some(error.to_string());
+                    return;
+                }
+            };
+            view.status = None;
+            view.peaks = loaded.peaks;
+
+            let bounds = {
+                let mut project = match project.lock() {
+                    Ok(project) => project,
+                    Err(_) => return,
+                };
+                if keep_slices {
+                    project.project.sample = Some(loaded.source);
+                } else {
+                    project.project.set_sample(Some(loaded.source));
+                }
+                project.project.selected().map(|slice| SliceBounds {
+                    start_frame: slice.start_frame,
+                    end_frame: slice.end_frame,
+                })
+            };
+
+            if let Ok(mut commands) = commands.lock() {
+                let _ = commands.push(EngineCommand::SetSample(loaded.buffer));
+                let _ = commands.push(EngineCommand::SetSlice(bounds.unwrap_or_default()));
+            }
+        })
+    }
+
+    fn editor(&mut self, async_executor: AsyncExecutor<Self>) -> Option<Box<dyn Editor>> {
         let params = self.params.clone();
         let meters = Arc::clone(&self.meters);
         let commands = Arc::clone(&self.commands);
+        let disposal = Arc::clone(&self.disposal);
+        let sample_view = Arc::clone(&self.sample_view);
 
         create_egui_editor(
             self.params.editor_state.clone(),
             (),
             |_, _| {},
             move |egui_ctx, setter, _state| {
-                saempler_ui::draw(
+                // The GUI thread is the one place that reliably runs while the
+                // plugin is in use, so retired buffers are freed from here.
+                drain_disposal(&disposal);
+
+                let import_requested = saempler_ui::draw(
                     egui_ctx,
                     setter,
                     &ViewState {
                         project: &params.project,
+                        sample: &sample_view,
                         commands: &commands,
                         meters: &meters,
                         gain: &params.gain,
                     },
                 );
+
+                if import_requested {
+                    // The flag is set before the task starts so the button
+                    // stays disabled while the dialog is open, which prevents
+                    // a second dialog from being requested.
+                    if let Ok(mut view) = sample_view.lock() {
+                        view.loading = true;
+                        view.status = None;
+                    }
+                    async_executor.execute_background(Task::PickAndImport);
+                }
             },
         )
     }
@@ -96,14 +211,14 @@ impl Plugin for Saempler {
         &mut self,
         _audio_io_layout: &AudioIOLayout,
         buffer_config: &BufferConfig,
-        _context: &mut impl InitContext<Self>,
+        context: &mut impl InitContext<Self>,
     ) -> bool {
         // Migration happens here rather than during deserialization because
         // this is the first point at which a load failure can be reported to
         // the host by refusing to initialize.
-        let waveform = match self.params.project.lock() {
+        let restore = match self.params.project.lock() {
             Ok(mut project) => match project.migrate() {
-                Ok(()) => project.project.waveform,
+                Ok(()) => project.project.sample.as_ref().map(|s| s.path.clone()),
                 Err(error) => {
                     nih_error!("Projekt konnte nicht geladen werden: {error}");
                     return false;
@@ -116,7 +231,17 @@ impl Plugin for Saempler {
         };
 
         self.engine.prepare(buffer_config.sample_rate);
-        self.engine.set_waveform(waveform);
+
+        // A saved project only stores the path to its sample, so the audio has
+        // to be decoded again. `execute` runs the task on this thread and
+        // returns when it is done, which keeps offline rendering correct.
+        // `initialize` may run more than once, so an already loaded buffer is
+        // not decoded a second time.
+        if let Some(path) = restore {
+            if !self.engine.has_sample() {
+                context.execute(Task::Restore(path));
+            }
+        }
 
         true
     }
@@ -185,6 +310,9 @@ impl Plugin for Saempler {
 ///
 /// Kept separate from [`Plugin::process`] so the mapping can be tested without
 /// a host. Events the engine does not react to are ignored on purpose.
+///
+/// Every note currently triggers the selected slice. Mapping individual notes
+/// to their own slices is what performance cells introduce.
 fn apply_note_event(engine: &mut Engine, event: &NoteEvent<()>) {
     match *event {
         NoteEvent::NoteOn { note, velocity, .. } => engine.note_on(note, velocity),
@@ -193,6 +321,27 @@ fn apply_note_event(engine: &mut Engine, event: &NoteEvent<()>) {
         NoteEvent::NoteOff { note, .. } | NoteEvent::Choke { note, .. } => engine.note_off(note),
         _ => {}
     }
+}
+
+/// Drop every buffer the engine has handed back.
+///
+/// Must only be called from a thread that may block and allocate.
+fn drain_disposal(disposal: &Mutex<DisposalConsumer>) {
+    let Ok(mut disposal) = disposal.lock() else {
+        return;
+    };
+    while disposal.pop().is_ok() {}
+}
+
+/// Ask the user for an audio file.
+///
+/// Called from the background task thread, never from the editor callback;
+/// see [`Task::PickAndImport`].
+fn pick_audio_file() -> Option<PathBuf> {
+    rfd::FileDialog::new()
+        .set_title("Sample laden")
+        .add_filter("Audio", &AUDIO_EXTENSIONS)
+        .pick_file()
 }
 
 impl ClapPlugin for Saempler {
@@ -219,17 +368,44 @@ nih_export_vst3!(Saempler);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use saempler_audio::command_queue;
+    use saempler_audio::SampleBuffer;
 
     const SAMPLE_RATE: f32 = 48_000.0;
 
-    fn engine() -> Engine {
-        let (_producer, consumer) = command_queue();
-        let mut engine = Engine::new(consumer, Arc::new(Meters::new()));
+    /// An engine with a one second sample and the whole of it selected.
+    fn loaded_engine() -> Engine {
+        let (mut commands, command_consumer) = command_queue();
+        let (disposal_producer, _disposal) = disposal_queue();
+        let mut engine = Engine::new(command_consumer, disposal_producer, Arc::new(Meters::new()));
         engine.prepare(SAMPLE_RATE);
-        // The producer is dropped here on purpose: this test only covers the
-        // note event mapping, not the command queue.
+
+        let frames = 48_000;
+        commands
+            .push(EngineCommand::SetSample(Arc::new(SampleBuffer::new(
+                vec![vec![1.0; frames], vec![1.0; frames]],
+                48_000,
+            ))))
+            .expect("the queue has capacity");
+        commands
+            .push(EngineCommand::SetSlice(SliceBounds {
+                start_frame: 0,
+                end_frame: frames as u64,
+            }))
+            .expect("the queue has capacity");
+        engine.apply_commands();
+        // The producer is dropped here on purpose: these tests only cover the
+        // note event mapping.
         engine
+    }
+
+    fn note_on(note: u8) -> NoteEvent<()> {
+        NoteEvent::NoteOn {
+            timing: 0,
+            voice_id: None,
+            channel: 0,
+            note,
+            velocity: 1.0,
+        }
     }
 
     fn render(engine: &mut Engine, frames: usize) {
@@ -240,37 +416,18 @@ mod tests {
 
     #[test]
     fn note_on_starts_a_voice() {
-        let mut engine = engine();
+        let mut engine = loaded_engine();
 
-        apply_note_event(
-            &mut engine,
-            &NoteEvent::NoteOn {
-                timing: 0,
-                voice_id: None,
-                channel: 0,
-                note: 60,
-                velocity: 1.0,
-            },
-        );
+        apply_note_event(&mut engine, &note_on(60));
 
         assert_eq!(engine.active_voices(), 1);
     }
 
     #[test]
     fn note_off_releases_the_matching_note_only() {
-        let mut engine = engine();
-        for note in [60, 64] {
-            apply_note_event(
-                &mut engine,
-                &NoteEvent::NoteOn {
-                    timing: 0,
-                    voice_id: None,
-                    channel: 0,
-                    note,
-                    velocity: 1.0,
-                },
-            );
-        }
+        let mut engine = loaded_engine();
+        apply_note_event(&mut engine, &note_on(60));
+        apply_note_event(&mut engine, &note_on(64));
 
         apply_note_event(
             &mut engine,
@@ -289,17 +446,8 @@ mod tests {
 
     #[test]
     fn choke_ends_the_note() {
-        let mut engine = engine();
-        apply_note_event(
-            &mut engine,
-            &NoteEvent::NoteOn {
-                timing: 0,
-                voice_id: None,
-                channel: 0,
-                note: 72,
-                velocity: 1.0,
-            },
-        );
+        let mut engine = loaded_engine();
+        apply_note_event(&mut engine, &note_on(72));
 
         apply_note_event(
             &mut engine,
@@ -317,17 +465,8 @@ mod tests {
 
     #[test]
     fn unhandled_events_do_not_disturb_sounding_voices() {
-        let mut engine = engine();
-        apply_note_event(
-            &mut engine,
-            &NoteEvent::NoteOn {
-                timing: 0,
-                voice_id: None,
-                channel: 0,
-                note: 60,
-                velocity: 1.0,
-            },
-        );
+        let mut engine = loaded_engine();
+        apply_note_event(&mut engine, &note_on(60));
 
         apply_note_event(
             &mut engine,
@@ -341,5 +480,131 @@ mod tests {
         );
 
         assert_eq!(engine.active_voices(), 1);
+    }
+
+    /// Write a minimal 16-bit stereo PCM WAV and return its path.
+    ///
+    /// The same helper exists in `saempler-core`'s loader tests. Sharing it
+    /// would mean a test-only crate for twenty lines, so both copies stay.
+    fn write_test_wav(name: &str, frames: usize) -> PathBuf {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_nanos())
+            .unwrap_or(0);
+        let path = std::env::temp_dir().join(format!("saempler-plugin-{name}-{unique}.wav"));
+
+        let data_len = (frames * 4) as u32;
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(b"RIFF");
+        bytes.extend_from_slice(&(36 + data_len).to_le_bytes());
+        bytes.extend_from_slice(b"WAVEfmt ");
+        bytes.extend_from_slice(&16u32.to_le_bytes());
+        bytes.extend_from_slice(&1u16.to_le_bytes());
+        bytes.extend_from_slice(&2u16.to_le_bytes());
+        bytes.extend_from_slice(&48_000u32.to_le_bytes());
+        bytes.extend_from_slice(&(48_000u32 * 4).to_le_bytes());
+        bytes.extend_from_slice(&4u16.to_le_bytes());
+        bytes.extend_from_slice(&16u16.to_le_bytes());
+        bytes.extend_from_slice(b"data");
+        bytes.extend_from_slice(&data_len.to_le_bytes());
+        for _ in 0..frames {
+            bytes.extend_from_slice(&i16::MAX.to_le_bytes());
+            bytes.extend_from_slice(&i16::MAX.to_le_bytes());
+        }
+
+        std::fs::write(&path, &bytes).expect("the temp directory must be writable");
+        path
+    }
+
+    struct TempFile(PathBuf);
+
+    impl Drop for TempFile {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+
+    #[test]
+    fn restoring_a_project_reloads_its_sample_and_keeps_the_slices() {
+        let path = write_test_wav("restore", 48_000);
+        let _cleanup = TempFile(path.clone());
+
+        let mut plugin = Saempler::default();
+        // Stand in for state the host restored: a sample reference plus the
+        // slices the user had made, with the second one selected.
+        {
+            let mut project = plugin.params.project.lock().expect("fresh mutex");
+            project.project.sample = Some(saempler_model::SampleRef {
+                path: path.clone(),
+                frames: 48_000,
+                sample_rate: 48_000,
+                channels: 2,
+            });
+            let first = project.project.add_slice(0, 24_000);
+            let second = project.project.add_slice(24_000, 48_000);
+            project.project.select(Some(second));
+            assert_ne!(first, second);
+        }
+
+        let executor = plugin.task_executor();
+        executor(Task::Restore(path.clone()));
+
+        // The interface received peaks to draw.
+        {
+            let view = plugin.sample_view.lock().expect("fresh mutex");
+            assert_eq!(view.status, None, "a valid file must not report an error");
+            assert!(!view.loading);
+            assert_eq!(view.peaks.frames(), 48_000);
+        }
+
+        // The project kept its slices and its selection.
+        {
+            let project = plugin.params.project.lock().expect("fresh mutex");
+            assert_eq!(project.project.slices().len(), 2);
+            let selected = project.project.selected().expect("selection survived");
+            assert_eq!((selected.start_frame, selected.end_frame), (24_000, 48_000));
+        }
+
+        // The engine received the audio and the selected region.
+        plugin.engine.apply_commands();
+        assert!(plugin.engine.has_sample());
+        assert_eq!(
+            plugin.engine.bounds(),
+            SliceBounds {
+                start_frame: 24_000,
+                end_frame: 48_000,
+            }
+        );
+
+        plugin.engine.note_on(60, 1.0);
+        assert_eq!(plugin.engine.active_voices(), 1);
+    }
+
+    #[test]
+    fn a_failed_import_reports_the_error_and_changes_nothing() {
+        let mut plugin = Saempler::default();
+
+        let executor = plugin.task_executor();
+        executor(Task::Restore(PathBuf::from("gibt-es-nicht.wav")));
+
+        let view = plugin.sample_view.lock().expect("fresh mutex");
+        assert!(view.status.is_some(), "the failure must be shown");
+        assert!(!view.loading);
+        assert_eq!(view.peaks.frames(), 0);
+
+        drop(view);
+        plugin.engine.apply_commands();
+        assert!(!plugin.engine.has_sample());
+    }
+
+    #[test]
+    fn every_offered_extension_is_lowercase_and_without_a_dot() {
+        for extension in AUDIO_EXTENSIONS {
+            assert!(
+                !extension.starts_with('.'),
+                "{extension} must not have a dot"
+            );
+            assert_eq!(extension, extension.to_lowercase());
+        }
     }
 }
