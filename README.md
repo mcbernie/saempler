@@ -33,6 +33,11 @@ What works today:
 - slices: equal divisions, split by double click, drag or remove the markers
 - performance cells: slices laid out across the keyboard, several notes able to
   share one slice, each with its own reverse, speed, pitch and gain
+- playback modes per cell: gate, one shot, loop, tempo-synced repeat and a
+  collapse whose loop shrinks on every pass, each able to start at the note off
+  instead of the note on
+- a map of the whole sample above the pages, with the key every chop plays on,
+  so the cell being edited is always visible in context
 - two envelopes and two LFOs per cell, free running or locked to the host
   tempo, none of them wired to a fixed parameter
 - a modulation matrix of up to eight routes, from envelopes, LFOs or velocity
@@ -46,8 +51,7 @@ What works today:
 - master gain as a host parameter; sample reference, slices, cells and the
   modifier layout as versioned plugin state, reloaded when a project is opened
 
-Not there yet: repeat and collapse playback modes, regions, effects,
-gestures and the preset side of things.
+Not there yet: regions, effects, gestures and the preset side of things.
 
 See `docs/architecture.md` for the decisions behind this and
 `docs/realtime.md` for the rules the audio thread follows.

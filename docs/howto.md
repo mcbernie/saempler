@@ -133,9 +133,25 @@ Kopie auf naechste Note     duplicate the selected cell one semitone up
 play that note              the cell sounds, polyphonically
 ```
 
+Above the tabs sits a map of the whole sample with the key every chop plays on.
+It stays there whichever page is open, so the cell being edited is always
+visible in the context of the sample it came from; clicking a chop selects it
+and plays it once.
+
 The CELL page edits the selected pad. Playback holds reverse, speed, pitch and
 gain; speed and pitch both change the read rate, so a transposed cell is also
-shorter. Duplicating a cell and changing only the copy is the quickest way to
+shorter.
+
+```
+Gate        plays while the key is held
+One Shot    plays the slice to its end, whatever the key does
+Loop        repeats the whole slice
+Repeat      repeats the chosen note value, locked to the host tempo
+Collapse    like repeat, with the loop shrinking on every pass
+```
+
+Release Trigger starts the loop when the key comes up rather than when it goes
+down, so a phrase plays through and then collapses as it fades. Duplicating a cell and changing only the copy is the quickest way to
 the idea the instrument is built on.
 
 Below that sit two envelopes, two LFOs and the modulation matrix. None of the

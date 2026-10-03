@@ -34,6 +34,7 @@ pub fn source_section(ui: &mut Ui, state: &ViewState<'_>) -> bool {
         // Collected once per frame: the widget reads the positions several
         // times while drawing, and they must not change underneath it.
         let playheads: Vec<u64> = state.meters.playheads().collect();
+        let notes = note_map(&project.project);
         let action = waveform(
             ui,
             &THEME,
@@ -44,6 +45,7 @@ pub fn source_section(ui: &mut Ui, state: &ViewState<'_>) -> bool {
                 selected: project.project.selection(),
                 playheads: &playheads,
                 view: sample.view,
+                notes: &notes,
             },
             WAVEFORM_HEIGHT,
         );
@@ -239,4 +241,17 @@ fn status_line(
         FontId::proportional(THEME.font_sm),
         color,
     );
+}
+
+/// The note each slice is mapped to, in the order the cells are stored.
+///
+/// Built once per frame rather than looked up per slice while drawing: the
+/// list is as long as the keyboard mapping and the waveform reads it for every
+/// visible span.
+pub(crate) fn note_map(project: &saempler_model::Project) -> Vec<(saempler_model::SliceId, u8)> {
+    project
+        .cells()
+        .iter()
+        .map(|cell| (cell.slice, cell.midi_note))
+        .collect()
 }

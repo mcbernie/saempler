@@ -10,14 +10,18 @@ use saempler_model::{Modifier, ProjectFile};
 use crate::screens::cell::cell_section;
 use crate::screens::modifiers::modifier_section;
 use crate::screens::performance::performance_section;
-use crate::screens::source::source_section;
+use crate::screens::source::{note_map, source_section};
 use crate::theme::Theme;
-use crate::widgets::{knob, led, readout, stereo_meter, tab_bar, ViewRange};
+use crate::widgets::{
+    knob, led, readout, slice_map, stereo_meter, tab_bar, ViewRange, WaveformSource,
+};
 
 pub(crate) const THEME: Theme = Theme::dark();
 
 const KNOB_DIAMETER: f32 = 48.0;
 const METER_WIDTH: f32 = 150.0;
+/// Height of the sample map that stays above the pages.
+const MAP_HEIGHT: f32 = 54.0;
 
 /// Smallest the editor window may be dragged to.
 pub const MIN_EDITOR_SIZE: (f32, f32) = (720.0, 470.0);
@@ -120,8 +124,17 @@ pub(crate) fn preview_spec(start_frame: u64, end_frame: u64) -> CellSpec {
 pub fn apply_style(ctx: &egui::Context, theme: &Theme) {
     let mut visuals = egui::Visuals::dark();
     visuals.panel_fill = theme.window_bg;
-    visuals.window_fill = theme.window_bg;
     visuals.extreme_bg_color = theme.control_pressed_bg;
+    // Popups are the one surface egui draws the frame for; give it the panel
+    // colour and the accent border the rest of the interface uses.
+    visuals.window_fill = theme.panel_bg;
+    visuals.window_stroke = Stroke::new(theme.stroke_thin, theme.accent);
+    visuals.popup_shadow = egui::epaint::Shadow {
+        offset: [0, 4],
+        blur: 12,
+        spread: 0,
+        color: egui::Color32::from_black_alpha(160),
+    };
     visuals.override_text_color = Some(theme.text);
     visuals.resize_corner_size = 14.0;
     ctx.set_visuals(visuals);
@@ -147,6 +160,7 @@ pub fn draw(ctx: &egui::Context, setter: &ParamSetter, state: &ViewState<'_>) ->
                 .show(ui, |ui| {
                     ui.spacing_mut().item_spacing = vec2(THEME.spacing_md, THEME.spacing_md);
                     header(ui, state);
+                    sample_map(ui, state);
 
                     let tab = current_tab(state);
                     let labels: Vec<&str> = Tab::ALL.iter().map(|tab| tab.label()).collect();
@@ -155,8 +169,9 @@ pub fn draw(ctx: &egui::Context, setter: &ParamSetter, state: &ViewState<'_>) ->
                     }
                     ui.add_space(THEME.spacing_md);
 
-                    // The page scrolls; the header and the footer stay put, so
-                    // the meters and modifier lamps are always in view.
+                    // The page scrolls; the header, the sample map and the
+                    // footer stay put, so the chop being edited, the meters and
+                    // the modifier lamps are in view whichever page is open.
                     // Height of the footer below: its knob plus the knob's two
                     // label lines, the section title and the frame margins.
                     let footer = KNOB_DIAMETER + THEME.font_sm * 4.6 + THEME.spacing_lg * 2.0;
@@ -190,6 +205,94 @@ fn current_tab(state: &ViewState<'_>) -> Tab {
 fn set_tab(state: &ViewState<'_>, tab: Tab) {
     if let Ok(mut sample) = state.sample.lock() {
         sample.tab = tab;
+    }
+}
+
+/// The whole sample with the key every chop plays on.
+///
+/// Above the tabs rather than inside the source page: without it the cell page
+/// is a set of controls with nothing to say which chop they belong to.
+fn sample_map(ui: &mut Ui, state: &ViewState<'_>) {
+    section(ui, "SAMPLE", |ui| {
+        let Ok(mut project) = state.project.lock() else {
+            return;
+        };
+        let Ok(sample) = state.sample.lock() else {
+            return;
+        };
+
+        let playheads: Vec<u64> = state.meters.playheads().collect();
+        let notes = note_map(&project.project);
+        let clicked = slice_map(
+            ui,
+            &THEME,
+            &WaveformSource {
+                peaks: &sample.peaks,
+                buffer: sample.buffer.as_deref(),
+                slices: project.project.slices(),
+                selected: selected_slice(&project.project),
+                playheads: &playheads,
+                view: ViewRange::full(sample.peaks.frames()),
+                notes: &notes,
+            },
+            MAP_HEIGHT,
+        );
+
+        if let Some(id) = clicked {
+            // Clicking a chop selects the cell that plays it, so the cell page
+            // follows the map. A chop on no key selects the slice alone.
+            project.project.select(Some(id));
+            let cell = project
+                .project
+                .cells()
+                .iter()
+                .find(|cell| cell.slice == id)
+                .map(|cell| cell.id);
+            if cell.is_some() {
+                project.project.select_cell(cell);
+            }
+
+            if let Some(slice) = project.project.slice(id) {
+                state.send(EngineCommand::Preview(preview_spec(
+                    slice.start_frame,
+                    slice.end_frame,
+                )));
+            }
+        }
+
+        hint(ui, &map_hint(&project.project));
+    });
+}
+
+/// The slice the map highlights: the one the selected cell plays, if there is
+/// one, and otherwise whatever the source page has selected.
+fn selected_slice(project: &saempler_model::Project) -> Option<saempler_model::SliceId> {
+    project
+        .selected_cell()
+        .map(|cell| cell.slice)
+        .or_else(|| project.selection())
+}
+
+/// One line saying what is selected and what clicking the map does.
+fn map_hint(project: &saempler_model::Project) -> String {
+    match project.selected_cell() {
+        Some(cell) => {
+            let index = project
+                .slices()
+                .iter()
+                .position(|slice| slice.id == cell.slice)
+                .map(|index| index + 1)
+                .unwrap_or(0);
+            format!(
+                "Cell auf {}  ·  Slice {index} von {}  ·  Klick: Slice wählen und vorhören",
+                saempler_model::note_name(cell.midi_note),
+                project.slices().len()
+            )
+        }
+        None => format!(
+            "{} Slices  ·  keine Cell gewählt  ·  Klick: Slice wählen und vorhören",
+            project.slices().len()
+        ),
     }
 }
 

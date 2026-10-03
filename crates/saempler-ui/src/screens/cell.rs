@@ -1,24 +1,25 @@
 use nih_plug_egui::egui::Ui;
 use saempler_model::{
     note_name, Division, EnvelopeDefinition, LfoDefinition, LfoShape, ModDestination, ModSource,
-    ModulationRoute, PerformanceCell, MAX_PITCH_SEMITONES, MAX_ROUTES, MAX_SPEED, MIN_SPEED,
+    ModulationRoute, PerformanceCell, PlaybackMode, MAX_COLLAPSE, MAX_PITCH_SEMITONES, MAX_ROUTES,
+    MAX_SPEED, MIN_COLLAPSE, MIN_SPEED,
 };
 
 use crate::screens::main::{hint, placeholder, section, ViewState, THEME};
 use crate::screens::performance::sync_cells;
 use crate::widgets::{
-    button, cycle, envelope_display, lfo_display, segmented, toggle, value_knob, value_slider,
+    button, dropdown, envelope_display, lfo_display, segmented, toggle, value_knob, value_slider,
     KnobSpec, SliderSpec, Taper, Unit,
 };
 
 /// Diameter of the playback and envelope knobs.
 const KNOB_DIAMETER: f32 = 42.0;
 /// Width of the amount bar in a matrix row.
-const ROUTE_AMOUNT: f32 = 180.0;
+const ROUTE_AMOUNT: f32 = 146.0;
 /// Width of the source and destination selectors in a matrix row.
-const ROUTE_SELECTOR: f32 = 108.0;
+const ROUTE_SELECTOR: f32 = 100.0;
 /// Height of a drawn envelope or LFO curve. The width follows the column.
-const CURVE_HEIGHT: f32 = 46.0;
+const CURVE_HEIGHT: f32 = 48.0;
 /// Longest stage any envelope control reaches, in milliseconds.
 const MAX_STAGE_MS: f32 = 4_000.0;
 /// Range of the LFO rate control, in hertz.
@@ -43,13 +44,13 @@ pub fn cell_section(ui: &mut Ui, state: &ViewState<'_>) {
     let mut changed = false;
 
     changed |= playback_section(ui, &mut cell);
-    // Envelopes and LFOs sit side by side rather than stacked: four modules
-    // one below the other would push the matrix off the page.
+    // Two columns rather than four stacked panels: the matrix is what joins
+    // the modules to the sound, and it has to be on the page with them.
     ui.columns(2, |columns| {
         changed |= envelopes_section(&mut columns[0], &mut cell);
+        changed |= matrix_section(&mut columns[0], &mut cell);
         changed |= lfos_section(&mut columns[1], &mut cell);
     });
-    changed |= matrix_section(ui, &mut cell);
 
     if changed {
         let id = cell.id;
@@ -121,9 +122,97 @@ fn playback_section(ui: &mut Ui, cell: &mut PerformanceCell) -> bool {
                 hint(ui, "die Länge ändert sich also mit");
             });
         });
+
+        changed |= mode_controls(ui, cell);
     });
 
     changed
+}
+
+/// The playback mode and the settings that belong to it.
+///
+/// Only the controls the chosen mode uses are shown: a collapse factor next to
+/// a gated cell would be a dial that does nothing.
+fn mode_controls(ui: &mut Ui, cell: &mut PerformanceCell) -> bool {
+    let mut changed = false;
+
+    ui.horizontal(|ui| {
+        let labels: Vec<&str> = PlaybackMode::ALL.iter().map(|mode| mode.label()).collect();
+        let selected = PlaybackMode::ALL
+            .iter()
+            .position(|mode| *mode == cell.playback.mode)
+            .unwrap_or(0);
+        if let Some(index) = segmented(ui, &THEME, &labels, selected) {
+            cell.playback.mode = PlaybackMode::ALL[index];
+            changed = true;
+        }
+
+        ui.add_space(THEME.spacing_md);
+
+        if cell.playback.mode.uses_division() {
+            let divisions: Vec<&str> = Division::ALL
+                .iter()
+                .map(|division| division.label())
+                .collect();
+            let selected = Division::ALL
+                .iter()
+                .position(|division| *division == cell.playback.division)
+                .unwrap_or(0);
+            if let Some(index) = dropdown(
+                ui,
+                &THEME,
+                "mode-division",
+                &divisions,
+                selected,
+                ROUTE_SELECTOR,
+            ) {
+                cell.playback.division = Division::ALL[index];
+                changed = true;
+            }
+        }
+
+        if cell.playback.mode == PlaybackMode::Collapse {
+            changed |= value_slider(
+                ui,
+                &THEME,
+                SliderSpec {
+                    label: "Collapse",
+                    range: (MIN_COLLAPSE, MAX_COLLAPSE),
+                    default: 0.75,
+                    unit: Unit::Plain,
+                    width: ROUTE_AMOUNT,
+                },
+                &mut cell.playback.collapse,
+            );
+        }
+
+        if cell.playback.mode.loops()
+            && toggle(ui, &THEME, "Release Trigger", cell.playback.release_trigger)
+        {
+            cell.playback.release_trigger = !cell.playback.release_trigger;
+            changed = true;
+        }
+    });
+
+    // On its own line: with a collapse selected the row above is already full.
+    hint(
+        ui,
+        mode_hint(cell.playback.mode, cell.playback.release_trigger),
+    );
+
+    changed
+}
+
+/// One line saying what the chosen mode does.
+fn mode_hint(mode: PlaybackMode, release_trigger: bool) -> &'static str {
+    match (mode, release_trigger) {
+        (PlaybackMode::Gate, _) => "spielt, solange die Taste liegt",
+        (PlaybackMode::OneShot, _) => "spielt den Slice zu Ende, Taste egal",
+        (PlaybackMode::Loop, false) => "wiederholt den ganzen Slice",
+        (PlaybackMode::Repeat, false) => "wiederholt die gewählte Notenlänge",
+        (PlaybackMode::Collapse, false) => "Loop wird mit jedem Durchlauf kürzer",
+        (_, true) => "Loop startet erst beim Loslassen und läuft im Release aus",
+    }
 }
 
 /// Both envelopes, one below the other.
@@ -132,9 +221,14 @@ fn envelopes_section(ui: &mut Ui, cell: &mut PerformanceCell) -> bool {
 
     section(ui, "ENVELOPES", |ui| {
         for (index, name) in ["ENV A", "ENV B"].into_iter().enumerate() {
-            hint(ui, name);
             let width = ui.available_width();
-            envelope_display(ui, &THEME, cell.envelopes[index], (width, CURVE_HEIGHT));
+            envelope_display(
+                ui,
+                &THEME,
+                name,
+                cell.envelopes[index],
+                (width, CURVE_HEIGHT),
+            );
             ui.horizontal(|ui| {
                 changed |= envelope_controls(ui, &mut cell.envelopes[index]);
             });
@@ -151,7 +245,7 @@ fn envelope_controls(ui: &mut Ui, envelope: &mut EnvelopeDefinition) -> bool {
         label,
         range: (0.0, MAX_STAGE_MS),
         default,
-        taper: Taper::Linear,
+        taper: Taper::Skewed,
         unit: Unit::Milliseconds,
         diameter: KNOB_DIAMETER,
     };
@@ -198,10 +292,15 @@ fn lfos_section(ui: &mut Ui, cell: &mut PerformanceCell) -> bool {
 
     section(ui, "LFOS", |ui| {
         for (index, name) in ["LFO 1", "LFO 2"].into_iter().enumerate() {
-            hint(ui, name);
             let width = ui.available_width();
-            lfo_display(ui, &THEME, cell.lfos[index].shape, (width, CURVE_HEIGHT));
-            changed |= lfo_controls(ui, &mut cell.lfos[index]);
+            lfo_display(
+                ui,
+                &THEME,
+                name,
+                cell.lfos[index].shape,
+                (width, CURVE_HEIGHT),
+            );
+            changed |= lfo_controls(ui, index, &mut cell.lfos[index]);
         }
     });
 
@@ -209,7 +308,7 @@ fn lfos_section(ui: &mut Ui, cell: &mut PerformanceCell) -> bool {
 }
 
 /// Shape, rate and the two switches of one LFO.
-fn lfo_controls(ui: &mut Ui, lfo: &mut LfoDefinition) -> bool {
+fn lfo_controls(ui: &mut Ui, index: usize, lfo: &mut LfoDefinition) -> bool {
     let mut changed = false;
 
     let shapes: Vec<&str> = LfoShape::ALL.iter().map(|shape| shape.label()).collect();
@@ -217,8 +316,8 @@ fn lfo_controls(ui: &mut Ui, lfo: &mut LfoDefinition) -> bool {
         .iter()
         .position(|shape| *shape == lfo.shape)
         .unwrap_or(0);
-    if let Some(index) = segmented(ui, &THEME, &shapes, selected) {
-        lfo.shape = LfoShape::ALL[index];
+    if let Some(shape) = segmented(ui, &THEME, &shapes, selected) {
+        lfo.shape = LfoShape::ALL[shape];
         changed = true;
     }
 
@@ -243,7 +342,14 @@ fn lfo_controls(ui: &mut Ui, lfo: &mut LfoDefinition) -> bool {
                 .iter()
                 .position(|division| *division == lfo.division)
                 .unwrap_or(0);
-            if let Some(index) = cycle(ui, &THEME, &divisions, selected, ROUTE_SELECTOR) {
+            if let Some(index) = dropdown(
+                ui,
+                &THEME,
+                ("division", index),
+                &divisions,
+                selected,
+                ROUTE_SELECTOR,
+            ) {
                 lfo.division = Division::ALL[index];
                 changed = true;
             }
@@ -288,7 +394,14 @@ fn matrix_section(ui: &mut Ui, cell: &mut PerformanceCell) -> bool {
                     .iter()
                     .position(|source| *source == route.source)
                     .unwrap_or(0);
-                if let Some(next) = cycle(ui, &THEME, &sources, selected, ROUTE_SELECTOR) {
+                if let Some(next) = dropdown(
+                    ui,
+                    &THEME,
+                    ("source", index),
+                    &sources,
+                    selected,
+                    ROUTE_SELECTOR,
+                ) {
                     route.source = ModSource::ALL[next];
                     changed = true;
                 }
@@ -297,7 +410,14 @@ fn matrix_section(ui: &mut Ui, cell: &mut PerformanceCell) -> bool {
                     .iter()
                     .position(|destination| *destination == route.destination)
                     .unwrap_or(0);
-                if let Some(next) = cycle(ui, &THEME, &destinations, selected, ROUTE_SELECTOR) {
+                if let Some(next) = dropdown(
+                    ui,
+                    &THEME,
+                    ("destination", index),
+                    &destinations,
+                    selected,
+                    ROUTE_SELECTOR,
+                ) {
                     route.destination = ModDestination::ALL[next];
                     changed = true;
                 }
@@ -315,19 +435,9 @@ fn matrix_section(ui: &mut Ui, cell: &mut PerformanceCell) -> bool {
                     &mut route.amount,
                 );
 
-                // Bipolar sources swing either side of zero, so the same
-                // amount reaches the destination differently depending on
-                // where it comes from.
-                hint(
-                    ui,
-                    if route.source.is_bipolar() {
-                        "bipolar"
-                    } else {
-                        "unipolar"
-                    },
-                );
-
-                if button(ui, &THEME, "Entfernen") {
+                // A row is as narrow as the column allows, so the button
+                // that takes it out carries a mark rather than a word.
+                if button(ui, &THEME, "×") {
                     remove = Some(index);
                 }
             });

@@ -247,6 +247,24 @@ An envelope longer than its slice is scaled down in proportion rather than
 truncated, so a long release on a short chop fades across all of it instead of
 silencing the voice on its first frame.
 
+## Playback modes
+
+Gate, one shot, loop, repeat and collapse are one mechanism at heart: a loop
+taken from a point, at a length. What differs is where the length comes from
+and whether it shrinks.
+
+A modifier loop wins over the cell's own. The modifier is a gesture made while
+playing and should be heard over a setting.
+
+The loop is always clamped to what is left of the slice from its start point,
+because reading past the slice edge would mix the neighbouring chop into the
+tail. A collapse has a floor as well: without one it would shrink until the
+read position no longer moves.
+
+A release trigger turns the key coming up into the start of the effect rather
+than the end of the note. The loop then runs for as long as the release stage
+of whatever is routed to volume.
+
 ## Modulation
 
 A cell owns two envelopes, two LFOs and a list of routes. None of the sources

@@ -1,4 +1,6 @@
-use nih_plug_egui::egui::{epaint::PathShape, pos2, vec2, Sense, Stroke, StrokeKind, Ui};
+use nih_plug_egui::egui::{
+    epaint::PathShape, pos2, vec2, FontId, Rect, Sense, Stroke, StrokeKind, Ui,
+};
 use saempler_model::{EnvelopeDefinition, LfoShape};
 
 use crate::theme::Theme;
@@ -14,20 +16,14 @@ const SEGMENTS: usize = 96;
 pub fn envelope_display(
     ui: &mut Ui,
     theme: &Theme,
+    name: &str,
     envelope: EnvelopeDefinition,
     size: (f32, f32),
 ) {
     let (rect, _response) = ui.allocate_exact_size(vec2(size.0, size.1), Sense::hover());
+    frame(ui, theme, rect);
+
     let painter = ui.painter();
-
-    painter.rect_filled(rect, theme.radius_sm, theme.waveform_bg);
-    painter.rect_stroke(
-        rect,
-        theme.radius_sm,
-        theme.outline_stroke(),
-        StrokeKind::Inside,
-    );
-
     let inner = rect.shrink(theme.spacing_sm);
     // A quarter of the width is reserved for the sustain stretch, so a patch
     // with no decay and no release still reads as a shape.
@@ -53,21 +49,15 @@ pub fn envelope_display(
         points,
         Stroke::new(theme.stroke_thick, theme.accent),
     ));
+    name_plate(ui, theme, rect, name);
 }
 
 /// Draw one cycle of an LFO shape.
-pub fn lfo_display(ui: &mut Ui, theme: &Theme, shape: LfoShape, size: (f32, f32)) {
+pub fn lfo_display(ui: &mut Ui, theme: &Theme, name: &str, shape: LfoShape, size: (f32, f32)) {
     let (rect, _response) = ui.allocate_exact_size(vec2(size.0, size.1), Sense::hover());
+    frame(ui, theme, rect);
+
     let painter = ui.painter();
-
-    painter.rect_filled(rect, theme.radius_sm, theme.waveform_bg);
-    painter.rect_stroke(
-        rect,
-        theme.radius_sm,
-        theme.outline_stroke(),
-        StrokeKind::Inside,
-    );
-
     let inner = rect.shrink(theme.spacing_sm);
     painter.line_segment(
         [
@@ -93,6 +83,44 @@ pub fn lfo_display(ui: &mut Ui, theme: &Theme, shape: LfoShape, size: (f32, f32)
         points,
         Stroke::new(theme.stroke_thick, theme.accent),
     ));
+    name_plate(ui, theme, rect, name);
+}
+
+/// The recessed box a curve is drawn in.
+fn frame(ui: &Ui, theme: &Theme, rect: Rect) {
+    let painter = ui.painter();
+
+    painter.rect_filled(rect, theme.radius_sm, theme.waveform_bg);
+    painter.rect_stroke(
+        rect,
+        theme.radius_sm,
+        theme.outline_stroke(),
+        StrokeKind::Inside,
+    );
+}
+
+/// The module's name in the corner of its box.
+///
+/// Inside the box rather than above it, because four modules each with a line
+/// of their own cost more height than the page has to spare, and drawn last so
+/// the curve cannot run through the letters.
+fn name_plate(ui: &Ui, theme: &Theme, rect: Rect, name: &str) {
+    let painter = ui.painter();
+    let anchor = pos2(
+        rect.min.x + theme.spacing_sm,
+        rect.min.y + theme.spacing_sm * 0.5,
+    );
+    let text = painter.layout_no_wrap(
+        name.to_owned(),
+        FontId::proportional(theme.font_sm),
+        theme.text_dim,
+    );
+    painter.rect_filled(
+        Rect::from_min_size(anchor, text.size()).expand(theme.spacing_sm * 0.4),
+        theme.radius_sm,
+        theme.waveform_bg,
+    );
+    painter.galley(anchor, text, theme.text_dim);
 }
 
 /// One cycle of a shape, from -1 to 1.

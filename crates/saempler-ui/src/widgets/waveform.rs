@@ -4,7 +4,7 @@ use nih_plug_egui::egui::{
 };
 use saempler_audio::SampleBuffer;
 use saempler_core::{PeakCache, BASE_FRAMES_PER_PEAK};
-use saempler_model::{Slice, SliceId};
+use saempler_model::{note_name, Slice, SliceId};
 
 use crate::theme::Theme;
 use crate::widgets::view_range::ViewRange;
@@ -36,6 +36,30 @@ pub struct WaveformSource<'a> {
     /// Frames the engine is currently playing, one per sounding voice.
     pub playheads: &'a [u64],
     pub view: ViewRange,
+    /// The note each slice is mapped to, so a span can say which key plays it.
+    ///
+    /// A slice may appear more than once: the same chop on several keys is the
+    /// whole point of the instrument, and the label then counts the rest.
+    pub notes: &'a [(SliceId, u8)],
+}
+
+impl WaveformSource<'_> {
+    /// Label for a slice span: the first note it plays on, and how many more.
+    ///
+    /// `None` when the slice is on no key at all.
+    fn label(&self, slice: SliceId) -> Option<String> {
+        let mut notes = self
+            .notes
+            .iter()
+            .filter(|(id, _)| *id == slice)
+            .map(|(_, note)| *note);
+        let first = notes.next()?;
+
+        Some(match notes.count() {
+            0 => note_name(first),
+            more => format!("{} +{more}", note_name(first)),
+        })
+    }
 }
 
 /// What the user did on the waveform this frame.
@@ -104,6 +128,7 @@ pub fn waveform(
 
     draw_slice_backgrounds(ui, theme, rect, view, source);
     draw_trace(ui, theme, rect, view, source);
+    draw_slice_labels(ui, theme, rect, view, source);
     draw_markers(ui, theme, rect, view, source);
     draw_playhead(ui, theme, rect, view, source);
     outline(ui, theme, rect);
@@ -316,6 +341,105 @@ fn draw_column(
         [pos2(x, top), pos2(x, bottom)],
         Stroke::new(width, theme.waveform),
     );
+}
+
+/// Write the note each slice plays on into its span.
+///
+/// Skipped where the span is too narrow to hold the text, so a sample cut into
+/// a hundred pieces does not turn into a smear of overlapping labels.
+fn draw_slice_labels(
+    ui: &Ui,
+    theme: &Theme,
+    rect: Rect,
+    view: ViewRange,
+    source: &WaveformSource<'_>,
+) {
+    let painter = ui.painter();
+    for slice in source.slices {
+        if slice.end_frame <= view.start_frame || slice.start_frame >= view.end_frame {
+            continue;
+        }
+
+        let Some(label) = source.label(slice.id) else {
+            continue;
+        };
+        let left = frame_to_x(rect, view, slice.start_frame).max(rect.min.x);
+        let right = frame_to_x(rect, view, slice.end_frame).min(rect.max.x);
+        let needed = label.chars().count() as f32 * theme.font_sm * 0.62 + theme.spacing_sm * 2.0;
+        if right - left < needed {
+            continue;
+        }
+
+        let color = if source.selected == Some(slice.id) {
+            theme.accent
+        } else {
+            theme.text_dim
+        };
+        painter.text(
+            pos2(left + theme.spacing_sm, rect.min.y + theme.spacing_sm * 0.5),
+            Align2::LEFT_TOP,
+            label,
+            FontId::proportional(theme.font_sm),
+            color,
+        );
+    }
+}
+
+/// A compact map of the whole sample, with the key each slice plays on.
+///
+/// Shown above the pages whichever one is open, so the chop being edited stays
+/// visible in the context of the sample it was cut from. It is an overview and
+/// nothing more: editing happens on the source page.
+///
+/// Returns the slice that was clicked, if any.
+pub fn slice_map(
+    ui: &mut Ui,
+    theme: &Theme,
+    source: &WaveformSource<'_>,
+    height: f32,
+) -> Option<SliceId> {
+    let width = ui.available_width();
+    let (rect, response) = ui.allocate_exact_size(vec2(width, height), Sense::click());
+
+    ui.painter()
+        .rect_filled(rect, theme.radius_md, theme.waveform_bg);
+
+    let total = source.peaks.frames();
+    let view = ViewRange::full(total);
+    if total == 0 || view.is_empty() || rect.width() < 1.0 {
+        ui.painter().text(
+            rect.center(),
+            Align2::CENTER_CENTER,
+            "Kein Sample geladen",
+            FontId::proportional(theme.font_sm),
+            theme.text_dim,
+        );
+        outline(ui, theme, rect);
+        return None;
+    }
+
+    draw_slice_backgrounds(ui, theme, rect, view, source);
+    draw_trace(ui, theme, rect, view, source);
+    draw_slice_labels(ui, theme, rect, view, source);
+    draw_markers(ui, theme, rect, view, source);
+    draw_playhead(ui, theme, rect, view, source);
+    outline(ui, theme, rect);
+
+    if response.hovered() {
+        ui.ctx().set_cursor_icon(CursorIcon::PointingHand);
+    }
+    let position = response.interact_pointer_pos()?;
+    response
+        .clicked()
+        .then(|| {
+            let frame = x_to_frame(rect, view, position.x);
+            source
+                .slices
+                .iter()
+                .find(|slice| slice.contains(frame))
+                .map(|slice| slice.id)
+        })
+        .flatten()
 }
 
 /// Draw the start and end marker of every visible slice.

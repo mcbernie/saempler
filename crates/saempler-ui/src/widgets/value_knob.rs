@@ -36,7 +36,17 @@ pub enum Taper {
     /// distance from the centre. Used for speed and for anything else where
     /// the useful range spans octaves.
     Logarithmic,
+    /// Most of the travel goes to the bottom of the range, which a logarithmic
+    /// taper cannot do because it never reaches zero. Used for envelope times,
+    /// where the step from 3 to 10 ms matters and the step from 3.0 to 3.5
+    /// seconds does not.
+    Skewed,
 }
+
+/// Power the skewed taper raises its position to.
+///
+/// At four, half the travel stays inside the lowest sixteenth of the range.
+const SKEW: f32 = 4.0;
 
 /// What a value knob shows, apart from the value it edits.
 ///
@@ -177,6 +187,15 @@ fn to_normalized(value: f32, range: (f32, f32), taper: Taper) -> f32 {
                 ((value / min).ln() / span).clamp(0.0, 1.0)
             }
         }
+        Taper::Skewed => {
+            if (max - min).abs() < f32::EPSILON {
+                0.0
+            } else {
+                ((value - min) / (max - min))
+                    .clamp(0.0, 1.0)
+                    .powf(1.0 / SKEW)
+            }
+        }
     }
 }
 
@@ -190,6 +209,7 @@ fn from_normalized(normalized: f32, range: (f32, f32), taper: Taper) -> f32 {
             let (min, max) = (min.max(1e-6), max.max(1e-6));
             min * (max / min).powf(normalized)
         }
+        Taper::Skewed => min + (max - min) * normalized.powf(SKEW),
     }
 }
 
@@ -262,8 +282,20 @@ mod tests {
     }
 
     #[test]
+    fn a_skewed_taper_gives_the_bottom_of_the_range_most_of_the_travel() {
+        let range = (0.0, 4_000.0);
+
+        // Half the travel should still be below a tenth of the range.
+        let halfway = from_normalized(0.5, range, Taper::Skewed);
+
+        assert!(halfway < 400.0, "{halfway}");
+        assert_eq!(from_normalized(0.0, range, Taper::Skewed), 0.0);
+        assert_eq!(from_normalized(1.0, range, Taper::Skewed), 4_000.0);
+    }
+
+    #[test]
     fn both_tapers_round_trip() {
-        for taper in [Taper::Linear, Taper::Logarithmic] {
+        for taper in [Taper::Linear, Taper::Logarithmic, Taper::Skewed] {
             let range = (0.0625, 16.0);
             for value in [0.0625f32, 0.5, 1.0, 4.0, 16.0] {
                 let back = from_normalized(to_normalized(value, range, taper), range, taper);
@@ -291,6 +323,7 @@ mod tests {
 
         assert_eq!(to_normalized(5.0, range, Taper::Linear), 0.0);
         assert_eq!(to_normalized(5.0, range, Taper::Logarithmic), 0.0);
+        assert_eq!(to_normalized(5.0, range, Taper::Skewed), 0.0);
         assert!(from_normalized(0.5, range, Taper::Linear).is_finite());
     }
 
