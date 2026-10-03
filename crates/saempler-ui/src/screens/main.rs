@@ -7,7 +7,7 @@ use nih_plug_egui::egui::{
 use nih_plug_egui::{resizable_window::ResizableWindow, EguiState};
 use saempler_audio::{CellSpec, CommandProducer, EngineCommand, Meters, SampleBuffer, SliceBounds};
 use saempler_core::PeakCache;
-use saempler_model::{Modifier, ProjectFile};
+use saempler_model::ProjectFile;
 
 use crate::screens::cell::cell_section;
 use crate::screens::modifiers::modifier_section;
@@ -15,16 +15,15 @@ use crate::screens::performance::performance_section;
 use crate::screens::source::source_section;
 use crate::theme::Theme;
 use crate::widgets::{
-    inset, knob, lamp, metal_panel, panel_header, readout, stereo_meter, tab_bar, ViewRange,
-    HEADER_HEIGHT,
+    inset, knob, metal_panel, panel_header, readout, stereo_meter, ViewRange, HEADER_HEIGHT,
 };
 
 pub(crate) const THEME: Theme = Theme::dark();
 
 const KNOB_DIAMETER: f32 = 48.0;
-const METER_WIDTH: f32 = 150.0;
+const METER_WIDTH: f32 = 130.0;
 /// Width of the readouts that say what is being triggered.
-const TRIGGER_WIDTH: f32 = 150.0;
+const TRIGGER_WIDTH: f32 = 130.0;
 /// Share of the width the performance pads take.
 ///
 /// The pads and the editor are side by side rather than on separate pages:
@@ -33,29 +32,6 @@ const PERFORM_SHARE: f32 = 0.42;
 
 /// Smallest the editor window may be dragged to.
 pub const MIN_EDITOR_SIZE: (f32, f32) = (720.0, 470.0);
-
-/// The pages of the editor's right-hand side.
-///
-/// The source sample and the pads are not among them: everything about the
-/// sample is configured on the panel at the top, and the pads stay beside the
-/// editor, so what is played and what is edited are always both on screen.
-#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
-pub enum Tab {
-    #[default]
-    Cell,
-    Modifiers,
-}
-
-impl Tab {
-    pub const ALL: [Tab; 2] = [Tab::Cell, Tab::Modifiers];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Tab::Cell => "SLICE / SOUND",
-            Tab::Modifiers => "MODIFIERS",
-        }
-    }
-}
 
 /// What the editor keeps between frames.
 ///
@@ -73,8 +49,6 @@ pub struct EditorState {
     pub status: Option<String>,
     /// Whether an import is running right now.
     pub loading: bool,
-    /// The page being shown.
-    pub tab: Tab,
 }
 
 impl EditorState {
@@ -170,67 +144,30 @@ pub fn draw(ctx: &egui::Context, setter: &ParamSetter, state: &ViewState<'_>) ->
                     header(ui, state);
                     import_requested = source_section(ui, state);
 
-                    // Height of the footer below: its knob plus the knob's two
-                    // label lines, the legend and the panel margins.
-                    let footer = KNOB_DIAMETER + THEME.font_sm * 4.6 + THEME.spacing_lg * 2.0;
-                    let body = (ui.available_height() - footer - THEME.spacing_md).max(200.0);
+                    let body =
+                        (ui.available_height() - FOOTER_HEIGHT - THEME.spacing_md).max(200.0);
 
-                    // Side by side, each column laid out downwards: inside a
-                    // horizontal layout a plain child would place its contents
-                    // across rather than down.
-                    let column = egui::Layout::top_down(egui::Align::Min);
-                    ui.horizontal_top(|ui| {
-                        let total = ui.available_width();
-                        let left = (total * PERFORM_SHARE).floor();
+                    fixed_columns(
+                        ui,
+                        body,
+                        PERFORM_SHARE,
+                        |ui| performance_section(ui, state),
+                        |ui| cell_section(ui, state),
+                    );
 
-                        ui.allocate_ui_with_layout(vec2(left, body), column, |ui| {
-                            ui.set_width(left);
-                            egui::ScrollArea::vertical()
-                                .id_salt("perform-scroll")
-                                .auto_shrink([false, false])
-                                .show(ui, |ui| performance_section(ui, state));
-                        });
-
-                        let right = (total - left - THEME.spacing_md).max(200.0);
-                        ui.allocate_ui_with_layout(vec2(right, body), column, |ui| {
-                            ui.set_width(right);
-                            let tab = current_tab(state);
-                            let labels: Vec<&str> =
-                                Tab::ALL.iter().map(|tab| tab.label()).collect();
-                            if let Some(index) = tab_bar(ui, &THEME, &labels, tab as usize) {
-                                set_tab(state, Tab::ALL[index]);
-                            }
-
-                            egui::ScrollArea::vertical()
-                                .id_salt("detail-scroll")
-                                .auto_shrink([false, false])
-                                .show(ui, |ui| match tab {
-                                    Tab::Cell => cell_section(ui, state),
-                                    Tab::Modifiers => modifier_section(ui, state),
-                                });
-                        });
-                    });
-
-                    footer_section(ui, setter, state);
+                    // The footer: modifier cards on the left, the output
+                    // strip on the right, as the reference lays it out.
+                    fixed_columns(
+                        ui,
+                        FOOTER_HEIGHT,
+                        0.63,
+                        |ui| modifier_section(ui, state),
+                        |ui| footer_section(ui, setter, state),
+                    );
                 });
         });
 
     import_requested
-}
-
-/// The page currently being shown.
-fn current_tab(state: &ViewState<'_>) -> Tab {
-    state
-        .sample
-        .lock()
-        .map(|sample| sample.tab)
-        .unwrap_or_default()
-}
-
-fn set_tab(state: &ViewState<'_>, tab: Tab) {
-    if let Ok(mut sample) = state.sample.lock() {
-        sample.tab = tab;
-    }
 }
 
 /// The masthead: name plate on the left, tempo display on the right.
@@ -351,9 +288,6 @@ fn footer_section(ui: &mut Ui, setter: &ParamSetter, state: &ViewState<'_>) {
                 readout(ui, &THEME, "Spielt", &sounding_notes(state), TRIGGER_WIDTH);
                 readout(ui, &THEME, "Slice", &sounding_slices(state), TRIGGER_WIDTH);
             });
-
-            ui.add_space(THEME.spacing_md);
-            modifier_lamps(ui, state);
         });
     });
 }
@@ -419,31 +353,47 @@ fn sounding_slices(state: &ViewState<'_>) -> String {
     }
 }
 
-/// One lamp per modifier, lit while it is in effect.
-fn modifier_lamps(ui: &mut Ui, state: &ViewState<'_>) {
-    let engaged = state.meters.modifiers();
+/// Two columns in fixed rectangles.
+///
+/// Fixed rather than flowed on purpose: in a flowed row, a column whose
+/// contents run a few points wide pushes every later sibling along, and the
+/// last panel ends up cut off by the window edge. With given rectangles an
+/// overflow stays that column's own problem.
+fn fixed_columns(
+    ui: &mut Ui,
+    height: f32,
+    split: f32,
+    left: impl FnOnce(&mut Ui),
+    right: impl FnOnce(&mut Ui),
+) {
+    let full = ui.available_width();
+    let (rect, _) = ui.allocate_exact_size(vec2(full, height), Sense::hover());
+    let left_width = (full * split).floor();
 
-    ui.horizontal(|ui| {
-        for modifier in Modifier::ALL {
-            let lit = engaged & (1 << modifier.index()) != 0;
-            let (rect, _) = ui.allocate_exact_size(vec2(78.0, 36.0), Sense::hover());
+    let column = |target: egui::Rect| {
+        egui::UiBuilder::new()
+            .max_rect(target)
+            .layout(egui::Layout::top_down(egui::Align::Min))
+    };
 
-            lamp(
-                ui.painter(),
-                &THEME,
-                pos2(rect.center().x, rect.min.y + 8.0),
-                lit.then_some(THEME.active),
-            );
-            ui.painter().text(
-                pos2(rect.center().x, rect.max.y - 2.0),
-                Align2::CENTER_BOTTOM,
-                modifier.label(),
-                FontId::proportional(THEME.font_sm),
-                if lit { THEME.value } else { THEME.label },
-            );
-        }
+    let left_rect = egui::Rect::from_min_size(rect.min, vec2(left_width, height));
+    ui.scope_builder(column(left_rect), |ui| {
+        ui.set_width(left_rect.width());
+        left(ui);
+    });
+
+    let right_rect = egui::Rect::from_min_max(
+        pos2(left_rect.max.x + THEME.spacing_md, rect.min.y),
+        rect.max,
+    );
+    ui.scope_builder(column(right_rect), |ui| {
+        ui.set_width(right_rect.width());
+        right(ui);
     });
 }
+
+/// Height of the footer row holding the modifiers and the output strip.
+const FOOTER_HEIGHT: f32 = 118.0;
 
 /// A group of controls on a panel of brushed metal.
 ///
@@ -456,6 +406,19 @@ pub(crate) fn section(
     lit: Option<Color32>,
     contents: impl FnOnce(&mut Ui),
 ) {
+    section_with(ui, title, lit, |_| {}, contents);
+}
+
+/// A section whose header row also carries controls, to the right of the
+/// legend. That is how the source panel fits its whole toolbar without a row
+/// of its own.
+pub(crate) fn section_with(
+    ui: &mut Ui,
+    title: &str,
+    lit: Option<Color32>,
+    header: impl FnOnce(&mut Ui),
+    contents: impl FnOnce(&mut Ui),
+) {
     let background = ui.painter().add(Shape::Noop);
 
     let panel = Frame::new()
@@ -463,14 +426,32 @@ pub(crate) fn section(
             left: THEME.spacing_lg as i8,
             right: THEME.spacing_lg as i8,
             top: THEME.spacing_sm as i8,
-            bottom: THEME.spacing_lg as i8,
+            bottom: THEME.spacing_md as i8,
         })
         .show(ui, |ui| {
             ui.set_width(ui.available_width());
 
-            let (rect, _) =
-                ui.allocate_exact_size(vec2(ui.available_width(), HEADER_HEIGHT), Sense::hover());
+            let (rect, _) = ui.allocate_exact_size(
+                vec2(ui.available_width(), HEADER_HEIGHT + 8.0),
+                Sense::hover(),
+            );
             panel_header(ui, &THEME, rect, title, lit);
+
+            // Whatever the caller wants beside the legend, from where the
+            // title ends to the right edge.
+            let controls = egui::Rect::from_min_max(
+                pos2(
+                    rect.min.x + 34.0 + title.chars().count() as f32 * THEME.font_md * 0.72,
+                    rect.min.y,
+                ),
+                rect.max,
+            );
+            ui.scope_builder(
+                egui::UiBuilder::new()
+                    .max_rect(controls)
+                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                header,
+            );
 
             contents(ui);
         });

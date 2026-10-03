@@ -80,7 +80,7 @@ pub fn value_knob(ui: &mut Ui, theme: &Theme, spec: KnobSpec<'_>, value: &mut f3
         modulated,
     } = spec;
 
-    let label_height = theme.font_sm * 2.6;
+    let label_height = theme.font_sm * 2.4;
     let (rect, response) = ui.allocate_exact_size(
         vec2(diameter.max(theme.font_sm * 5.0), diameter + label_height),
         Sense::click_and_drag(),

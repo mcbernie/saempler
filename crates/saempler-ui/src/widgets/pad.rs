@@ -7,7 +7,7 @@ use crate::widgets::surface::{control_surface, SurfaceState};
 use crate::widgets::waveform::slice_color;
 
 /// Size of one performance pad.
-pub const PAD_SIZE: f32 = 104.0;
+pub const PAD_SIZE: f32 = 100.0;
 /// Height of the waveform thumbnail inside a pad.
 const THUMBNAIL_HEIGHT: f32 = 38.0;
 

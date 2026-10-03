@@ -1,15 +1,11 @@
 use nih_plug_egui::egui::{
-    epaint::{CircleShape, Mesh, RectShape, Vertex, WHITE_UV},
+    epaint::{Mesh, RectShape, Vertex, WHITE_UV},
     pos2, vec2, Align2, Color32, CornerRadius, FontId, Painter, Pos2, Rect, Shape, Stroke,
     StrokeKind, Ui,
 };
 
 use crate::theme::Theme;
 
-/// Distance from a panel corner to the middle of its screw.
-const SCREW_INSET: f32 = 11.0;
-/// Radius of a screw head.
-const SCREW_RADIUS: f32 = 4.5;
 /// Radius of an indicator lamp.
 const LED_RADIUS: f32 = 4.0;
 /// Space a panel legend occupies above the panel's contents.
@@ -78,15 +74,6 @@ pub fn metal_panel(theme: &Theme, rect: Rect) -> Shape {
 
     bevel(&mut shapes, theme, rect);
 
-    for corner in [
-        pos2(rect.min.x + SCREW_INSET, rect.min.y + SCREW_INSET),
-        pos2(rect.max.x - SCREW_INSET, rect.min.y + SCREW_INSET),
-        pos2(rect.min.x + SCREW_INSET, rect.max.y - SCREW_INSET),
-        pos2(rect.max.x - SCREW_INSET, rect.max.y - SCREW_INSET),
-    ] {
-        screw(&mut shapes, theme, corner);
-    }
-
     Shape::Vec(shapes)
 }
 
@@ -130,43 +117,6 @@ fn bevel(shapes: &mut Vec<Shape>, theme: &Theme, rect: Rect) {
         Stroke::new(1.0, theme.chassis_shadow),
         StrokeKind::Inside,
     )));
-}
-
-/// One screw head, lit from the top left and sunk into the metal.
-fn screw(shapes: &mut Vec<Shape>, theme: &Theme, centre: Pos2) {
-    // The hole it sits in: dark at the top left, light at the bottom right,
-    // which is what reads as a dent rather than a bump.
-    shapes.push(Shape::Circle(CircleShape::filled(
-        centre + vec2(0.6, 0.6),
-        SCREW_RADIUS + 1.0,
-        Color32::from_white_alpha(120),
-    )));
-    shapes.push(Shape::Circle(CircleShape::filled(
-        centre,
-        SCREW_RADIUS + 0.6,
-        theme.chassis_shadow,
-    )));
-
-    shapes.push(Shape::Circle(CircleShape::filled(
-        centre,
-        SCREW_RADIUS,
-        theme.screw,
-    )));
-    shapes.push(Shape::Circle(CircleShape::filled(
-        centre - vec2(0.7, 0.9),
-        SCREW_RADIUS * 0.62,
-        theme.screw_highlight,
-    )));
-    // A cross slot, turned a little so the screws do not look stamped out.
-    for direction in [vec2(0.94, 0.34), vec2(-0.34, 0.94)] {
-        shapes.push(Shape::line_segment(
-            [
-                centre - direction * SCREW_RADIUS * 0.7,
-                centre + direction * SCREW_RADIUS * 0.7,
-            ],
-            Stroke::new(1.3, theme.chassis_shadow),
-        ));
-    }
 }
 
 /// Draw an indicator lamp.

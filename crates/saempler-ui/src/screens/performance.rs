@@ -1,9 +1,9 @@
 use nih_plug_egui::egui::Ui;
 use saempler_audio::EngineCommand;
 use saempler_core::cell_spec;
-use saempler_model::{note_name, ProjectFile};
+use saempler_model::ProjectFile;
 
-use crate::screens::main::{hint, placeholder, section, ViewState, THEME};
+use crate::screens::main::{placeholder, section, ViewState, THEME};
 use crate::widgets::{button, performance_pad, PadView, PAD_SIZE};
 
 /// Note the automatic mapping starts at.
@@ -34,6 +34,10 @@ pub fn sync_cells(state: &ViewState<'_>, project: &ProjectFile) {
 pub fn performance_section(ui: &mut Ui, state: &ViewState<'_>) {
     let sounding = state.meters.any_playhead().then_some(THEME.active);
     section(ui, "PERFORMANCE", sounding, |ui| {
+        // Down to the column's floor, whatever the grid needs: the panel's
+        // lower edge lines up with the matrix across the aisle, which is
+        // what keeps the picture calm.
+        ui.set_min_height(ui.available_height() - 12.0);
         toolbar(ui, state);
         ui.add_space(THEME.spacing_sm);
 
@@ -138,7 +142,7 @@ fn toolbar(ui: &mut Ui, state: &ViewState<'_>) {
             return;
         }
 
-        if button(ui, &THEME, "Slices auf Noten legen") {
+        if button(ui, &THEME, "Auf Noten legen") {
             if let Ok(mut project) = state.project.lock() {
                 project.project.map_slices_from(BASE_NOTE);
                 let first = project.project.cells().first().map(|cell| cell.id);
@@ -147,30 +151,16 @@ fn toolbar(ui: &mut Ui, state: &ViewState<'_>) {
             }
         }
 
-        if button(ui, &THEME, "Kopie auf nächste Note") {
+        if button(ui, &THEME, "Duplizieren") {
             copy_selected_to_next_note(state);
         }
 
-        if button(ui, &THEME, "Alle Noten leeren") {
+        if button(ui, &THEME, "Leeren") {
             if let Ok(mut project) = state.project.lock() {
                 project.project.clear_cells();
                 sync_cells(state, &project);
             }
         }
-
-        ui.add_space(THEME.spacing_md);
-        let count = state
-            .project
-            .lock()
-            .map(|project| project.project.cells().len())
-            .unwrap_or(0);
-        hint(
-            ui,
-            &format!(
-                "{count} Noten belegt  ·  ab {}  ·  Klick: vorhören  ·  Rechtsklick: Note leeren",
-                note_name(BASE_NOTE)
-            ),
-        );
     });
 }
 

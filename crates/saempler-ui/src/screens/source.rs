@@ -2,11 +2,11 @@ use nih_plug_egui::egui::{self, Align2, FontId, Ui};
 use saempler_audio::EngineCommand;
 use saempler_model::ProjectFile;
 
-use crate::screens::main::{preview_spec, section, EditorState, ViewState, THEME};
+use crate::screens::main::{preview_spec, EditorState, ViewState, THEME};
 use crate::screens::performance::sync_cells;
 use crate::widgets::{button, segmented, waveform, ViewRange, WaveformSource};
 
-const WAVEFORM_HEIGHT: f32 = 190.0;
+const WAVEFORM_HEIGHT: f32 = 100.0;
 
 /// Slice counts offered by the quick division buttons.
 const EVEN_DIVISIONS: [u32; 4] = [4, 8, 16, 32];
@@ -15,104 +15,111 @@ const EVEN_DIVISIONS: [u32; 4] = [4, 8, 16, 32];
 pub fn source_section(ui: &mut Ui, state: &ViewState<'_>) -> bool {
     let mut import_requested = false;
 
-    section(ui, "SOURCE SAMPLE", None, |ui| {
-        import_requested = toolbar(ui, state);
-        ui.add_space(THEME.spacing_sm);
+    // The toolbar lives in the header row, like the stats strip in a real
+    // instrument: the panel then costs no more height than its waveform.
+    let sounding = state.meters.any_playhead().then_some(THEME.active);
+    crate::screens::main::section_with(
+        ui,
+        "SOURCE SAMPLE",
+        sounding,
+        |ui| {
+            import_requested = toolbar(ui, state);
+        },
+        |ui| {
+            let Ok(mut project) = state.project.lock() else {
+                return;
+            };
+            let Ok(mut sample) = state.sample.lock() else {
+                return;
+            };
 
-        let Ok(mut project) = state.project.lock() else {
-            return;
-        };
-        let Ok(mut sample) = state.sample.lock() else {
-            return;
-        };
+            let total = sample.peaks.frames();
+            if sample.view.is_empty() && total > 0 {
+                sample.view = ViewRange::full(total);
+            }
 
-        let total = sample.peaks.frames();
-        if sample.view.is_empty() && total > 0 {
-            sample.view = ViewRange::full(total);
-        }
+            // Collected once per frame: the widget reads the positions several
+            // times while drawing, and they must not change underneath it.
+            let playheads: Vec<u64> = state.meters.playheads().collect();
+            let notes = note_map(&project.project);
+            let action = waveform(
+                ui,
+                &THEME,
+                &WaveformSource {
+                    peaks: &sample.peaks,
+                    buffer: sample.buffer.as_deref(),
+                    slices: project.project.slices(),
+                    selected: project.project.selection(),
+                    playheads: &playheads,
+                    view: sample.view,
+                    notes: &notes,
+                    sample_rate: project
+                        .project
+                        .sample
+                        .as_ref()
+                        .map(|sample| sample.sample_rate)
+                        .unwrap_or(0),
+                },
+                WAVEFORM_HEIGHT,
+            );
 
-        // Collected once per frame: the widget reads the positions several
-        // times while drawing, and they must not change underneath it.
-        let playheads: Vec<u64> = state.meters.playheads().collect();
-        let notes = note_map(&project.project);
-        let action = waveform(
-            ui,
-            &THEME,
-            &WaveformSource {
-                peaks: &sample.peaks,
-                buffer: sample.buffer.as_deref(),
-                slices: project.project.slices(),
-                selected: project.project.selection(),
-                playheads: &playheads,
-                view: sample.view,
-                notes: &notes,
-                sample_rate: project
+            if let Some(view) = action.view {
+                sample.view = view;
+            }
+
+            let mut selection_changed = false;
+
+            if let Some(id) = action.select {
+                project.project.select(Some(id));
+                // The editor beside the pads follows: clicking a chop brings up
+                // the cell that plays it, when one does.
+                let cell = project
                     .project
-                    .sample
-                    .as_ref()
-                    .map(|sample| sample.sample_rate)
-                    .unwrap_or(0),
-            },
-            WAVEFORM_HEIGHT,
-        );
-
-        if let Some(view) = action.view {
-            sample.view = view;
-        }
-
-        let mut selection_changed = false;
-
-        if let Some(id) = action.select {
-            project.project.select(Some(id));
-            // The editor beside the pads follows: clicking a chop brings up
-            // the cell that plays it, when one does.
-            let cell = project
-                .project
-                .cells()
-                .iter()
-                .find(|cell| cell.slice == id)
-                .map(|cell| cell.id);
-            if cell.is_some() {
-                project.project.select_cell(cell);
-            }
-            selection_changed = true;
-            // A click auditions what it selected; the voice ends by itself at
-            // the end of the slice, so nothing has to release it.
-            if let Some(slice) = project.project.slice(id) {
-                state.send(EngineCommand::Preview(preview_spec(
-                    slice.start_frame,
-                    slice.end_frame,
-                )));
-            }
-        }
-
-        if let Some((id, frame)) = action.split {
-            if project.project.split_slice(id, frame).is_some() {
+                    .cells()
+                    .iter()
+                    .find(|cell| cell.slice == id)
+                    .map(|cell| cell.id);
+                if cell.is_some() {
+                    project.project.select_cell(cell);
+                }
                 selection_changed = true;
+                // A click auditions what it selected; the voice ends by itself at
+                // the end of the slice, so nothing has to release it.
+                if let Some(slice) = project.project.slice(id) {
+                    state.send(EngineCommand::Preview(preview_spec(
+                        slice.start_frame,
+                        slice.end_frame,
+                    )));
+                }
             }
-        }
 
-        if let Some((from, to)) = action.move_boundary {
-            if project.project.move_boundary(from, to, total) {
-                selection_changed = true;
+            if let Some((id, frame)) = action.split {
+                if project.project.split_slice(id, frame).is_some() {
+                    selection_changed = true;
+                }
             }
-        }
 
-        if let Some(frame) = action.remove_boundary {
-            if project.project.remove_boundary(frame) {
-                selection_changed = true;
+            if let Some((from, to)) = action.move_boundary {
+                if project.project.move_boundary(from, to, total) {
+                    selection_changed = true;
+                }
             }
-        }
 
-        // Editing slices can move or remove what the cells play, so the
-        // keyboard mapping is pushed again.
-        if selection_changed {
-            sync_cells(state, &project);
-        }
+            if let Some(frame) = action.remove_boundary {
+                if project.project.remove_boundary(frame) {
+                    selection_changed = true;
+                }
+            }
 
-        ui.add_space(THEME.spacing_sm);
-        status_line(ui, &project, &sample, action.hovered_frame, total);
-    });
+            // Editing slices can move or remove what the cells play, so the
+            // keyboard mapping is pushed again.
+            if selection_changed {
+                sync_cells(state, &project);
+            }
+
+            status_line(ui, &project, &sample, action.hovered_frame, total);
+        },
+    );
 
     import_requested
 }
@@ -233,8 +240,7 @@ fn status_line(
     let gestures = if total == 0 {
         String::new()
     } else {
-        "   |   Rad: Zoom  ·  ziehen: verschieben  ·  Marker ziehen: Grenze  ·  Rechtsklick auf Marker: entfernen  ·  Doppelklick: teilen"
-            .to_owned()
+        "   |   Rad: Zoom  ·  Ziehen: schieben  ·  Doppelklick: teilen".to_owned()
     };
 
     let text = match sample.status.as_deref() {

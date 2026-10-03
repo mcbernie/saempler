@@ -12,7 +12,6 @@ mod pad;
 pub(crate) mod panel;
 mod segmented;
 pub(crate) mod surface;
-mod tabs;
 mod value_knob;
 mod value_slider;
 mod view_range;
@@ -28,7 +27,6 @@ pub use panel::{
     inset, lamp, metal_panel, panel_header, raised_body, vertical_gradient, HEADER_HEIGHT,
 };
 pub use segmented::{button, segmented, toggle};
-pub use tabs::{led, tab_bar};
 pub use value_knob::{value_knob, KnobSpec, Taper, Unit};
 pub use value_slider::{value_slider, SliderSpec};
 pub use view_range::{ViewRange, MIN_VISIBLE_FRAMES};

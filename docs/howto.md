@@ -171,17 +171,14 @@ Sync                locks an LFO to the host tempo and swaps hertz for notes
 Retrigger           restarts the LFO phase with every note
 ```
 
-The right-hand side has two pages. The sample panel, the pads, the output
-meters and the modifier lamps stay visible over and under both, because you
-need to see what is playing whichever page is open. The window resizes from
-the corner.
+Nothing needs scrolling at the standard window size. The window resizes from
+the corner; below the standard size the panels are clipped rather than
+rearranged.
 
-```
-SLICE / SOUND   how the selected pad plays its chop
-MODIFIERS       which key does what, and how it responds
-```
-
-The pads have no page of their own: they sit beside the editor permanently.
+Everything is on one screen: the sample across the top, the pads on the
+left, the editor on the right, and a footer with the modifier keys and the
+output strip. The modifier cards in the footer only show what each key does;
+the button beside their legend opens the window they are configured in.
 
 The modifier keys, by default an octave below the pads:
 

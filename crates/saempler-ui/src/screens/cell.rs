@@ -8,18 +8,18 @@ use saempler_model::{
 use crate::screens::main::{hint, placeholder, section, ViewState, THEME};
 use crate::screens::performance::sync_cells;
 use crate::widgets::{
-    button, dropdown, envelope_display, lfo_display, segmented, toggle, value_knob, value_slider,
-    KnobSpec, SliderSpec, Taper, Unit,
+    button, dropdown, envelope_display, lfo_display, toggle, value_knob, value_slider, KnobSpec,
+    SliderSpec, Taper, Unit,
 };
 
 /// Diameter of the playback and envelope knobs.
-const KNOB_DIAMETER: f32 = 42.0;
+const KNOB_DIAMETER: f32 = 36.0;
 /// Width of the amount bar in a matrix row.
 const ROUTE_AMOUNT: f32 = 150.0;
 /// Width of the source and destination selectors in a matrix row.
 const ROUTE_SELECTOR: f32 = 112.0;
 /// Size of a drawn envelope or LFO curve, which sits beside its controls.
-const CURVE_SIZE: (f32, f32) = (190.0, 62.0);
+const CURVE_SIZE: (f32, f32) = (150.0, 58.0);
 /// Width of the arrow column between a route's source and destination.
 const ARROW_WIDTH: f32 = 20.0;
 /// Longest stage any envelope control reaches, in milliseconds.
@@ -46,10 +46,8 @@ pub fn cell_section(ui: &mut Ui, state: &ViewState<'_>) {
     let mut changed = false;
     let live = Live::read(state);
 
-    pager(ui, &mut project, &cell);
-    changed |= playback_section(ui, &mut cell, live);
-    changed |= envelopes_section(ui, &mut cell, live);
-    changed |= lfos_section(ui, &mut cell, live);
+    changed |= playback_section(ui, &mut project, &mut cell, live);
+    changed |= modulation_section(ui, &mut cell, live);
     changed |= matrix_section(ui, &mut cell, live);
 
     if changed {
@@ -64,7 +62,13 @@ pub fn cell_section(ui: &mut Ui, state: &ViewState<'_>) {
 ///
 /// The mockup's `< 4/12 >` row. Stepping goes by key order, which is the order
 /// the pads sit in, so the arrows walk the grid.
-fn pager(ui: &mut Ui, project: &mut saempler_model::ProjectFile, cell: &PerformanceCell) {
+fn pager(
+    ui: &mut Ui,
+    project: &mut saempler_model::ProjectFile,
+    id: saempler_model::CellId,
+    midi_note: u8,
+    slice_id: saempler_model::SliceId,
+) {
     // This row sits on the dark bezel between panels, not on metal, so its
     // text is light where the panel legends are dark.
     let light = |ui: &mut Ui, text: &str| {
@@ -85,7 +89,7 @@ fn pager(ui: &mut Ui, project: &mut saempler_model::ProjectFile, cell: &Performa
             .project
             .cells()
             .iter()
-            .position(|candidate| candidate.id == cell.id)
+            .position(|candidate| candidate.id == id)
             .unwrap_or(0);
 
         let mut step: isize = 0;
@@ -107,7 +111,7 @@ fn pager(ui: &mut Ui, project: &mut saempler_model::ProjectFile, cell: &Performa
         ui.add_space(THEME.spacing_md);
 
         // The chop's chip, in its colour, and where it sits in the sample.
-        let Some(slice) = project.project.slice(cell.slice).copied() else {
+        let Some(slice) = project.project.slice(slice_id).copied() else {
             return;
         };
         let index = project
@@ -117,7 +121,7 @@ fn pager(ui: &mut Ui, project: &mut saempler_model::ProjectFile, cell: &Performa
             .position(|candidate| candidate.id == slice.id)
             .unwrap_or(0);
         let color = crate::widgets::slice_color(&THEME, index);
-        let name = note_name(cell.midi_note);
+        let name = note_name(midi_note);
         let width = name.chars().count() as f32 * THEME.font_sm * 0.68 + THEME.spacing_sm * 2.5;
         let (chip, _) = ui.allocate_exact_size(vec2(width, THEME.font_sm + 6.0), Sense::hover());
         ui.painter().rect_filled(chip, THEME.radius_sm, color);
@@ -191,82 +195,103 @@ impl Live {
     }
 }
 
-/// Reverse, speed, pitch and level.
-fn playback_section(ui: &mut Ui, cell: &mut PerformanceCell, live: Live) -> bool {
+/// Reverse, speed, pitch, level and the playback mode.
+///
+/// The pager lives in the panel's own header row: which chop is being edited
+/// is this panel's headline, not a row of its own.
+fn playback_section(
+    ui: &mut Ui,
+    project: &mut saempler_model::ProjectFile,
+    cell: &mut PerformanceCell,
+    live: Live,
+) -> bool {
     let mut changed = false;
 
-    section(ui, "PLAYBACK", live.lamp(true), |ui| {
-        ui.horizontal(|ui| {
-            if toggle(ui, &THEME, "Reverse", cell.playback.reverse) {
-                cell.playback.reverse = !cell.playback.reverse;
-                changed = true;
-            }
+    crate::screens::main::section_with(
+        ui,
+        "PLAYBACK",
+        live.lamp(true),
+        {
+            let (id, midi_note, slice) = (cell.id, cell.midi_note, cell.slice);
+            move |ui: &mut Ui| pager(ui, project, id, midi_note, slice)
+        },
+        |ui| {
+            ui.horizontal(|ui| {
+                if toggle(ui, &THEME, "Reverse", cell.playback.reverse) {
+                    cell.playback.reverse = !cell.playback.reverse;
+                    changed = true;
+                }
 
-            ui.add_space(THEME.spacing_md);
-            changed |= value_knob(
-                ui,
-                &THEME,
-                KnobSpec {
-                    label: "Speed",
-                    range: (MIN_SPEED, MAX_SPEED),
-                    default: 1.0,
-                    taper: Taper::Logarithmic,
-                    unit: Unit::Multiplier,
-                    diameter: KNOB_DIAMETER,
-                    // The rate destination is a multiplier on the read speed,
-                    // exactly as this knob is.
-                    modulated: live
-                        .reaching(ModDestination::PlaybackRate)
-                        .map(|amount| cell.playback.speed * (1.0 + amount).max(0.01)),
-                },
-                &mut cell.playback.speed,
-            );
-            changed |= value_knob(
-                ui,
-                &THEME,
-                KnobSpec {
-                    label: "Pitch",
-                    range: (-MAX_PITCH_SEMITONES, MAX_PITCH_SEMITONES),
-                    default: 0.0,
-                    taper: Taper::Linear,
-                    unit: Unit::Semitones,
-                    diameter: KNOB_DIAMETER,
-                    // A full-amount route reaches the end of the knob's own
-                    // range, so the two scales are the same.
-                    modulated: live
-                        .reaching(ModDestination::Pitch)
-                        .map(|amount| cell.playback.pitch_semitones + amount * MAX_PITCH_SEMITONES),
-                },
-                &mut cell.playback.pitch_semitones,
-            );
-            changed |= value_knob(
-                ui,
-                &THEME,
-                KnobSpec {
-                    label: "Gain",
-                    range: (0.0, 2.0),
-                    default: 1.0,
-                    taper: Taper::Linear,
-                    unit: Unit::Multiplier,
-                    diameter: KNOB_DIAMETER,
-                    modulated: None,
-                },
-                &mut cell.playback.gain,
-            );
-
-            ui.add_space(THEME.spacing_md);
-            ui.vertical(|ui| {
-                hint(ui, &format!("Note {}", note_name(cell.midi_note)));
-                hint(
+                ui.add_space(THEME.spacing_md);
+                changed |= value_knob(
                     ui,
-                    "Speed und Pitch wirken beide auf die Lesegeschwindigkeit",
+                    &THEME,
+                    KnobSpec {
+                        label: "Speed",
+                        range: (MIN_SPEED, MAX_SPEED),
+                        default: 1.0,
+                        taper: Taper::Logarithmic,
+                        unit: Unit::Multiplier,
+                        diameter: KNOB_DIAMETER,
+                        // The rate destination is a multiplier on the read speed,
+                        // exactly as this knob is.
+                        modulated: live
+                            .reaching(ModDestination::PlaybackRate)
+                            .map(|amount| cell.playback.speed * (1.0 + amount).max(0.01)),
+                    },
+                    &mut cell.playback.speed,
                 );
-                hint(ui, "die Länge ändert sich also mit");
-            });
-        });
+                changed |= value_knob(
+                    ui,
+                    &THEME,
+                    KnobSpec {
+                        label: "Pitch",
+                        range: (-MAX_PITCH_SEMITONES, MAX_PITCH_SEMITONES),
+                        default: 0.0,
+                        taper: Taper::Linear,
+                        unit: Unit::Semitones,
+                        diameter: KNOB_DIAMETER,
+                        // A full-amount route reaches the end of the knob's own
+                        // range, so the two scales are the same.
+                        modulated: live.reaching(ModDestination::Pitch).map(|amount| {
+                            cell.playback.pitch_semitones + amount * MAX_PITCH_SEMITONES
+                        }),
+                    },
+                    &mut cell.playback.pitch_semitones,
+                );
+                changed |= value_knob(
+                    ui,
+                    &THEME,
+                    KnobSpec {
+                        label: "Gain",
+                        range: (0.0, 2.0),
+                        default: 1.0,
+                        taper: Taper::Linear,
+                        unit: Unit::Multiplier,
+                        diameter: KNOB_DIAMETER,
+                        modulated: None,
+                    },
+                    &mut cell.playback.gain,
+                );
 
-        changed |= mode_controls(ui, cell);
-    });
+                ui.add_space(THEME.spacing_md);
+                let labels: Vec<&str> = PlaybackMode::ALL.iter().map(|mode| mode.label()).collect();
+                let selected = PlaybackMode::ALL
+                    .iter()
+                    .position(|mode| *mode == cell.playback.mode)
+                    .unwrap_or(0);
+                // A list rather than a segment row: five segments were the
+                // one thing wider than the column.
+                if let Some(index) = dropdown(ui, &THEME, "playback-mode", &labels, selected, 104.0)
+                {
+                    cell.playback.mode = PlaybackMode::ALL[index];
+                    changed = true;
+                }
+            });
+
+            changed |= mode_controls(ui, cell);
+        },
+    );
 
     changed
 }
@@ -278,19 +303,12 @@ fn playback_section(ui: &mut Ui, cell: &mut PerformanceCell, live: Live) -> bool
 fn mode_controls(ui: &mut Ui, cell: &mut PerformanceCell) -> bool {
     let mut changed = false;
 
+    // Nothing to say and nothing to set while the cell simply gates.
+    if cell.playback.mode == PlaybackMode::Gate {
+        return false;
+    }
+
     ui.horizontal(|ui| {
-        let labels: Vec<&str> = PlaybackMode::ALL.iter().map(|mode| mode.label()).collect();
-        let selected = PlaybackMode::ALL
-            .iter()
-            .position(|mode| *mode == cell.playback.mode)
-            .unwrap_or(0);
-        if let Some(index) = segmented(ui, &THEME, &labels, selected) {
-            cell.playback.mode = PlaybackMode::ALL[index];
-            changed = true;
-        }
-
-        ui.add_space(THEME.spacing_md);
-
         if cell.playback.mode.uses_division() {
             let divisions: Vec<&str> = Division::ALL
                 .iter()
@@ -334,13 +352,12 @@ fn mode_controls(ui: &mut Ui, cell: &mut PerformanceCell) -> bool {
             cell.playback.release_trigger = !cell.playback.release_trigger;
             changed = true;
         }
-    });
 
-    // On its own line: with a collapse selected the row above is already full.
-    hint(
-        ui,
-        mode_hint(cell.playback.mode, cell.playback.release_trigger),
-    );
+        hint(
+            ui,
+            mode_hint(cell.playback.mode, cell.playback.release_trigger),
+        );
+    });
 
     changed
 }
@@ -357,18 +374,31 @@ fn mode_hint(mode: PlaybackMode, release_trigger: bool) -> &'static str {
     }
 }
 
-/// Both envelopes, each with its curve beside its controls.
-fn envelopes_section(ui: &mut Ui, cell: &mut PerformanceCell, live: Live) -> bool {
+/// Both envelopes and both LFOs on one panel, a slim row each.
+///
+/// One panel rather than two, because two headers and two sets of margins
+/// cost exactly the height that forced the page to scroll.
+fn modulation_section(ui: &mut Ui, cell: &mut PerformanceCell, live: Live) -> bool {
     let mut changed = false;
 
-    let running = live.envelopes.iter().any(|level| *level > 0.001);
-    section(ui, "ENVELOPES", live.lamp(running), |ui| {
+    let running = live.envelopes.iter().any(|level| *level > 0.001)
+        || live.lfos.iter().any(|value| value.abs() > 0.001);
+    section(ui, "MODULATION", live.lamp(running), |ui| {
+        ui.spacing_mut().item_spacing.y = THEME.spacing_sm;
         for (index, name) in ["ENV A", "ENV B"].into_iter().enumerate() {
             ui.horizontal(|ui| {
                 let level = live.sounding.then_some(live.envelopes[index]);
                 envelope_display(ui, &THEME, name, cell.envelopes[index], level, CURVE_SIZE);
-                ui.add_space(THEME.spacing_md);
+                ui.add_space(THEME.spacing_sm);
                 changed |= envelope_controls(ui, &mut cell.envelopes[index]);
+            });
+        }
+        for (index, name) in ["LFO 1", "LFO 2"].into_iter().enumerate() {
+            ui.horizontal(|ui| {
+                let value = live.sounding.then_some(live.lfos[index]);
+                lfo_display(ui, &THEME, name, cell.lfos[index].shape, value, CURVE_SIZE);
+                ui.add_space(THEME.spacing_sm);
+                changed |= lfo_controls(ui, index, &mut cell.lfos[index]);
             });
         }
     });
@@ -426,97 +456,61 @@ fn envelope_controls(ui: &mut Ui, envelope: &mut EnvelopeDefinition) -> bool {
     changed
 }
 
-/// Both LFOs, each with its shape beside its controls.
-fn lfos_section(ui: &mut Ui, cell: &mut PerformanceCell, live: Live) -> bool {
-    let mut changed = false;
-
-    let running = live.lfos.iter().any(|value| value.abs() > 0.001);
-    section(ui, "LFOS", live.lamp(running), |ui| {
-        for (index, name) in ["LFO 1", "LFO 2"].into_iter().enumerate() {
-            ui.horizontal(|ui| {
-                let value = live.sounding.then_some(live.lfos[index]);
-                lfo_display(ui, &THEME, name, cell.lfos[index].shape, value, CURVE_SIZE);
-                ui.add_space(THEME.spacing_md);
-                changed |= lfo_controls(ui, index, &mut cell.lfos[index]);
-            });
-        }
-    });
-
-    changed
-}
-
-/// Shape, rate and the two switches of one LFO.
+/// Shape, rate and the two switches of one LFO, all on one line.
 fn lfo_controls(ui: &mut Ui, index: usize, lfo: &mut LfoDefinition) -> bool {
     let mut changed = false;
 
-    ui.vertical(|ui| {
-        let shapes: Vec<&str> = LfoShape::ALL.iter().map(|shape| shape.label()).collect();
-        let selected = LfoShape::ALL
+    let shapes: Vec<&str> = LfoShape::ALL.iter().map(|shape| shape.label()).collect();
+    let selected = LfoShape::ALL
+        .iter()
+        .position(|shape| *shape == lfo.shape)
+        .unwrap_or(0);
+    if let Some(shape) = dropdown(ui, &THEME, ("shape", index), &shapes, selected, 86.0) {
+        lfo.shape = LfoShape::ALL[shape];
+        changed = true;
+    }
+
+    if toggle(ui, &THEME, "Sync", lfo.sync) {
+        lfo.sync = !lfo.sync;
+        changed = true;
+    }
+    if toggle(ui, &THEME, "Retrig", lfo.retrigger) {
+        lfo.retrigger = !lfo.retrigger;
+        changed = true;
+    }
+
+    // The rate is given either in hertz or as a note value, never both, so
+    // the two controls share the last place in the line.
+    if lfo.sync {
+        let divisions: Vec<&str> = Division::ALL
             .iter()
-            .position(|shape| *shape == lfo.shape)
+            .map(|division| division.label())
+            .collect();
+        let selected = Division::ALL
+            .iter()
+            .position(|division| *division == lfo.division)
             .unwrap_or(0);
-        if let Some(shape) = dropdown(
-            ui,
-            &THEME,
-            ("shape", index),
-            &shapes,
-            selected,
-            ROUTE_SELECTOR,
-        ) {
-            lfo.shape = LfoShape::ALL[shape];
+        if let Some(chosen) = dropdown(ui, &THEME, ("division", index), &divisions, selected, 80.0)
+        {
+            lfo.division = Division::ALL[chosen];
             changed = true;
         }
-
-        ui.horizontal(|ui| {
-            if toggle(ui, &THEME, "Sync", lfo.sync) {
-                lfo.sync = !lfo.sync;
-                changed = true;
-            }
-            if toggle(ui, &THEME, "Retrigger", lfo.retrigger) {
-                lfo.retrigger = !lfo.retrigger;
-                changed = true;
-            }
-
-            // The rate is given either in hertz or as a note value, never
-            // both, so the two controls share the place next to the switches.
-            if lfo.sync {
-                let divisions: Vec<&str> = Division::ALL
-                    .iter()
-                    .map(|division| division.label())
-                    .collect();
-                let selected = Division::ALL
-                    .iter()
-                    .position(|division| *division == lfo.division)
-                    .unwrap_or(0);
-                if let Some(chosen) = dropdown(
-                    ui,
-                    &THEME,
-                    ("division", index),
-                    &divisions,
-                    selected,
-                    ROUTE_SELECTOR,
-                ) {
-                    lfo.division = Division::ALL[chosen];
-                    changed = true;
-                }
-            } else {
-                changed |= value_knob(
-                    ui,
-                    &THEME,
-                    KnobSpec {
-                        label: "Rate",
-                        range: LFO_RATE_RANGE,
-                        default: LfoDefinition::default().rate_hz,
-                        taper: Taper::Logarithmic,
-                        unit: Unit::Hertz,
-                        diameter: KNOB_DIAMETER,
-                        modulated: None,
-                    },
-                    &mut lfo.rate_hz,
-                );
-            }
-        });
-    });
+    } else {
+        changed |= value_knob(
+            ui,
+            &THEME,
+            KnobSpec {
+                label: "Rate",
+                range: LFO_RATE_RANGE,
+                default: LfoDefinition::default().rate_hz,
+                taper: Taper::Logarithmic,
+                unit: Unit::Hertz,
+                diameter: KNOB_DIAMETER,
+                modulated: None,
+            },
+            &mut lfo.rate_hz,
+        );
+    }
 
     changed
 }
@@ -528,108 +522,117 @@ fn lfo_controls(ui: &mut Ui, index: usize, lfo: &mut LfoDefinition) -> bool {
 /// row says "this source moves that destination by this much".
 fn matrix_section(ui: &mut Ui, cell: &mut PerformanceCell, live: Live) -> bool {
     let mut changed = false;
+    let mut add_requested = false;
+    let room = cell.routes.len() < MAX_ROUTES;
 
     let routing = !cell.routes.is_empty();
-    section(ui, "MOD MATRIX", live.lamp(routing), |ui| {
-        let sources: Vec<&str> = ModSource::ALL.iter().map(|source| source.label()).collect();
-        let destinations: Vec<&str> = ModDestination::ALL
-            .iter()
-            .map(|destination| destination.label())
-            .collect();
+    crate::screens::main::section_with(
+        ui,
+        "MOD MATRIX",
+        live.lamp(routing),
+        |ui| {
+            if room && button(ui, &THEME, "+ Route") {
+                add_requested = true;
+            }
+        },
+        |ui| {
+            // Down to the column's floor: this panel's lower edge is the
+            // baseline the pads across the aisle line up with.
+            ui.set_min_height(ui.available_height() - 12.0);
+            let sources: Vec<&str> = ModSource::ALL.iter().map(|source| source.label()).collect();
+            let destinations: Vec<&str> = ModDestination::ALL
+                .iter()
+                .map(|destination| destination.label())
+                .collect();
 
-        matrix_headings(ui);
+            matrix_headings(ui);
 
-        let mut remove: Option<usize> = None;
-        for index in 0..cell.routes.len() {
-            ui.horizontal(|ui| {
-                let route = &mut cell.routes[index];
+            let mut remove: Option<usize> = None;
+            for index in 0..cell.routes.len() {
+                ui.horizontal(|ui| {
+                    let route = &mut cell.routes[index];
 
-                let selected = ModSource::ALL
-                    .iter()
-                    .position(|source| *source == route.source)
-                    .unwrap_or(0);
-                if let Some(next) = dropdown(
-                    ui,
-                    &THEME,
-                    ("source", index),
-                    &sources,
-                    selected,
-                    ROUTE_SELECTOR,
-                ) {
-                    route.source = ModSource::ALL[next];
-                    changed = true;
-                }
+                    let selected = ModSource::ALL
+                        .iter()
+                        .position(|source| *source == route.source)
+                        .unwrap_or(0);
+                    if let Some(next) = dropdown(
+                        ui,
+                        &THEME,
+                        ("source", index),
+                        &sources,
+                        selected,
+                        ROUTE_SELECTOR,
+                    ) {
+                        route.source = ModSource::ALL[next];
+                        changed = true;
+                    }
 
-                arrow(ui);
+                    arrow(ui);
 
-                let selected = ModDestination::ALL
-                    .iter()
-                    .position(|destination| *destination == route.destination)
-                    .unwrap_or(0);
-                if let Some(next) = dropdown(
-                    ui,
-                    &THEME,
-                    ("destination", index),
-                    &destinations,
-                    selected,
-                    ROUTE_SELECTOR,
-                ) {
-                    route.destination = ModDestination::ALL[next];
-                    changed = true;
-                }
+                    let selected = ModDestination::ALL
+                        .iter()
+                        .position(|destination| *destination == route.destination)
+                        .unwrap_or(0);
+                    if let Some(next) = dropdown(
+                        ui,
+                        &THEME,
+                        ("destination", index),
+                        &destinations,
+                        selected,
+                        ROUTE_SELECTOR,
+                    ) {
+                        route.destination = ModDestination::ALL[next];
+                        changed = true;
+                    }
 
-                // The bar is labelled by the heading above it, not by itself.
-                changed |= value_slider(
-                    ui,
-                    &THEME,
-                    SliderSpec {
-                        label: "",
-                        range: (-1.0, 1.0),
-                        default: 1.0,
-                        unit: Unit::Plain,
-                        width: ROUTE_AMOUNT,
-                    },
-                    &mut route.amount,
-                );
+                    // The bar is labelled by the heading above it, not by itself.
+                    changed |= value_slider(
+                        ui,
+                        &THEME,
+                        SliderSpec {
+                            label: "",
+                            range: (-1.0, 1.0),
+                            default: 1.0,
+                            unit: Unit::Plain,
+                            width: ROUTE_AMOUNT,
+                        },
+                        &mut route.amount,
+                    );
 
-                if button(ui, &THEME, "×") {
-                    remove = Some(index);
-                }
+                    if button(ui, &THEME, "×") {
+                        remove = Some(index);
+                    }
 
-                hint(ui, route_summary(*route));
-            });
-        }
+                    hint(ui, route_summary(*route));
+                });
+            }
 
-        if cell.routes.is_empty() {
-            hint(ui, "Keine Route — diese Zelle bleibt stumm");
-        }
+            if cell.routes.is_empty() {
+                hint(ui, "Keine Route — diese Zelle bleibt stumm");
+            }
 
-        if let Some(index) = remove {
-            cell.remove_route(index);
-            changed = true;
-        }
-
-        ui.horizontal(|ui| {
-            if cell.routes.len() < MAX_ROUTES && button(ui, &THEME, "Route hinzufügen") {
-                cell.add_route(ModulationRoute::default());
+            if let Some(index) = remove {
+                cell.remove_route(index);
                 changed = true;
             }
-            hint(
-                ui,
-                &format!("{} von {MAX_ROUTES} Routen belegt", cell.routes.len()),
-            );
-        });
 
-        // Volume is a route like any other, so it can be taken out. The cell
-        // is then silent, which is worth saying rather than letting the user
-        // hunt for a voice that never sounds.
-        if !cell.routes.is_empty() && !cell.has_amplitude() {
-            hint(
+            // Volume is a route like any other, so it can be taken out. The cell
+            // is then silent, which is worth saying rather than letting the user
+            // hunt for a voice that never sounds.
+            if !cell.routes.is_empty() && !cell.has_amplitude() {
+                hint(
                 ui,
                 "Keine Route auf Volume — diese Zelle bleibt stumm. ENV A → Volume stellt sie wieder her.",
             );
-        }
-    });
+            }
+        },
+    );
+
+    if add_requested {
+        cell.add_route(ModulationRoute::default());
+        changed = true;
+    }
 
     changed
 }
