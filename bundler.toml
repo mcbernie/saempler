@@ -1,0 +1,4 @@
+# Metadata for NIH-plug's `cargo xtask bundle <package>` bundler.
+
+[saempler-plugin]
+name = "Sämpler"

@@ -1,0 +1,4 @@
+[alias]
+# Builds and bundles VST3/CLAP artifacts via NIH-plug's bundler.
+xtask = "run --package xtask --release --"
+xtask-debug = "run --package xtask --"

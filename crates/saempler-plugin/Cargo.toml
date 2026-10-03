@@ -1,0 +1,25 @@
+[package]
+name = "saempler-plugin"
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "VST3, CLAP and standalone host integration for Sämpler"
+
+[lib]
+# `cdylib` produces the plugin binaries, `lib` is needed by the standalone bin.
+crate-type = ["cdylib", "lib"]
+
+[[bin]]
+# Named differently from the library so both can be built in one invocation
+# without their debug symbols colliding.
+name = "saempler"
+path = "src/main.rs"
+
+[dependencies]
+saempler-model.workspace = true
+saempler-audio.workspace = true
+saempler-ui.workspace = true
+nih_plug = { workspace = true, features = ["assert_process_allocs", "standalone"] }
+nih_plug_egui.workspace = true
