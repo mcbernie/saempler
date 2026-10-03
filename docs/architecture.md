@@ -276,6 +276,29 @@ A release trigger turns the key coming up into the start of the effect rather
 than the end of the note. The loop then runs for as long as the release stage
 of whatever is routed to volume.
 
+## DSP primitives
+
+`saempler-dsp` sits below the engine and knows nothing about slices, cells or
+the project. A filter can therefore be tested on its own numbers rather than
+by ear through a voice, which is the whole reason for the separation.
+
+Everything is realtime safe once prepared: buffers are taken in `prepare`,
+which runs when the host sets the sample rate, and no `process` call
+allocates, locks or panics. A setting that arrives as NaN is repaired rather
+than obeyed, and any state that has gone wrong is cleared rather than left to
+circulate.
+
+Two filter topologies, for two different jobs. The voices use a state variable
+filter because their cutoff is a modulation destination and changing a
+biquad's coefficients per frame makes it ring and blow up. The equalizer uses
+biquads because its bands are set when a knob moves, and the cookbook shelves
+have no state variable equivalent as simple.
+
+The planned routing: filter and saturation per voice, where they are cheap and
+belong to the chop; delay, phaser and reverb as sends behind the mixer, so
+sixteen voices do not mean sixteen reverbs; the equalizer once on the sum and
+once per cell.
+
 ## Window layout
 
 Every band of the window is given its rectangle before anything is drawn in

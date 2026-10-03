@@ -56,7 +56,11 @@ What works today:
 - master gain as a host parameter; sample reference, slices, cells and the
   modifier layout as versioned plugin state, reloaded when a project is opened
 
-Not there yet: regions, effects, gestures and the preset side of things.
+The effect primitives exist and are tested on their own numbers; wiring them
+into the voices and the mixer is the next increment.
+
+Not there yet: regions, host automation of the cell controls, presets and
+gestures.
 
 See `docs/architecture.md` for the decisions behind this and
 `docs/realtime.md` for the rules the audio thread follows.
@@ -82,6 +86,7 @@ the device quirks and how to load the plugin in a DAW.
 
 ```
 crates/saempler-model    serializable project state
+crates/saempler-dsp      filters, saturation, delay, phaser, reverb, equalizer
 crates/saempler-audio    realtime engine, voices, sample buffers, queues
 crates/saempler-core     sample import and the waveform peak cache
 crates/saempler-ui       theme, custom widgets, the four editor pages

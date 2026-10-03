@@ -2,6 +2,7 @@
 resolver = "2"
 members = [
     "crates/saempler-model",
+    "crates/saempler-dsp",
     "crates/saempler-audio",
     "crates/saempler-core",
     "crates/saempler-ui",
@@ -18,6 +19,7 @@ repository = "https://github.com/mcbernie/saempler"
 
 [workspace.dependencies]
 saempler-model = { path = "crates/saempler-model" }
+saempler-dsp = { path = "crates/saempler-dsp" }
 saempler-audio = { path = "crates/saempler-audio" }
 saempler-core = { path = "crates/saempler-core" }
 saempler-ui = { path = "crates/saempler-ui" }
