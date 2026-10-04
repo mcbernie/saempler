@@ -26,6 +26,8 @@ const CURVE_SIZE: (f32, f32) = (150.0, 58.0);
 const ARROW_WIDTH: f32 = 20.0;
 /// Height of the playback panel. The modulation panel takes what is left.
 const PLAYBACK_HEIGHT: f32 = 112.0;
+/// Height of the effects panel at the foot of the editor column.
+const EFFECTS_HEIGHT: f32 = 130.0;
 /// Keys a cell may be put on.
 ///
 /// Six octaves around where chops are usually mapped. The whole keyboard
@@ -60,9 +62,10 @@ pub fn cell_section(ui: &mut Ui, state: &ViewState<'_>) {
     // own rather than both claiming the whole column.
     let full = ui.available_rect_before_wrap();
     let playback = band(full, full.min.y, PLAYBACK_HEIGHT);
+    let effects = band(full, full.max.y - EFFECTS_HEIGHT, EFFECTS_HEIGHT);
     let modulation = nih_plug_egui::egui::Rect::from_min_max(
         pos2(full.min.x, playback.max.y + THEME.spacing_md),
-        full.max,
+        pos2(full.max.x, effects.min.y - THEME.spacing_md),
     );
 
     region(ui, playback, |ui| {
@@ -70,6 +73,9 @@ pub fn cell_section(ui: &mut Ui, state: &ViewState<'_>) {
     });
     region(ui, modulation, |ui| {
         changed |= modulation_section(ui, &mut cell, live);
+    });
+    region(ui, effects, |ui| {
+        changed |= crate::screens::effects::effects_section(ui, &mut cell, live.sounding);
     });
     changed |= matrix_window(ui, &mut cell);
 

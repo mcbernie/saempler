@@ -4,6 +4,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::cell::{CellId, PerformanceCell, PlaybackSettings};
+use crate::effect::{CellEffects, SendEffects};
 use crate::modifier::{default_layout, Modifier, ModifierAssignment, ModifierMode};
 use crate::modulation::{EnvelopeDefinition, LfoDefinition};
 use crate::slice::{Slice, SliceId};
@@ -57,6 +58,9 @@ pub struct Project {
     cell_selection: Option<CellId>,
     #[serde(default = "default_layout")]
     modifiers: Vec<ModifierAssignment>,
+    /// The sends, shared by every voice.
+    #[serde(default)]
+    sends: SendEffects,
     /// Hands out the next slice identity. Kept in the project so identities
     /// stay unique across a session even when slices are deleted.
     next_slice_id: u32,
@@ -455,6 +459,20 @@ impl Project {
         true
     }
 
+    /// Copy a modifier onto the first free key above its own.
+    ///
+    /// Two keys doing the same thing in different modes is a real layout: one
+    /// reverse held, another latched. Cloning is how you reach that without
+    /// setting the second one up by hand.
+    ///
+    /// Returns the key the copy landed on.
+    pub fn clone_modifier(&mut self, note: u8) -> Option<u8> {
+        let entry = *self.modifier_for_note(note)?;
+        let target = self.first_free_note(note.saturating_add(1))?;
+        self.add_modifier(target, entry.modifier, entry.mode)
+            .then_some(target)
+    }
+
     /// Take the modifier off a note.
     pub fn remove_modifier(&mut self, note: u8) -> bool {
         let before = self.modifiers.len();
@@ -508,6 +526,21 @@ impl Project {
     /// The lowest free note at or above `from`, for placing a new modifier.
     pub fn first_free_note(&self, from: u8) -> Option<u8> {
         (from..=127).find(|note| !self.note_is_taken(*note))
+    }
+
+    /// The sends every voice shares.
+    pub fn sends(&self) -> SendEffects {
+        self.sends
+    }
+
+    /// Replace the send settings.
+    pub fn set_sends(&mut self, sends: SendEffects) {
+        self.sends = sends.sanitized();
+    }
+
+    /// Replace one cell's own effects.
+    pub fn set_cell_effects(&mut self, id: CellId, effects: CellEffects) -> bool {
+        self.with_cell_mut(id, |cell| cell.effects = effects.sanitized())
     }
 
     /// Take every cell off the keyboard.
@@ -653,6 +686,7 @@ impl Default for Project {
             cells: Vec::new(),
             cell_selection: None,
             modifiers: default_layout(),
+            sends: SendEffects::default(),
             next_slice_id: 0,
             next_cell_id: 0,
         }
@@ -1222,6 +1256,34 @@ mod tests {
         // Notes 120..=127 fit, the remaining slices stay unassigned.
         assert_eq!(project.cells().len(), 8);
         assert!(project.cells().iter().all(|cell| cell.midi_note <= 127));
+    }
+
+    #[test]
+    fn cloning_a_modifier_lands_on_the_next_free_key() {
+        let mut project = Project::default();
+        project.reset_modifiers();
+        let first = project.modifiers()[0];
+
+        let target = project
+            .clone_modifier(first.note)
+            .expect("there is room above");
+
+        let copy = project
+            .modifier_for_note(target)
+            .expect("the copy is there");
+        assert_eq!(copy.modifier, first.modifier);
+        assert_eq!(copy.mode, first.mode);
+        assert!(target > first.note);
+    }
+
+    #[test]
+    fn cloning_a_key_that_holds_no_modifier_does_nothing() {
+        let mut project = Project::default();
+        project.reset_modifiers();
+        let before = project.modifiers().len();
+
+        assert!(project.clone_modifier(100).is_none());
+        assert_eq!(project.modifiers().len(), before);
     }
 
     #[test]

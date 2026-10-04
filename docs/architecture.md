@@ -276,6 +276,32 @@ A release trigger turns the key coming up into the start of the effect rather
 than the end of the note. The loop then runs for as long as the release stage
 of whatever is routed to volume.
 
+## Effect routing
+
+Filter and saturation run per voice. They are cheap, and they belong to the
+chop rather than to the mix: two cells on the same slice should be able to
+sound different, and that only works if the filter is part of the voice.
+
+Delay, reverb, phaser and flanger are sends behind the mixer, one set shared
+by every voice. Sixteen voices would otherwise mean sixteen reverbs, which is
+the cost of the whole instrument again for a difference nobody can hear under
+a beat. Each voice contributes to a send in proportion to its own send amount,
+so one chop can be soaked while the next stays dry.
+
+The sends run every frame whether or not anything is feeding them, because a
+reverb tail has to carry on after the last voice has stopped.
+
+## Editing while playing
+
+An edit to a cell reaches the voices already sounding it, not only the next
+note. A chop instrument is played and adjusted at the same time, and a change
+that is only heard on the next note is not a change anyone can make by ear.
+
+Nothing restarts to do it. Envelopes take new stage lengths and carry on from
+where they are, LFOs keep their phase, filters keep their state, and the
+playhead does not move. Resetting any of those would click on every knob
+movement.
+
 ## DSP primitives
 
 `saempler-dsp` sits below the engine and knows nothing about slices, cells or

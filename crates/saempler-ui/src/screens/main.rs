@@ -36,7 +36,7 @@ const PERFORM_SHARE: f32 = 0.42;
 /// fixed height and the two columns fill what is left, so a window any smaller
 /// could only clip a panel. Dragging the window bigger hands the extra height
 /// to the pads and the editor, which both grow with their column.
-pub const MIN_EDITOR_SIZE: (f32, f32) = (1_120.0, 900.0);
+pub const MIN_EDITOR_SIZE: (f32, f32) = (1_120.0, 960.0);
 
 /// Height of the masthead strip.
 const MASTHEAD_HEIGHT: f32 = 42.0;
@@ -45,7 +45,7 @@ const SOURCE_HEIGHT: f32 = 172.0;
 /// Height of the footer row holding the modifiers and the output strip.
 const FOOTER_HEIGHT: f32 = 118.0;
 /// Smallest the two middle columns may become.
-const MIN_BODY_HEIGHT: f32 = 420.0;
+const MIN_BODY_HEIGHT: f32 = 480.0;
 
 /// What the editor keeps between frames.
 ///
@@ -191,6 +191,8 @@ pub fn draw(ctx: &egui::Context, setter: &ParamSetter, state: &ViewState<'_>) ->
                     let (keys, output) = split(footer, 0.63, gap);
                     region(ui, keys, |ui| modifier_section(ui, state));
                     region(ui, output, |ui| footer_section(ui, setter, state));
+
+                    crate::screens::effects::sends_window(ui, state);
                 });
         });
 

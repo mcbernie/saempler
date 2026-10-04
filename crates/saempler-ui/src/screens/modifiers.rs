@@ -38,6 +38,8 @@ enum Edit {
     Kind(u8, Modifier),
     Move(u8, u8),
     Remove(u8),
+    /// Copy this key's assignment onto the next free one.
+    Clone(u8),
     Add,
     Reset,
 }
@@ -209,6 +211,14 @@ fn editor_window(ui: &Ui, state: &ViewState<'_>, engaged: u32) -> bool {
                         edit = Some(Edit::Mode(entry.note, ModifierMode::ALL[chosen]));
                     }
 
+                    if icon_button(
+                        ui,
+                        &THEME,
+                        Icon::Copy,
+                        "Auf die nächste freie Taste kopieren",
+                    ) {
+                        edit = Some(Edit::Clone(entry.note));
+                    }
                     if icon_button(ui, &THEME, Icon::Cross, "Diese Taste entfernen") {
                         edit = Some(Edit::Remove(entry.note));
                     }
@@ -233,6 +243,7 @@ fn editor_window(ui: &Ui, state: &ViewState<'_>, engaged: u32) -> bool {
                 Edit::Kind(note, modifier) => project.project.set_modifier(note, modifier),
                 Edit::Move(from, to) => project.project.move_modifier(from, to),
                 Edit::Remove(note) => project.project.remove_modifier(note),
+                Edit::Clone(note) => project.project.clone_modifier(note).is_some(),
                 Edit::Add => add_modifier(&mut project),
                 Edit::Reset => {
                     project.project.reset_modifiers();

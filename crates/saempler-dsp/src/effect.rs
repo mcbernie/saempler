@@ -164,6 +164,85 @@ impl Phaser {
     }
 }
 
+/// Longest a flanger's delay may sweep to, in milliseconds.
+///
+/// Past about fifteen the comb's notches are close enough together to read as
+/// an echo rather than as a sweep, which is a chorus and not a flanger.
+const FLANGER_MAX_MS: f32 = 12.0;
+/// Shortest it may sweep to.
+const FLANGER_MIN_MS: f32 = 0.5;
+
+/// A stereo flanger: a short delay swept by an LFO, fed back on itself.
+///
+/// The same parts as the phaser and a different sound: a phaser notches at a
+/// few fixed-count frequencies, a flanger combs at every multiple of its
+/// delay, which is the jet-engine sweep.
+#[derive(Debug, Default, Clone)]
+pub struct Flanger {
+    lines: [DelayLine; 2],
+    feedback_state: [f32; 2],
+    phase: f32,
+    phase_delta: f32,
+    depth: f32,
+    feedback: f32,
+    sample_rate: f32,
+}
+
+impl Flanger {
+    pub fn prepare(&mut self, sample_rate: f32) {
+        self.sample_rate = if sample_rate.is_finite() && sample_rate > 1.0 {
+            sample_rate
+        } else {
+            48_000.0
+        };
+        for line in &mut self.lines {
+            line.prepare(self.sample_rate);
+        }
+        self.reset();
+        self.set(0.3, 0.8, 0.5);
+    }
+
+    pub fn reset(&mut self) {
+        for line in &mut self.lines {
+            line.reset();
+        }
+        self.feedback_state = [0.0; 2];
+        self.phase = 0.0;
+    }
+
+    /// Set the sweep rate in hertz, how far it sweeps, and the resonance.
+    pub fn set(&mut self, rate_hz: f32, depth: f32, feedback: f32) {
+        let rate = finite_or(rate_hz, 0.3).clamp(0.01, 10.0);
+        self.phase_delta = rate / self.sample_rate.max(1.0);
+        self.depth = finite_or(depth, 0.8).clamp(0.0, 1.0);
+        // Short of one: at one the comb never decays.
+        self.feedback = finite_or(feedback, 0.5).clamp(-0.95, 0.95);
+    }
+
+    /// Process one frame, returning the wet signal alone.
+    pub fn process(&mut self, left: f32, right: f32) -> (f32, f32) {
+        self.phase = (self.phase + self.phase_delta).fract();
+
+        let mut output = [0.0f32; 2];
+        for (channel, input) in [left, right].into_iter().enumerate() {
+            // A quarter cycle apart rather than half: a flanger that sweeps
+            // the two sides in opposition loses its centre.
+            let offset = if channel == 0 { 0.0 } else { 0.25 };
+            let sweep = ((self.phase + offset).fract() * std::f32::consts::TAU).sin();
+            let span = (FLANGER_MAX_MS - FLANGER_MIN_MS) * self.depth;
+            let milliseconds = FLANGER_MIN_MS + span * 0.5 * (1.0 + sweep);
+            let frames = milliseconds * 0.001 * self.sample_rate;
+
+            let delayed = self.lines[channel].read(frames.max(1.0));
+            self.lines[channel].write(input + delayed * self.feedback);
+            self.feedback_state[channel] = if delayed.is_finite() { delayed } else { 0.0 };
+            output[channel] = self.feedback_state[channel];
+        }
+
+        (output[0], output[1])
+    }
+}
+
 /// Comb filter lengths in frames at 48 kHz, and the all-pass lengths after
 /// them. Mutually prime so their repeats do not line up into a flutter.
 const COMB_LENGTHS: [usize; 4] = [1_557, 1_617, 1_491, 1_422];
@@ -375,6 +454,40 @@ mod tests {
     }
 
     #[test]
+    fn a_flanger_is_silent_on_silence() {
+        let mut flanger = Flanger::default();
+        flanger.prepare(RATE);
+
+        assert_eq!(silence_through(|| flanger.process(0.0, 0.0), 48_000), 0.0);
+    }
+
+    #[test]
+    fn a_flanger_sweeps_without_running_away() {
+        let mut flanger = Flanger::default();
+        flanger.prepare(RATE);
+        flanger.set(1.0, 1.0, 0.9);
+
+        let mut loudest = 0.0f32;
+        let mut quietest = f32::MAX;
+        for index in 0..RATE as usize {
+            let input = (index as f32 * 0.09).sin();
+            let (left, right) = flanger.process(input, input);
+            assert!(left.is_finite() && right.is_finite(), "wild at {index}");
+            if index > 4_800 {
+                loudest = loudest.max(left.abs());
+                quietest = quietest.min(left.abs());
+            }
+        }
+
+        assert!(loudest > 0.1, "it swallowed everything: {loudest}");
+        assert!(loudest < 20.0, "the feedback ran away: {loudest}");
+        assert!(
+            loudest - quietest > 0.05,
+            "nothing swept: {quietest} to {loudest}"
+        );
+    }
+
+    #[test]
     fn a_reverb_is_silent_on_silence() {
         let mut reverb = Reverb::default();
         reverb.prepare(RATE);
@@ -449,6 +562,10 @@ mod tests {
         phaser.prepare(RATE);
         phaser.set(f32::NAN, f32::INFINITY, f32::NAN);
 
+        let mut flanger = Flanger::default();
+        flanger.prepare(RATE);
+        flanger.set(f32::NAN, f32::INFINITY, f32::NAN);
+
         let mut reverb = Reverb::default();
         reverb.prepare(RATE);
         reverb.set(f32::NAN, f32::INFINITY);
@@ -457,6 +574,7 @@ mod tests {
             for (left, right) in [
                 delay.process(0.5, -0.5),
                 phaser.process(0.5, -0.5),
+                flanger.process(0.5, -0.5),
                 reverb.process(0.5, -0.5),
             ] {
                 assert!(left.is_finite() && right.is_finite());

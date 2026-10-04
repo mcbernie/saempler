@@ -56,11 +56,14 @@ What works today:
 - master gain as a host parameter; sample reference, slices, cells and the
   modifier layout as versioned plugin state, reloaded when a project is opened
 
-The effect primitives exist and are tested on their own numbers; wiring them
-into the voices and the mixer is the next increment.
+- a filter and a saturator per cell, and four sends shared by every voice:
+  delay with tempo sync, reverb, phaser and flanger. How much of a cell
+  reaches each send is the cell's own setting, so one chop can be soaked in
+  reverb while the next one beside it stays dry
+- every setting editable while a note is sounding, heard on that note
 
-Not there yet: regions, host automation of the cell controls, presets and
-gestures.
+Not there yet: transposition without changing the length, regions, host
+automation of the cell controls, presets and gestures.
 
 See `docs/architecture.md` for the decisions behind this and
 `docs/realtime.md` for the rules the audio thread follows.

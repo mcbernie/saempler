@@ -1,5 +1,6 @@
 use serde::{Deserialize, Serialize};
 
+use crate::effect::CellEffects;
 use crate::modulation::{
     default_routes, Division, EnvelopeDefinition, LfoDefinition, ModulationRoute, ENVELOPE_COUNT,
     LFO_COUNT, MAX_ROUTES,
@@ -174,6 +175,8 @@ pub struct PerformanceCell {
     /// What modulates what. Capped at [`MAX_ROUTES`] so the engine can hold a
     /// cell without allocating.
     pub routes: Vec<ModulationRoute>,
+    /// Filter, drive and how much of this cell reaches each send.
+    pub effects: CellEffects,
 }
 
 impl PerformanceCell {
@@ -190,6 +193,7 @@ impl PerformanceCell {
             envelopes: [EnvelopeDefinition::default(); ENVELOPE_COUNT],
             lfos: [LfoDefinition::default(); LFO_COUNT],
             routes: default_routes(),
+            effects: CellEffects::default(),
         }
     }
 
@@ -245,6 +249,7 @@ impl PerformanceCell {
         for route in &mut self.routes {
             *route = route.sanitized();
         }
+        self.effects = self.effects.sanitized();
         self
     }
 }

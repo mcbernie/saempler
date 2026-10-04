@@ -9,5 +9,6 @@ description = "Realtime audio engine for Sämpler"
 
 [dependencies]
 saempler-model.workspace = true
+saempler-dsp.workspace = true
 rtrb.workspace = true
 

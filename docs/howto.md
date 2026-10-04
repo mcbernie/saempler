@@ -163,6 +163,13 @@ Release Trigger starts the loop when the key comes up rather than when it goes
 down, so a phrase plays through and then collapses as it fades. Duplicating a cell and changing only the copy is the quickest way to
 the idea the instrument is built on.
 
+The EFFECTS panel holds the cell's own filter and drive, and how much of it
+reaches each of the four shared sends. The button beside the legend opens the
+window the sends themselves are set up in; those settings are shared by every
+cell.
+
+Everything here can be changed while a note is sounding and is heard on it.
+
 Below that sit two envelopes, two LFOs and the modulation matrix. None of the
 four modules is wired to anything by itself: a route in the matrix decides what
 it changes and by how much. A new cell starts with one route, ENV A to volume,

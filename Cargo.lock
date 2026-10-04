@@ -2328,6 +2328,7 @@ name = "saempler-audio"
 version = "0.1.0"
 dependencies = [
  "rtrb",
+ "saempler-dsp",
  "saempler-model",
 ]
 

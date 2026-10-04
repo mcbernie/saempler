@@ -1,4 +1,5 @@
-use saempler_model::{ModDestination, PlaybackMode};
+use saempler_dsp::{FilterMode, SaturationKind, Saturator, Svf};
+use saempler_model::{DriveShape, FilterShape, ModDestination, PlaybackMode};
 
 use crate::command::CellSpec;
 use crate::modulation::{Modulation, ModulationMonitor, PITCH_RANGE_SEMITONES};
@@ -69,6 +70,9 @@ pub struct Voice {
     /// the untouched cell rather than to whatever the last one left behind.
     base: CellSpec,
     spec: CellSpec,
+    /// One filter per channel, so the two sides stay in step.
+    filter: [Svf; 2],
+    saturator: Saturator,
 }
 
 impl Default for Voice {
@@ -91,6 +95,8 @@ impl Default for Voice {
             modulation: Modulation::default(),
             base: CellSpec::default(),
             spec: CellSpec::default(),
+            filter: [Svf::default(); 2],
+            saturator: Saturator::default(),
         }
     }
 }
@@ -126,9 +132,30 @@ impl Voice {
         self.base
     }
 
+    /// Replace the cell this voice was started from.
+    ///
+    /// The modifiers in force are applied on top afterwards, by the engine,
+    /// which is the only place that knows what they are.
+    pub fn rebase(&mut self, base: CellSpec) {
+        if self.active {
+            self.base = base;
+        }
+    }
+
     /// Where this voice's modulation stood on its last frame.
     pub fn monitor(&self) -> ModulationMonitor {
         self.modulation.monitor()
+    }
+
+    /// How much of this voice each send should receive.
+    pub fn sends(&self) -> [f32; 4] {
+        let effects = self.spec.effects;
+        [
+            effects.delay_send,
+            effects.reverb_send,
+            effects.phaser_send,
+            effects.flanger_send,
+        ]
     }
 
     /// Start this voice, replacing whatever it was playing before.
@@ -173,21 +200,18 @@ impl Voice {
         };
         self.loop_low = self.position.max(0.0) as u64;
         self.mode_loop = 0;
+
+        // A new note starts with a clean filter: whatever the last note left
+        // in it would ring through the first frames of this one.
+        for filter in &mut self.filter {
+            filter.reset();
+        }
+        self.apply_effects();
         if !spec.release_trigger {
             self.engage_mode_loop();
         }
 
-        // An envelope that outlasts the slice is scaled down rather than
-        // truncated, so a long release on a short chop fades across all of it
-        // instead of silencing the voice on its first frame.
-        let available = (spec.bounds.len_frames() as f64 / self.rate) as f32;
-        let wanted = longest_envelope_frames(&spec, sample_rate);
-        let scale = if wanted > available && wanted > 0.0 {
-            (available / wanted).max(0.001)
-        } else {
-            1.0
-        };
-
+        let scale = envelope_scale(&spec, self.rate, sample_rate);
         self.modulation.start(
             spec.modulation,
             velocity,
@@ -212,11 +236,19 @@ impl Voice {
         self.rate = spec.rate.max(f32::MIN_POSITIVE) as f64;
         self.reverse = spec.reverse;
 
+        // Envelopes, LFOs and routes follow the edit as well, so a knob moved
+        // while this chop rings is heard on it rather than only on the next
+        // note. Every source carries on from where it is.
+        let scale = envelope_scale(&spec, self.rate, self.sample_rate);
+        self.modulation
+            .update(spec.modulation, self.sample_rate, self.tempo, scale);
+
         // A loop that has just been engaged starts under the playhead; one
         // that was already running keeps its region, so neither the rhythm
         // jumps nor does reversing throw the playhead out of it.
         let had_loop = self.loop_length() > 0.0;
         self.spec = spec;
+        self.apply_effects();
         if self.loop_length() > 0.0 && !had_loop {
             self.anchor_loop();
         }
@@ -428,7 +460,46 @@ impl Voice {
         let pan = modulation.get(ModDestination::Pan).clamp(-1.0, 1.0);
         let (left_gain, right_gain) = pan_gains(pan);
 
+        // Filter then drive then level: the filter shapes what the drive has
+        // to work with, and the level is the last thing in the chain so that
+        // turning a voice down turns down what it actually produced.
+        let effects = self.spec.effects;
+        let (mut left, mut right) = (left, right);
+        if effects.filter_on {
+            left = self.filter[0].process(left);
+            right = self.filter[1].process(right);
+        }
+        if effects.drive_on {
+            left = self.saturator.process(left);
+            right = self.saturator.process(right);
+        }
+
         (left * level * left_gain, right * level * right_gain)
+    }
+
+    /// Point the filter and the saturator at the cell's settings.
+    ///
+    /// The filter keeps its state: the settings change under a note that is
+    /// already sounding, which is the point of being able to edit while
+    /// playing, and resetting here would click on every knob movement.
+    fn apply_effects(&mut self) {
+        let effects = self.spec.effects;
+        let mode = match effects.filter_shape {
+            FilterShape::LowPass => FilterMode::LowPass,
+            FilterShape::HighPass => FilterMode::HighPass,
+            FilterShape::BandPass => FilterMode::BandPass,
+            FilterShape::Notch => FilterMode::Notch,
+        };
+        for filter in &mut self.filter {
+            filter.set(mode, effects.cutoff_hz, effects.resonance, self.sample_rate);
+        }
+
+        let kind = match effects.drive_shape {
+            DriveShape::Soft => SaturationKind::Soft,
+            DriveShape::Hard => SaturationKind::Hard,
+            DriveShape::Tube => SaturationKind::Tube,
+        };
+        self.saturator.set(kind, effects.drive);
     }
 
     /// Send the playhead back to the far end when it leaves the loop region.
@@ -515,6 +586,21 @@ fn pan_gains(pan: f32) -> (f32, f32) {
         angle.cos() * std::f32::consts::SQRT_2,
         angle.sin() * std::f32::consts::SQRT_2,
     )
+}
+
+/// How far every envelope stage has to be shortened to fit the slice.
+///
+/// An envelope that outlasts the slice is scaled down rather than truncated,
+/// so a long release on a short chop fades across all of it instead of
+/// silencing the voice on its first frame.
+fn envelope_scale(spec: &CellSpec, rate: f64, sample_rate: f32) -> f32 {
+    let available = (spec.bounds.len_frames() as f64 / rate.max(1e-9)) as f32;
+    let wanted = longest_envelope_frames(spec, sample_rate);
+    if wanted > available && wanted > 0.0 {
+        (available / wanted).max(0.001)
+    } else {
+        1.0
+    }
 }
 
 /// Longest any envelope of this cell runs, in output frames.

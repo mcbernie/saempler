@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use saempler_model::{Modifier, ModifierMode, PlaybackMode};
+use saempler_model::{CellEffects, Modifier, ModifierMode, PlaybackMode, SendEffects};
 
 use crate::modulation::ModulationSpec;
 use crate::sample::SampleBuffer;
@@ -74,6 +74,8 @@ pub struct CellSpec {
     pub collapse: f32,
     /// Whether the mode's loop starts at the note off rather than the note on.
     pub release_trigger: bool,
+    /// Filter, drive and how much of this cell reaches each send.
+    pub effects: CellEffects,
 }
 
 impl Default for CellSpec {
@@ -90,6 +92,11 @@ impl Default for CellSpec {
             cycle_whole_notes: 0.0625,
             collapse: 0.75,
             release_trigger: false,
+            effects: CellEffects {
+                // An audition and a hand built spec should sound like the
+                // cell they stand for, which by default is untouched.
+                ..CellEffects::default()
+            },
         }
     }
 }
@@ -121,6 +128,8 @@ pub enum EngineCommand {
     /// Used by the interface to audition a slice on click. The voice ends by
     /// itself at the end of the region, so no release command follows.
     Preview(CellSpec),
+    /// Replace the settings of the shared sends.
+    SetSends(SendEffects),
     /// Release every sounding voice immediately.
     AllNotesOff,
 }

@@ -34,6 +34,7 @@ pub fn cell_spec(project: &Project, cell: &PerformanceCell) -> Option<CellSpec> 
         cycle_whole_notes: playback.division.whole_notes(),
         collapse: playback.collapse,
         release_trigger: playback.release_trigger,
+        effects: cell.effects.sanitized(),
     })
 }
 

@@ -124,10 +124,30 @@ impl EnvelopeState {
     /// `scale` shortens every stage by the same factor, used when the envelope
     /// would otherwise outlast the audio it is shaping.
     pub fn start(&mut self, definition: EnvelopeDefinition, sample_rate: f32, scale: f32) {
-        let frames = |ms: f32| (ms / 1000.0 * sample_rate * scale).max(0.0);
-
         self.stage = Stage::Attack;
         self.level = 0.0;
+        self.lengths(definition, sample_rate, scale);
+    }
+
+    /// Take new stage lengths without disturbing where the envelope has got to.
+    ///
+    /// This is what makes an envelope editable while a note is sounding: the
+    /// knob moves and the stage in progress carries on from where it is, at
+    /// the new rate, instead of the note restarting under the hand.
+    pub fn retarget(&mut self, definition: EnvelopeDefinition, sample_rate: f32, scale: f32) {
+        self.lengths(definition, sample_rate, scale);
+
+        // A release already under way is re-aimed from the level it has
+        // reached, so it still finishes in the time it now says.
+        if self.stage == Stage::Release {
+            self.release_step = step(self.release_frames) * self.level.max(f32::MIN_POSITIVE);
+        }
+    }
+
+    /// Work the per frame steps out from a definition.
+    fn lengths(&mut self, definition: EnvelopeDefinition, sample_rate: f32, scale: f32) {
+        let frames = |ms: f32| (ms / 1000.0 * sample_rate * scale).max(0.0);
+
         self.sustain = definition.sustain.clamp(0.0, 1.0);
         self.peak = if definition.decay_ms > 0.0 {
             1.0
@@ -381,6 +401,27 @@ impl Modulation {
     pub fn retune(&mut self, sample_rate: f32, tempo: f64) {
         for (index, lfo) in self.lfos.iter_mut().enumerate() {
             lfo.retune(self.spec.lfos[index], sample_rate, tempo);
+        }
+    }
+
+    /// Take a whole new set of definitions mid-note.
+    ///
+    /// Every source carries on from where it is at the new settings, and the
+    /// routes are simply replaced: an edit made while a chop rings has to be
+    /// heard on that chop, not only on the next one.
+    pub fn update(
+        &mut self,
+        spec: ModulationSpec,
+        sample_rate: f32,
+        tempo: f64,
+        envelope_scale: f32,
+    ) {
+        self.spec = spec;
+        for (index, envelope) in self.envelopes.iter_mut().enumerate() {
+            envelope.retarget(spec.envelopes[index], sample_rate, envelope_scale);
+        }
+        for (index, lfo) in self.lfos.iter_mut().enumerate() {
+            lfo.retune(spec.lfos[index], sample_rate, tempo);
         }
     }
 

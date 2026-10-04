@@ -1,6 +1,7 @@
 use std::sync::Arc;
 
-use saempler_model::{Modifier, ModifierMode};
+use saempler_dsp::{Delay, Flanger, Phaser, Reverb};
+use saempler_model::{Modifier, ModifierMode, SendEffects};
 
 use crate::command::{CellSpec, CommandConsumer, DisposalProducer, EngineCommand};
 use crate::meters::Meters;
@@ -26,6 +27,9 @@ const DEFAULT_SAMPLE_RATE: f32 = 44_100.0;
 /// never cut an audition short.
 const PREVIEW_NOTE: u8 = u8::MAX;
 
+/// Number of shared sends: delay, reverb, phaser and flanger, in that order.
+const SEND_COUNT: usize = 4;
+
 /// How long an audition is held before the key is let go for it, in seconds.
 ///
 /// An audition has no key to release, so a looping cell would sound until
@@ -42,6 +46,16 @@ pub struct Engine {
     sample_rate: f32,
     /// Output frames until the audition is released. Zero means none is held.
     preview_left: u64,
+    /// The sends, behind the mixer and shared by every voice.
+    ///
+    /// Shared rather than one set per voice: sixteen voices would mean
+    /// sixteen reverbs, which is the cost of the whole instrument again for a
+    /// difference nobody can hear under a beat.
+    delay: Delay,
+    reverb: Reverb,
+    phaser: Phaser,
+    flanger: Flanger,
+    sends: SendEffects,
     sample: Option<Arc<SampleBuffer>>,
     /// What each MIDI note plays. A fixed array rather than a map, so that a
     /// note on is a single index instead of a lookup.
@@ -65,6 +79,11 @@ impl Engine {
         Self {
             sample_rate: DEFAULT_SAMPLE_RATE,
             preview_left: 0,
+            delay: Delay::default(),
+            reverb: Reverb::default(),
+            phaser: Phaser::default(),
+            flanger: Flanger::default(),
+            sends: SendEffects::default(),
             sample: None,
             cells: [None; NOTE_COUNT],
             modifier_notes: [None; NOTE_COUNT],
@@ -82,6 +101,14 @@ impl Engine {
     /// callback, before processing starts.
     pub fn prepare(&mut self, sample_rate: f32) {
         self.sample_rate = sample_rate;
+
+        // The sends take their buffers here, which is the one place before
+        // playback where allocating is allowed.
+        self.delay.prepare(sample_rate);
+        self.reverb.prepare(sample_rate);
+        self.phaser.prepare(sample_rate);
+        self.flanger.prepare(sample_rate);
+        self.apply_sends();
         self.reset();
     }
 
@@ -92,6 +119,10 @@ impl Engine {
         }
         self.next_age = 0;
         self.preview_left = 0;
+        self.delay.reset();
+        self.reverb.reset();
+        self.phaser.reset();
+        self.flanger.reset();
         self.modifiers.clear();
         self.meters.store_peaks(0.0, 0.0);
         self.meters.store_active_voices(0);
@@ -108,6 +139,8 @@ impl Engine {
 
         self.tempo = tempo;
         self.meters.store_tempo(tempo);
+        // A synced delay follows the host rather than the setting alone.
+        self.apply_sends();
         // Synced LFOs follow without restarting: a tempo change mid-note is a
         // change of speed, not a new note.
         for voice in &mut self.voices {
@@ -168,6 +201,18 @@ impl Engine {
                     if let Some(slot) = self.cells.get_mut(note as usize) {
                         *slot = spec;
                     }
+                    // A voice already sounding this key follows the edit. A
+                    // chop instrument is played and adjusted at the same time,
+                    // and a change that is only heard on the next note is not
+                    // an adjustment anyone can make by ear.
+                    if let Some(spec) = spec {
+                        for voice in &mut self.voices {
+                            if voice.is_playing_note(note) {
+                                voice.rebase(spec);
+                            }
+                        }
+                        self.retune_voices();
+                    }
                 }
                 EngineCommand::ClearCells => self.cells = [None; NOTE_COUNT],
                 EngineCommand::SetModifier { note, assignment } => {
@@ -185,6 +230,10 @@ impl Engine {
                     // A release trigger would never fire without this, and a
                     // loop would never end.
                     self.preview_left = (PREVIEW_SECONDS * self.sample_rate) as u64;
+                }
+                EngineCommand::SetSends(sends) => {
+                    self.sends = sends;
+                    self.apply_sends();
                 }
                 EngineCommand::AllNotesOff => {
                     for voice in &mut self.voices {
@@ -319,6 +368,30 @@ impl Engine {
         self.voices.iter().filter(|voice| voice.is_active()).count()
     }
 
+    /// Point the sends at their settings.
+    ///
+    /// Called whenever the settings or the tempo change, which is cheap: none
+    /// of these allocate, and a synced delay has to follow the host.
+    fn apply_sends(&mut self) {
+        let sends = self.sends.sanitized();
+        self.delay.set(
+            sends.delay_time(self.tempo),
+            sends.delay_feedback,
+            sends.delay_damping_hz,
+        );
+        self.reverb.set(sends.reverb_size, sends.reverb_damping);
+        self.phaser.set(
+            sends.phaser_rate_hz,
+            sends.phaser_depth,
+            sends.phaser_feedback,
+        );
+        self.flanger.set(
+            sends.flanger_rate_hz,
+            sends.flanger_depth,
+            sends.flanger_feedback,
+        );
+    }
+
     /// Count down the audition and let go of its key when the time is up.
     fn advance_preview(&mut self, frames: u64) {
         if self.preview_left == 0 {
@@ -402,10 +475,36 @@ impl Engine {
         for frame in 0..frames {
             let mut mix_left = 0.0;
             let mut mix_right = 0.0;
+            // What each send is fed this frame: a voice contributes to a send
+            // in proportion to its own send amount, so one chop can be soaked
+            // in reverb while the next one beside it stays dry.
+            let mut feed = [(0.0f32, 0.0f32); SEND_COUNT];
+
             for voice in &mut self.voices {
                 let (voice_left, voice_right) = voice.next_frame(sample);
                 mix_left += voice_left;
                 mix_right += voice_right;
+
+                let amounts = voice.sends();
+                for (index, amount) in amounts.iter().enumerate() {
+                    if *amount > 0.0 {
+                        feed[index].0 += voice_left * amount;
+                        feed[index].1 += voice_right * amount;
+                    }
+                }
+            }
+
+            // The wet signal of every send is added back to the mix. They run
+            // every frame whether or not anything is feeding them, because a
+            // reverb tail has to carry on after the last voice has stopped.
+            for (wet_left, wet_right) in [
+                self.delay.process(feed[0].0, feed[0].1),
+                self.reverb.process(feed[1].0, feed[1].1),
+                self.phaser.process(feed[2].0, feed[2].1),
+                self.flanger.process(feed[3].0, feed[3].1),
+            ] {
+                mix_left += wet_left;
+                mix_right += wet_right;
             }
 
             mix_left *= gain;
@@ -475,6 +574,13 @@ mod tests {
         }
     }
 
+    /// Loudest sample over the next `frames`, once any ramp has settled.
+    fn peak(engine: &mut Engine, frames: usize) -> f32 {
+        render(engine, frames)
+            .into_iter()
+            .fold(0.0f32, |loudest, sample| loudest.max(sample.abs()))
+    }
+
     fn render(engine: &mut Engine, frames: usize) -> Vec<f32> {
         let mut left = vec![0.0; frames];
         let mut right = vec![0.0; frames];
@@ -518,6 +624,189 @@ mod tests {
         h.engine.note_on(61, 1.0);
 
         assert_eq!(h.engine.active_voices(), 0);
+    }
+
+    #[test]
+    fn editing_a_cell_is_heard_on_the_note_already_sounding() {
+        let mut h = harness();
+        load(&mut h, 48_000);
+        h.engine.note_on(60, 1.0);
+        render(&mut h.engine, 4_800);
+
+        let before = peak(&mut h.engine, 480);
+
+        // Half the gain, while the note rings.
+        h.commands
+            .push(EngineCommand::SetCell {
+                note: 60,
+                spec: Some(CellSpec {
+                    gain: 0.5,
+                    ..spec(0, 48_000)
+                }),
+            })
+            .expect("the queue has capacity");
+        h.engine.apply_commands();
+
+        let after = peak(&mut h.engine, 480);
+
+        assert!(
+            after < before * 0.7,
+            "the edit was not heard on the ringing note: {before} -> {after}"
+        );
+    }
+
+    #[test]
+    fn editing_a_cell_does_not_restart_the_note() {
+        let mut h = harness();
+        load(&mut h, 48_000);
+        h.engine.note_on(60, 1.0);
+        render(&mut h.engine, 9_600);
+        let before = h.meters.playheads().next().expect("the note is sounding");
+
+        h.commands
+            .push(EngineCommand::SetCell {
+                note: 60,
+                spec: Some(CellSpec {
+                    gain: 0.5,
+                    ..spec(0, 48_000)
+                }),
+            })
+            .expect("the queue has capacity");
+        h.engine.apply_commands();
+        render(&mut h.engine, 64);
+
+        let after = h
+            .meters
+            .playheads()
+            .next()
+            .expect("it should still be sounding");
+
+        assert!(
+            after > before,
+            "the playhead jumped back: {before} -> {after}"
+        );
+    }
+
+    #[test]
+    fn an_edit_reaches_a_cell_that_is_not_sounding_too() {
+        let mut h = harness();
+        load(&mut h, 48_000);
+
+        h.commands
+            .push(EngineCommand::SetCell {
+                note: 60,
+                spec: Some(CellSpec {
+                    gain: 0.25,
+                    ..spec(0, 48_000)
+                }),
+            })
+            .expect("the queue has capacity");
+        h.engine.apply_commands();
+        h.engine.note_on(60, 1.0);
+
+        let level = peak(&mut h.engine, 4_800);
+
+        assert!(level < 0.4, "the stored cell was not used: {level}");
+    }
+
+    #[test]
+    fn a_cells_filter_shapes_its_own_voice() {
+        use saempler_model::{CellEffects, FilterShape};
+
+        let mut dry = harness();
+        load(&mut dry, 48_000);
+        dry.engine.note_on(60, 1.0);
+        let open = peak(&mut dry.engine, 4_800);
+
+        let mut filtered = harness();
+        load(&mut filtered, 48_000);
+        filtered
+            .commands
+            .push(EngineCommand::SetCell {
+                note: 60,
+                spec: Some(CellSpec {
+                    effects: CellEffects {
+                        filter_on: true,
+                        // The test sample is a steady level, so a high pass
+                        // is what shows the filter doing something: a low
+                        // pass would correctly leave it alone.
+                        filter_shape: FilterShape::HighPass,
+                        cutoff_hz: 2_000.0,
+                        ..CellEffects::default()
+                    },
+                    ..spec(0, 48_000)
+                }),
+            })
+            .expect("the queue has capacity");
+        filtered.engine.apply_commands();
+        filtered.engine.note_on(60, 1.0);
+        let closed = peak(&mut filtered.engine, 4_800);
+
+        assert!(
+            closed < open * 0.5,
+            "the filter did nothing: {open} -> {closed}"
+        );
+    }
+
+    #[test]
+    fn a_send_only_receives_the_cells_that_feed_it() {
+        use saempler_model::CellEffects;
+
+        let mut h = harness();
+        load(&mut h, 48_000);
+        h.engine.note_on(60, 1.0);
+        render(&mut h.engine, 480);
+        h.engine.note_off(60);
+        // Long enough for the slice and its release to be over.
+        let dry_tail = peak(&mut h.engine, 48_000);
+
+        let mut wet = harness();
+        load(&mut wet, 48_000);
+        wet.commands
+            .push(EngineCommand::SetCell {
+                note: 60,
+                spec: Some(CellSpec {
+                    effects: CellEffects {
+                        reverb_send: 1.0,
+                        ..CellEffects::default()
+                    },
+                    ..spec(0, 48_000)
+                }),
+            })
+            .expect("the queue has capacity");
+        wet.engine.apply_commands();
+        wet.engine.note_on(60, 1.0);
+        render(&mut wet.engine, 480);
+        wet.engine.note_off(60);
+        let wet_tail = peak(&mut wet.engine, 48_000);
+
+        assert!(
+            wet_tail > dry_tail + 0.001,
+            "the send never rang: {dry_tail} vs {wet_tail}"
+        );
+    }
+
+    #[test]
+    fn the_sends_follow_their_settings() {
+        use saempler_model::SendEffects;
+
+        let mut h = harness();
+        load(&mut h, 48_000);
+
+        h.commands
+            .push(EngineCommand::SetSends(SendEffects {
+                reverb_size: 1.0,
+                reverb_damping: 0.0,
+                ..SendEffects::default()
+            }))
+            .expect("the queue has capacity");
+        h.engine.apply_commands();
+
+        // Nothing is playing, so the only thing this proves is that applying
+        // a setting neither panics nor leaves the engine producing rubbish.
+        let output = render(&mut h.engine, 4_800);
+
+        assert!(output.iter().all(|sample| sample.is_finite()));
     }
 
     #[test]
