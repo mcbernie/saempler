@@ -19,6 +19,9 @@ const KNOB_DIAMETER: f32 = 36.0;
 /// Width of the amount bar in a matrix row.
 const ROUTE_AMOUNT: f32 = 150.0;
 /// Width of the source and destination selectors in a matrix row.
+/// What one pass of a repeat or collapse is called when it is the whole chop.
+const WHOLE_SLICE: &str = "Ganzer Slice";
+
 const ROUTE_SELECTOR: f32 = 112.0;
 /// Size of a drawn envelope or LFO curve, which sits beside its controls.
 const CURVE_SIZE: (f32, f32) = (150.0, 58.0);
@@ -390,23 +393,31 @@ fn mode_controls(ui: &mut Ui, cell: &mut PerformanceCell) -> bool {
 
     ui.horizontal(|ui| {
         if cell.playback.mode.uses_division() {
-            let divisions: Vec<&str> = Division::ALL
-                .iter()
-                .map(|division| division.label())
-                .collect();
-            let selected = Division::ALL
-                .iter()
-                .position(|division| *division == cell.playback.division)
-                .unwrap_or(0);
+            // The whole slice sits at the top of the same list rather than in
+            // a switch beside it: how long one pass lasts is one decision, and
+            // "the chop" is one of its answers.
+            let mut labels: Vec<&str> = vec![WHOLE_SLICE];
+            labels.extend(Division::ALL.iter().map(|division| division.label()));
+            let selected = if cell.playback.cycle_whole_slice {
+                0
+            } else {
+                Division::ALL
+                    .iter()
+                    .position(|division| *division == cell.playback.division)
+                    .map_or(0, |index| index + 1)
+            };
             if let Some(index) = dropdown(
                 ui,
                 &THEME,
                 "mode-division",
-                &divisions,
+                &labels,
                 selected,
                 ROUTE_SELECTOR,
             ) {
-                cell.playback.division = Division::ALL[index];
+                cell.playback.cycle_whole_slice = index == 0;
+                if let Some(division) = index.checked_sub(1).and_then(|i| Division::ALL.get(i)) {
+                    cell.playback.division = *division;
+                }
                 changed = true;
             }
         }

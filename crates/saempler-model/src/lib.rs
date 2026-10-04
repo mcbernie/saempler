@@ -7,6 +7,7 @@
 mod cell;
 mod effect;
 mod modifier;
+mod modifier_settings;
 mod modulation;
 mod project;
 mod slice;
@@ -22,6 +23,7 @@ pub use effect::{
 pub use modifier::{
     default_layout, Modifier, ModifierAssignment, ModifierMode, MODIFIER_BASE_NOTE, MODIFIER_COUNT,
 };
+pub use modifier_settings::{ModifierSettings, MAX_HALF_TIME_RATE, MIN_HALF_TIME_RATE};
 pub use modulation::{
     default_routes, Division, EnvelopeDefinition, LfoDefinition, LfoShape, ModDestination,
     ModSource, ModulationRoute, DESTINATION_COUNT, ENVELOPE_COUNT, LFO_COUNT, MAX_ROUTES,

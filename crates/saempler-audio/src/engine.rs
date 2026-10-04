@@ -259,6 +259,9 @@ impl Engine {
                     // loop would never end.
                     self.preview_left = (PREVIEW_SECONDS * self.sample_rate) as u64;
                 }
+                EngineCommand::SetModifierSettings(settings) => {
+                    self.modifiers.set_settings(settings);
+                }
                 EngineCommand::SetSends(sends) => {
                     self.sends = sends;
                     self.apply_sends();
@@ -423,6 +426,11 @@ impl Engine {
         self.automation[slot.min(AUTOMATION_SLOTS)]
     }
 
+    /// How hard each playback modifier hits, for tests.
+    pub fn modifier_settings(&self) -> saempler_model::ModifierSettings {
+        self.modifiers.settings()
+    }
+
     /// The send settings the engine is running from.
     ///
     /// For tests and inspection: the engine is handed its settings and keeps
@@ -513,7 +521,7 @@ impl Engine {
     /// Publish where every voice is reading.
     fn publish_playheads(&self) {
         for (slot, voice) in self.voices.iter().enumerate() {
-            self.meters.store_playhead(slot, voice.active_position());
+            self.meters.store_playhead(slot, voice.active_at());
         }
     }
 
@@ -1109,11 +1117,17 @@ mod tests {
         wet.engine.note_on(60, 1.0);
         let soaked = peak(&mut wet.engine, 4_800);
 
-        // Everything into everything should colour the sound, not bury it.
-        // At the old settings this came back several times the dry level.
+        // The extreme: every send fed at full from one cell, measured on a
+        // constant, which is the worst case for four wet paths summing. What
+        // this guards against is an effect that is internally many times
+        // louder than its level says, not the user asking for a lot of effect.
         assert!(
-            soaked < plain * 2.5,
+            soaked < plain * 4.0,
             "the sends drowned the dry signal: {plain} -> {soaked}"
+        );
+        assert!(
+            soaked > plain * 1.5,
+            "the sends were not heard at all: {plain} -> {soaked}"
         );
     }
 
@@ -2300,14 +2314,15 @@ mod tests {
         h.engine.note_on(60, 1.0);
         render(&mut h.engine, 2_400);
         h.engine.note_on(note, 1.0);
-        render(&mut h.engine, 24_000);
+        // Partway into the stop, which is one beat by default.
+        render(&mut h.engine, 6_000);
         let braked_start = h.meters.playheads().next().expect("sounding");
         render(&mut h.engine, 4_800);
         let braked_end = h.meters.playheads().next().expect("sounding");
         let braked_step = braked_end - braked_start;
 
         h.engine.note_off(note);
-        render(&mut h.engine, 12_000);
+        render(&mut h.engine, 6_000);
         let freed_start = h.meters.playheads().next().expect("sounding");
         render(&mut h.engine, 4_800);
         let freed_step = h.meters.playheads().next().expect("sounding") - freed_start;

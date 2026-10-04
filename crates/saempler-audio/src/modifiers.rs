@@ -1,4 +1,4 @@
-use saempler_model::{Modifier, ModifierMode, MODIFIER_COUNT};
+use saempler_model::{Division, Modifier, ModifierMode, ModifierSettings, MODIFIER_COUNT};
 
 use crate::command::CellSpec;
 
@@ -15,11 +15,24 @@ pub struct ModifierState {
     active: [bool; MODIFIER_COUNT],
     /// Armed by a one shot, to be used and cleared by the next trigger.
     armed: [bool; MODIFIER_COUNT],
+    /// How hard each gesture hits. Set from the project, read per trigger.
+    settings: ModifierSettings,
 }
 
 impl ModifierState {
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Take new settings. Already sounding notes keep what they were started
+    /// with; the next trigger uses these.
+    pub fn set_settings(&mut self, settings: ModifierSettings) {
+        self.settings = settings.sanitized();
+    }
+
+    /// The settings in force.
+    pub fn settings(&self) -> ModifierSettings {
+        self.settings
     }
 
     /// Whether a modifier will affect the next performance note.
@@ -108,22 +121,24 @@ impl ModifierState {
         sample_rate: f32,
         engaged: impl Fn(&Self, Modifier) -> bool,
     ) -> CellSpec {
+        let settings = self.settings;
+
         if engaged(self, Modifier::Reverse) {
             spec.reverse = !spec.reverse;
         }
         if engaged(self, Modifier::HalfTime) {
-            spec.rate *= 0.5;
+            spec.rate *= settings.half_time_rate;
         }
         // Stutter and repeat are the same mechanism at different lengths: a
         // loop taken from the trigger point. Only the shorter one survives if
         // both are engaged, because that is the one you can still hear.
         if engaged(self, Modifier::Stutter) {
-            spec.loop_frames = division_frames(tempo, sample_rate, 16);
+            spec.loop_frames = note_frames(tempo, sample_rate, settings.stutter_division);
         } else if engaged(self, Modifier::Repeat) {
-            spec.loop_frames = division_frames(tempo, sample_rate, 8);
+            spec.loop_frames = note_frames(tempo, sample_rate, settings.repeat_division);
         }
         if engaged(self, Modifier::Brake) {
-            spec.tape_stop_frames = division_frames(tempo, sample_rate, 1);
+            spec.tape_stop_frames = note_frames(tempo, sample_rate, settings.brake_division);
         }
 
         // An effect modifier opens its send all the way, whatever the cell
@@ -164,6 +179,18 @@ impl ModifierState {
 /// A division of 4 is a quarter note, 16 a sixteenth. Clamped so that a
 /// missing or absurd tempo cannot produce a loop of zero frames, which would
 /// leave a voice reading the same sample forever.
+pub fn note_frames(tempo: f64, sample_rate: f32, division: Division) -> u64 {
+    let tempo = if tempo.is_finite() && tempo > 1.0 {
+        tempo
+    } else {
+        DEFAULT_TEMPO
+    };
+    // Four beats to a whole note, and sixty seconds to that many beats.
+    let seconds = division.whole_notes() as f64 * 240.0 / tempo;
+    ((seconds * sample_rate.max(1.0) as f64) as u64).max(1)
+}
+
+/// Frames in one note value, named by its denominator over a whole note.
 pub fn division_frames(tempo: f64, sample_rate: f32, division: u32) -> u64 {
     let tempo = if tempo.is_finite() && tempo > 1.0 {
         tempo
@@ -333,14 +360,71 @@ mod tests {
     }
 
     #[test]
-    fn brake_sets_a_stop_over_one_whole_note() {
+    fn a_brake_stops_over_one_beat_by_default() {
         let mut state = ModifierState::new();
         state.press(Modifier::Brake, ModifierMode::Hold);
 
         let frames = state.apply(spec(), 120.0, SAMPLE_RATE).tape_stop_frames;
 
-        // One whole note at 120 bpm is two seconds.
-        assert!((frames as i64 - 96_000).abs() < 100, "{frames}");
+        // One beat at 120 bpm is half a second.
+        assert!((frames as i64 - 24_000).abs() < 100, "{frames}");
+    }
+
+    #[test]
+    fn a_brake_can_be_set_shorter_and_longer() {
+        // The point of the setting: a stop over a bar is a tape machine, over
+        // a sixteenth it is a stumble, and which one is wanted is taste.
+        let mut quick = ModifierState::new();
+        quick.set_settings(ModifierSettings {
+            brake_division: Division::Sixteenth,
+            ..ModifierSettings::default()
+        });
+        quick.press(Modifier::Brake, ModifierMode::Hold);
+
+        let mut slow = ModifierState::new();
+        slow.set_settings(ModifierSettings {
+            brake_division: Division::OneBar,
+            ..ModifierSettings::default()
+        });
+        slow.press(Modifier::Brake, ModifierMode::Hold);
+
+        let fast = quick.apply(spec(), 120.0, SAMPLE_RATE).tape_stop_frames;
+        let gentle = slow.apply(spec(), 120.0, SAMPLE_RATE).tape_stop_frames;
+
+        assert!(fast * 4 < gentle, "{fast} vs {gentle}");
+    }
+
+    #[test]
+    fn the_stutter_and_repeat_lengths_follow_their_settings() {
+        let mut state = ModifierState::new();
+        state.set_settings(ModifierSettings {
+            stutter_division: Division::SixtyFourth,
+            repeat_division: Division::Quarter,
+            ..ModifierSettings::default()
+        });
+
+        state.press(Modifier::Stutter, ModifierMode::Hold);
+        let stutter = state.apply(spec(), 120.0, SAMPLE_RATE).loop_frames;
+        state.release(Modifier::Stutter, ModifierMode::Hold);
+
+        state.press(Modifier::Repeat, ModifierMode::Hold);
+        let repeat = state.apply(spec(), 120.0, SAMPLE_RATE).loop_frames;
+
+        assert!(stutter < repeat, "{stutter} vs {repeat}");
+        // A quarter at 120 bpm is half a second.
+        assert!((repeat as i64 - 24_000).abs() < 100, "{repeat}");
+    }
+
+    #[test]
+    fn half_time_follows_its_setting() {
+        let mut state = ModifierState::new();
+        state.set_settings(ModifierSettings {
+            half_time_rate: 0.25,
+            ..ModifierSettings::default()
+        });
+        state.press(Modifier::HalfTime, ModifierMode::Hold);
+
+        assert_eq!(state.apply(spec(), 120.0, SAMPLE_RATE).rate, 0.25);
     }
 
     #[test]

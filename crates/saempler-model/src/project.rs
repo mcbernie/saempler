@@ -6,6 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::cell::{is_black_key, CellId, PerformanceCell, PlaybackSettings};
 use crate::effect::{CellEffects, SendRack};
 use crate::modifier::{default_layout, Modifier, ModifierAssignment, ModifierMode};
+use crate::modifier_settings::ModifierSettings;
 use crate::modulation::{EnvelopeDefinition, LfoDefinition};
 use crate::slice::{Slice, SliceId};
 
@@ -69,6 +70,9 @@ pub struct Project {
     /// The sends, shared by every voice.
     #[serde(default)]
     sends: SendRack,
+    /// How hard each playback modifier hits.
+    #[serde(default)]
+    modifier_settings: ModifierSettings,
     /// Whether chops are kept off the raised keys.
     ///
     /// On a white-keys-only layout a run of chops lines up with the scale
@@ -580,6 +584,15 @@ impl Project {
         self.modifier_for_note(note).is_none() && !(self.white_keys_only && is_black_key(note))
     }
 
+    /// How hard each playback modifier hits.
+    pub fn modifier_settings(&self) -> ModifierSettings {
+        self.modifier_settings
+    }
+
+    pub fn set_modifier_settings(&mut self, settings: ModifierSettings) {
+        self.modifier_settings = settings.sanitized();
+    }
+
     /// The sends every voice shares.
     pub fn sends(&self) -> SendRack {
         self.sends
@@ -740,6 +753,7 @@ impl Default for Project {
             cell_selection: None,
             modifiers: default_layout(),
             sends: SendRack::default(),
+            modifier_settings: ModifierSettings::default(),
             white_keys_only: false,
             next_slice_id: 0,
             next_cell_id: 0,
@@ -1885,6 +1899,7 @@ mod tests {
                 pitch_semitones: -7.0,
                 gain: 0.8,
                 mode: PlaybackMode::Loop,
+                cycle_whole_slice: false,
                 division: Division::Sixteenth,
                 collapse: 0.75,
                 release_trigger: true,
@@ -1978,6 +1993,13 @@ mod tests {
             drive_shape: DriveShape::Hard,
         });
 
+        project.set_modifier_settings(ModifierSettings {
+            stutter_division: Division::ThirtySecond,
+            repeat_division: Division::Half,
+            half_time_rate: 0.25,
+            brake_division: Division::OneBar,
+        });
+
         let modifier_note = project.modifiers()[0].note;
         project.set_modifier_mode(modifier_note, ModifierMode::Toggle);
         project.move_modifier(modifier_note, 36);
@@ -2007,6 +2029,7 @@ mod tests {
     #[test]
     fn the_restored_cells_keep_their_own_settings() {
         use crate::cell::PlaybackMode;
+        use crate::modulation::Division;
 
         // Spelled out rather than left to the equality above, so a failure
         // says which setting was lost instead of printing two whole projects.
@@ -2024,6 +2047,7 @@ mod tests {
         assert_eq!(first.playback.mode, PlaybackMode::Loop);
         assert_eq!(first.playback.collapse, 0.75);
         assert!(first.playback.release_trigger);
+        assert!(!first.playback.cycle_whole_slice);
         assert!(first.effects.filter_on);
         assert_eq!(first.effects.cutoff_hz, 900.0);
         assert_eq!(first.effects.drive, 9.0);
@@ -2045,6 +2069,8 @@ mod tests {
 
         assert!(project.white_keys_only());
         assert_eq!(project.sends().drive, 12.0);
+        assert_eq!(project.modifier_settings().half_time_rate, 0.25);
+        assert_eq!(project.modifier_settings().brake_division, Division::OneBar);
         assert_eq!(project.sends().normal.delay_seconds, 0.33);
         assert_eq!(project.sends().driven.flanger_level, 1.0);
         assert_eq!(
@@ -2063,6 +2089,10 @@ mod tests {
         .expect("missing fields must fall back to defaults");
 
         assert_eq!(restored.project.sends(), SendRack::default());
+        assert_eq!(
+            restored.project.modifier_settings(),
+            ModifierSettings::default()
+        );
         assert!(!restored.project.white_keys_only());
     }
 

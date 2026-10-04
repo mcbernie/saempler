@@ -11,6 +11,22 @@ pub const NO_PLAYHEAD: u64 = u64::MAX;
 /// playhead for each, not just for the newest.
 pub const PLAYHEAD_SLOTS: usize = 16;
 
+/// Bits a frame position is given inside a published playhead.
+///
+/// The note rides in the top eight. Fifty-six bits is more audio than any
+/// sample will ever hold, so the two never collide, and one atomic per voice
+/// stays one atomic per voice.
+const FRAME_BITS: u32 = 56;
+const FRAME_MASK: u64 = (1 << FRAME_BITS) - 1;
+
+fn pack(note: u8, frame: u64) -> u64 {
+    ((note as u64) << FRAME_BITS) | (frame & FRAME_MASK)
+}
+
+fn unpack(packed: u64) -> (u8, u64) {
+    ((packed >> FRAME_BITS) as u8, packed & FRAME_MASK)
+}
+
 /// Values published by the audio thread for display in the user interface.
 ///
 /// Floats are stored as their bit patterns in [`AtomicU32`] so that no lock is
@@ -152,9 +168,13 @@ impl Meters {
     ///
     /// Slots beyond [`PLAYHEAD_SLOTS`] are ignored rather than wrapping, so a
     /// larger voice count cannot silently overwrite another voice's position.
-    pub fn store_playhead(&self, slot: usize, frame: Option<u64>) {
+    pub fn store_playhead(&self, slot: usize, position: Option<(u8, u64)>) {
         if let Some(cell) = self.playheads.get(slot) {
-            cell.store(frame.unwrap_or(NO_PLAYHEAD), Ordering::Relaxed);
+            let packed = match position {
+                Some((note, frame)) => pack(note, frame),
+                None => NO_PLAYHEAD,
+            };
+            cell.store(packed, Ordering::Relaxed);
         }
     }
 
@@ -170,10 +190,20 @@ impl Meters {
     /// Borrows rather than collecting, so a caller that only wants to know
     /// whether any voice is inside a region pays nothing.
     pub fn playheads(&self) -> impl Iterator<Item = u64> + '_ {
+        self.voices().map(|(_, frame)| frame)
+    }
+
+    /// Which note each sounding voice is playing, and where it is reading.
+    ///
+    /// The note matters wherever one region can be played by more than one
+    /// key: two cells may share a slice, and a position alone cannot say which
+    /// of them is sounding.
+    pub fn voices(&self) -> impl Iterator<Item = (u8, u64)> + '_ {
         self.playheads
             .iter()
             .map(|cell| cell.load(Ordering::Relaxed))
-            .filter(|frame| *frame != NO_PLAYHEAD)
+            .filter(|packed| *packed != NO_PLAYHEAD)
+            .map(unpack)
     }
 
     /// Whether any voice is sounding, without reading every slot twice.
@@ -228,7 +258,7 @@ mod tests {
     fn a_playhead_distinguishes_frame_zero_from_silence() {
         let meters = Meters::new();
 
-        meters.store_playhead(0, Some(0));
+        meters.store_playhead(0, Some((60, 0)));
         assert_eq!(meters.playheads().collect::<Vec<_>>(), vec![0]);
 
         meters.store_playhead(0, None);
@@ -239,9 +269,9 @@ mod tests {
     fn every_sounding_voice_gets_its_own_position() {
         let meters = Meters::new();
 
-        meters.store_playhead(0, Some(100));
-        meters.store_playhead(1, Some(50_000));
-        meters.store_playhead(3, Some(7));
+        meters.store_playhead(0, Some((60, 100)));
+        meters.store_playhead(1, Some((60, 50_000)));
+        meters.store_playhead(3, Some((60, 7)));
 
         let mut positions: Vec<u64> = meters.playheads().collect();
         positions.sort_unstable();
@@ -253,7 +283,7 @@ mod tests {
     fn clearing_removes_every_position() {
         let meters = Meters::new();
         for slot in 0..PLAYHEAD_SLOTS {
-            meters.store_playhead(slot, Some(slot as u64));
+            meters.store_playhead(slot, Some((60, slot as u64)));
         }
         assert_eq!(meters.playheads().count(), PLAYHEAD_SLOTS);
 
@@ -263,10 +293,38 @@ mod tests {
     }
 
     #[test]
+    fn two_voices_on_one_region_are_told_apart_by_their_notes() {
+        // A copied cell plays the same slice from the same frames. Only the
+        // note says which of the two is sounding, so the interface cannot
+        // light the right pad without it.
+        let meters = Meters::new();
+
+        meters.store_playhead(0, Some((60, 1_000)));
+        meters.store_playhead(1, Some((64, 1_000)));
+
+        let mut voices: Vec<(u8, u64)> = meters.voices().collect();
+        voices.sort();
+        assert_eq!(voices, vec![(60, 1_000), (64, 1_000)]);
+    }
+
+    #[test]
+    fn a_position_survives_riding_next_to_its_note() {
+        // Packing must not cost range: a frame far past anything a real sample
+        // holds still has to come back unchanged.
+        let meters = Meters::new();
+        let far = 1_u64 << 40;
+
+        meters.store_playhead(0, Some((127, far)));
+
+        assert_eq!(meters.voices().next(), Some((127, far)));
+        assert_eq!(meters.playheads().next(), Some(far));
+    }
+
+    #[test]
     fn a_slot_beyond_the_published_range_is_ignored() {
         let meters = Meters::new();
 
-        meters.store_playhead(PLAYHEAD_SLOTS + 5, Some(42));
+        meters.store_playhead(PLAYHEAD_SLOTS + 5, Some((60, 42)));
 
         assert_eq!(meters.playheads().count(), 0);
     }

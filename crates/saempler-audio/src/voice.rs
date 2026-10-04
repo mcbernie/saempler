@@ -145,8 +145,9 @@ impl Voice {
     }
 
     /// Where this voice is reading, or `None` while it is idle.
-    pub fn active_position(&self) -> Option<u64> {
-        self.active.then(|| self.position())
+    /// The note this voice was started by, and where it is reading.
+    pub fn active_at(&self) -> Option<(u8, u64)> {
+        self.active.then(|| (self.note, self.position()))
     }
 
     /// The cell this voice plays, before modifiers.
@@ -349,7 +350,10 @@ impl Voice {
             return;
         }
 
-        let length = if self.spec.mode.uses_division() {
+        // A zero cycle means the pass is the whole slice: repeat and collapse
+        // then start from everything the cell holds, and collapse folds it
+        // inwards from there rather than from a sliver at the front.
+        let length = if self.spec.mode.uses_division() && self.spec.cycle_whole_notes > 0.0 {
             self.cycle_frames()
         } else {
             self.spec.bounds.len_frames() as f64
@@ -1401,6 +1405,55 @@ mod tests {
         assert!(
             (passes[1] as f64 - passes[0] as f64 * 0.5).abs() < 2.0,
             "a factor of a half should halve the pass: {passes:?}"
+        );
+    }
+
+    #[test]
+    fn a_collapse_starts_from_the_whole_slice() {
+        use saempler_model::PlaybackMode;
+
+        // The complaint this fixes: a collapse that begins as a note value
+        // never plays the rest of the chop, so most of the cell is silent.
+        let buffer = dc_buffer(20_000);
+        let mut voice = Voice::default();
+        start(
+            &mut voice,
+            CellSpec {
+                mode: PlaybackMode::Collapse,
+                cycle_whole_notes: 0.0,
+                ..spec(0, 16_000)
+            },
+        );
+        voice.next_frame(&buffer, &idle());
+
+        assert_eq!(
+            voice.loop_length() as u64,
+            16_000,
+            "the first pass has to be the whole slice"
+        );
+    }
+
+    #[test]
+    fn a_note_value_still_shortens_the_pass() {
+        use saempler_model::PlaybackMode;
+
+        let buffer = dc_buffer(20_000);
+        let mut voice = Voice::default();
+        start(
+            &mut voice,
+            CellSpec {
+                mode: PlaybackMode::Repeat,
+                // An eighth at 120 bpm is a quarter second: 12_000 frames.
+                cycle_whole_notes: 0.125,
+                ..spec(0, 16_000)
+            },
+        );
+        voice.next_frame(&buffer, &idle());
+
+        let length = voice.loop_length() as u64;
+        assert!(
+            (11_000..13_000).contains(&length),
+            "the note value was ignored: {length}"
         );
     }
 

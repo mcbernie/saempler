@@ -1,6 +1,8 @@
 use std::sync::Arc;
 
-use saempler_model::{CellEffects, Modifier, ModifierMode, PlaybackMode, SendRack};
+use saempler_model::{
+    CellEffects, Modifier, ModifierMode, ModifierSettings, PlaybackMode, SendRack,
+};
 
 use crate::automation::NO_SLOT;
 
@@ -71,6 +73,8 @@ pub struct CellSpec {
     pub mode: PlaybackMode,
     /// Length of one repeat or collapse pass, in whole notes. Turned into
     /// frames by the voice, which is where the tempo is known.
+    ///
+    /// Zero means the pass is the whole slice, which needs no tempo.
     pub cycle_whole_notes: f32,
     /// Factor the collapse loop is multiplied by on every pass.
     pub collapse: f32,
@@ -139,6 +143,8 @@ pub enum EngineCommand {
     Preview(CellSpec),
     /// Replace the settings of the shared sends.
     SetSends(SendRack),
+    /// Replace how hard each playback modifier hits.
+    SetModifierSettings(ModifierSettings),
     /// Release every sounding voice immediately.
     AllNotesOff,
 }

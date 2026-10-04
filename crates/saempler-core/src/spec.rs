@@ -31,7 +31,11 @@ pub fn cell_spec(project: &Project, cell: &PerformanceCell) -> Option<CellSpec> 
         loop_frames: 0,
         tape_stop_frames: 0,
         mode: playback.mode,
-        cycle_whole_notes: playback.division.whole_notes(),
+        cycle_whole_notes: if playback.cycle_whole_slice {
+            0.0
+        } else {
+            playback.division.whole_notes()
+        },
         collapse: playback.collapse,
         release_trigger: playback.release_trigger,
         effects: cell.effects.sanitized(),

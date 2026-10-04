@@ -1,9 +1,14 @@
 use nih_plug_egui::egui::{self, pos2, vec2, Align2, FontId, Id, Rect, Sense, Ui};
 use saempler_audio::EngineCommand;
-use saempler_model::{note_name, Modifier, ModifierMode, ProjectFile};
+use saempler_model::{
+    note_name, Division, Modifier, ModifierMode, ModifierSettings, ProjectFile, MAX_HALF_TIME_RATE,
+    MIN_HALF_TIME_RATE,
+};
 
-use crate::screens::main::{section_with, ViewState, THEME};
-use crate::widgets::{button, dropdown, icon_button, inset, lamp, Icon};
+use crate::screens::main::{hint_light, section_with, ViewState, THEME};
+use crate::widgets::{
+    button, dropdown, icon_button, inset, lamp, value_knob, Icon, KnobSpec, Taper, Unit,
+};
 
 /// Keys a modifier may be put on.
 ///
@@ -17,12 +22,15 @@ const CARD_WIDTH: f32 = 104.0;
 /// Height of one display card.
 const CARD_HEIGHT: f32 = 46.0;
 
-/// Push the modifier layout to the engine.
+/// Push the modifier layout and its settings to the engine.
 pub fn sync_modifiers(state: &ViewState<'_>, project: &ProjectFile) {
     let Ok(mut producer) = state.commands.lock() else {
         return;
     };
 
+    let _ = producer.push(EngineCommand::SetModifierSettings(
+        project.project.modifier_settings(),
+    ));
     let _ = producer.push(EngineCommand::ClearModifiers);
     for entry in project.project.modifiers() {
         let _ = producer.push(EngineCommand::SetModifier {
@@ -30,6 +38,59 @@ pub fn sync_modifiers(state: &ViewState<'_>, project: &ProjectFile) {
             assignment: Some((entry.modifier, entry.mode)),
         });
     }
+}
+
+/// Width of a note value selector in the settings row.
+const SETTING_WIDTH: f32 = 86.0;
+
+/// How long each gesture lasts, and how far half time slows down.
+///
+/// Reverse is absent on purpose: backwards is backwards, and there is nothing
+/// about it to set.
+fn settings_row(ui: &mut Ui, settings: &mut ModifierSettings) -> bool {
+    let mut changed = false;
+
+    ui.horizontal(|ui| {
+        for (label, division) in [
+            ("Stutter", &mut settings.stutter_division),
+            ("Repeat", &mut settings.repeat_division),
+            ("Brake", &mut settings.brake_division),
+        ] {
+            ui.vertical(|ui| {
+                hint_light(ui, label);
+                let labels: Vec<&str> = Division::ALL.iter().map(|d| d.label()).collect();
+                let selected = Division::ALL
+                    .iter()
+                    .position(|candidate| candidate == division)
+                    .unwrap_or(0);
+                let id = format!("modifier-{label}");
+                if let Some(index) = dropdown(ui, &THEME, &id, &labels, selected, SETTING_WIDTH) {
+                    *division = Division::ALL[index];
+                    changed = true;
+                }
+            });
+        }
+
+        ui.vertical(|ui| {
+            hint_light(ui, "Half-Time");
+            changed |= value_knob(
+                ui,
+                &THEME,
+                KnobSpec {
+                    label: "Rate",
+                    range: (MIN_HALF_TIME_RATE, MAX_HALF_TIME_RATE),
+                    default: 0.5,
+                    taper: Taper::Logarithmic,
+                    unit: Unit::Multiplier,
+                    diameter: 34.0,
+                    modulated: None,
+                },
+                &mut settings.half_time_rate,
+            );
+        });
+    });
+
+    changed
 }
 
 /// What the editor window asked for this frame.
@@ -42,6 +103,8 @@ enum Edit {
     Clone(u8),
     Add,
     Reset,
+    /// Change how hard the gestures hit.
+    Settings(ModifierSettings),
 }
 
 /// Memory key for whether the editor window is open.
@@ -235,6 +298,13 @@ fn editor_window(ui: &Ui, state: &ViewState<'_>, engaged: u32) -> bool {
                     edit = Some(Edit::Reset);
                 }
             });
+
+            ui.add_space(THEME.spacing_md);
+            hint_light(ui, "WIE HART SIE ZUPACKEN");
+            let mut settings = project.project.modifier_settings();
+            if settings_row(ui, &mut settings) {
+                edit = Some(Edit::Settings(settings));
+            }
         });
 
     if let Some(edit) = edit {
@@ -248,6 +318,10 @@ fn editor_window(ui: &Ui, state: &ViewState<'_>, engaged: u32) -> bool {
                 Edit::Add => add_modifier(&mut project),
                 Edit::Reset => {
                     project.project.reset_modifiers();
+                    true
+                }
+                Edit::Settings(settings) => {
+                    project.project.set_modifier_settings(settings);
                     true
                 }
             };

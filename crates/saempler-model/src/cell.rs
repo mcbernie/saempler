@@ -100,7 +100,14 @@ pub struct PlaybackSettings {
     /// Level of this cell, as linear gain.
     pub gain: f32,
     pub mode: PlaybackMode,
-    /// Length of one pass in repeat and collapse.
+    /// Whether one pass of repeat or collapse is the whole slice.
+    ///
+    /// On by default. A collapse is the sound of a phrase folding in on
+    /// itself, which it can only do if it starts out as the whole phrase; cut
+    /// to a note value from the first pass, the rest of the chop is never
+    /// heard at all.
+    pub cycle_whole_slice: bool,
+    /// Length of one pass in repeat and collapse, when it is not the slice.
     pub division: Division,
     /// Factor the collapse loop is multiplied by on every pass.
     pub collapse: f32,
@@ -117,6 +124,7 @@ impl Default for PlaybackSettings {
             pitch_semitones: 0.0,
             gain: 1.0,
             mode: PlaybackMode::Gate,
+            cycle_whole_slice: true,
             division: Division::Sixteenth,
             collapse: 0.75,
             release_trigger: false,

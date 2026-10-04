@@ -359,6 +359,9 @@ fn apply_note_event(engine: &mut Engine, event: &NoteEvent<()>) {
 /// caller that did so pushes it.
 fn push_project(commands: &mut CommandProducer, project: &Project) {
     let _ = commands.push(EngineCommand::SetSends(project.sends()));
+    let _ = commands.push(EngineCommand::SetModifierSettings(
+        project.modifier_settings(),
+    ));
 
     let _ = commands.push(EngineCommand::ClearCells);
     for cell in project.cells() {

@@ -105,11 +105,7 @@ pub struct Phaser {
     phase_delta: f32,
     depth: f32,
     feedback: f32,
-    /// Undoes the gain the feedback loop adds.
-    ///
-    /// Without it, turning the resonance up turns the effect up, and every
-    /// setting has to be matched by a trip to the level control. An effect
-    /// should change the sound at the level it was set to.
+    /// Undoes the gain the feedback loop adds. See [`makeup`].
     makeup: f32,
     sample_rate: f32,
 }
@@ -137,9 +133,7 @@ impl Phaser {
         self.phase_delta = rate / self.sample_rate.max(1.0);
         self.depth = finite_or(depth, 0.7).clamp(0.0, 1.0);
         self.feedback = finite_or(feedback, 0.4).clamp(0.0, 0.9);
-        // The chain has unity magnitude, so the loop's gain is the whole of
-        // what the feedback adds.
-        self.makeup = 1.0 - self.feedback;
+        self.makeup = makeup(self.feedback);
     }
 
     /// Process one frame, returning the wet signal alone.
@@ -173,6 +167,22 @@ impl Phaser {
     }
 }
 
+/// What to multiply a feedback effect's output by to keep its level.
+///
+/// A loop fed back at `f` repeats what went in, quieter each time. Those
+/// repeats overlap, so the loop is louder than its input, and turning the
+/// feedback up would otherwise be a second volume control.
+///
+/// The correction is by energy, `sqrt(1 - f²)`, not by peak, `1 - f`. The
+/// repeats are spread over time rather than stacked on one sample, so peak
+/// correction takes out far more than the loop put in: at a reverb's default
+/// size it is eleven decibels too much, which is the difference between an
+/// effect and a rumour of one.
+fn makeup(feedback: f32) -> f32 {
+    let feedback = feedback.abs().clamp(0.0, 0.999);
+    (1.0 - feedback * feedback).sqrt()
+}
+
 /// Longest a flanger's delay may sweep to, in milliseconds.
 ///
 /// Past about fifteen the comb's notches are close enough together to read as
@@ -194,7 +204,7 @@ pub struct Flanger {
     phase_delta: f32,
     depth: f32,
     feedback: f32,
-    /// Undoes the gain the comb's feedback adds, as in the phaser.
+    /// Undoes the gain the comb's feedback adds. See [`makeup`].
     makeup: f32,
     sample_rate: f32,
 }
@@ -228,7 +238,7 @@ impl Flanger {
         self.depth = finite_or(depth, 0.8).clamp(0.0, 1.0);
         // Short of one: at one the comb never decays.
         self.feedback = finite_or(feedback, 0.5).clamp(-0.95, 0.95);
-        self.makeup = 1.0 - self.feedback.abs();
+        self.makeup = makeup(self.feedback);
     }
 
     /// Process one frame, returning the wet signal alone.
@@ -276,11 +286,7 @@ pub struct Reverb {
     allpass_frames: [[f32; ALLPASS_LENGTHS.len()]; 2],
     feedback: f32,
     damping: f32,
-    /// Undoes the gain the combs add.
-    ///
-    /// A comb fed back at `f` has a standing gain of `1 / (1 - f)`, so a big
-    /// room was many times louder than a small one for no reason anybody
-    /// asked for.
+    /// Undoes the gain the combs add. See [`makeup`].
     makeup: f32,
 }
 
@@ -328,7 +334,7 @@ impl Reverb {
         // Short of one: at one the combs never decay.
         self.feedback = 0.7 + size * 0.28;
         self.damping = finite_or(damping, 0.4).clamp(0.0, 0.95);
-        self.makeup = 1.0 - self.feedback;
+        self.makeup = makeup(self.feedback);
     }
 
     /// Process one frame, returning the wet signal alone.
@@ -520,9 +526,15 @@ mod tests {
     }
 
     #[test]
-    fn an_effect_stays_near_the_level_it_was_given() {
-        // A send is mixed back in at its own level, so an effect that comes
-        // out many times louder than it went in cannot be balanced by ear.
+    fn an_effect_comes_back_at_a_usable_level() {
+        // Both ends matter, and the floor is the one that gets missed: an
+        // effect that is too quiet is still there in the code, still shows a
+        // lit lamp and still passes every test that only checks it is not too
+        // loud. It is simply not in the sound.
+        //
+        // A steady tone is the hardest case for a comb, which reinforces at
+        // its own spacing, so the ceiling is generous. Real material sits well
+        // below it.
         let mut reverb = Reverb::default();
         reverb.prepare(RATE);
         reverb.set(0.6, 0.4);
@@ -532,6 +544,9 @@ mod tests {
         let mut flanger = Flanger::default();
         flanger.prepare(RATE);
         flanger.set(0.3, 0.8, 0.5);
+        let mut delay = Delay::default();
+        delay.prepare(RATE);
+        delay.set(0.25, 0.35, 6_000.0);
 
         for (name, peak) in [
             ("reverb", settled_peak(|input| reverb.process(input, input))),
@@ -540,8 +555,13 @@ mod tests {
                 "flanger",
                 settled_peak(|input| flanger.process(input, input)),
             ),
+            ("delay", settled_peak(|input| delay.process(input, input))),
         ] {
-            assert!(peak < 1.6, "{name} came back at {peak}");
+            assert!(
+                peak > 0.3,
+                "{name} came back at {peak}, which disappears under a mix"
+            );
+            assert!(peak < 2.0, "{name} came back at {peak}");
         }
     }
 

@@ -49,7 +49,7 @@ pub fn performance_section(ui: &mut Ui, state: &ViewState<'_>) {
             return;
         }
 
-        let playheads: Vec<u64> = state.meters.playheads().collect();
+        let sounding_notes: Vec<u8> = state.meters.voices().map(|(note, _)| note).collect();
         let mut edit: Option<PadEdit> = None;
 
         let dragged: Option<saempler_model::CellId> =
@@ -81,11 +81,10 @@ pub fn performance_section(ui: &mut Ui, state: &ViewState<'_>) {
                                 .position(|candidate| candidate.id == slice.id)
                         })
                         .unwrap_or(0);
-                    // A pad lights up while any voice is inside its slice, so
-                    // notes played together all light up at once.
-                    let sounding = slice
-                        .map(|slice| playheads.iter().any(|frame| slice.contains(*frame)))
-                        .unwrap_or(false);
+                    // By note rather than by position: a copied cell plays the
+                    // same slice, so a pad that lit for anything inside its
+                    // region lit for its twin as well.
+                    let sounding = sounding_notes.contains(&cell.midi_note);
 
                     let action = performance_pad(
                         ui,
