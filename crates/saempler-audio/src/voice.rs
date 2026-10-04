@@ -2,7 +2,7 @@ use saempler_dsp::{FilterMode, SaturationKind, Saturator, Svf};
 use saempler_model::{DriveShape, FilterShape, ModDestination, PlaybackMode};
 
 use crate::command::CellSpec;
-use crate::modulation::{Modulation, ModulationMonitor, PITCH_RANGE_SEMITONES};
+use crate::modulation::{Modulation, ModulationFrame, ModulationMonitor, PITCH_RANGE_SEMITONES};
 use crate::sample::SampleBuffer;
 
 /// Output frames a released brake takes to reach full speed again.
@@ -16,6 +16,20 @@ const MIN_LOOP_FRAMES: f64 = 32.0;
 
 /// How far a full-amount route to the loop length reaches, in octaves.
 const LOOP_RANGE_OCTAVES: f32 = 2.0;
+
+/// How far a full-amount route sweeps the cell filter, in octaves.
+///
+/// Four octaves either way covers the whole of the audible range from
+/// wherever the knob was left, which is what a sweep is expected to do.
+///
+/// Public because the interface draws where a knob has been moved to, and a
+/// second copy of these numbers there would be a second place to get the
+/// mark wrong.
+pub const CUTOFF_RANGE_OCTAVES: f32 = 4.0;
+/// How much resonance a full-amount route adds.
+pub const RESONANCE_RANGE: f32 = 8.0;
+/// How far a full-amount route pushes the drive, in octaves.
+pub const DRIVE_RANGE_OCTAVES: f32 = 2.0;
 
 /// A single sounding note.
 ///
@@ -73,6 +87,12 @@ pub struct Voice {
     /// One filter per channel, so the two sides stay in step.
     filter: [Svf; 2],
     saturator: Saturator,
+    /// Whether the matrix moves the filter or the drive on this voice.
+    ///
+    /// Recomputing filter coefficients costs a transcendental per channel per
+    /// frame. Worth it on a voice being swept, not worth it on the fifteen
+    /// others whose cutoff stands still.
+    effects_modulated: bool,
 }
 
 impl Default for Voice {
@@ -97,6 +117,7 @@ impl Default for Voice {
             spec: CellSpec::default(),
             filter: [Svf::default(); 2],
             saturator: Saturator::default(),
+            effects_modulated: false,
         }
     }
 }
@@ -464,6 +485,9 @@ impl Voice {
         // to work with, and the level is the last thing in the chain so that
         // turning a voice down turns down what it actually produced.
         let effects = self.spec.effects;
+        if self.effects_modulated {
+            self.modulate_effects(&modulation);
+        }
         let (mut left, mut right) = (left, right);
         if effects.filter_on {
             left = self.filter[0].process(left);
@@ -483,6 +507,35 @@ impl Voice {
     /// already sounding, which is the point of being able to edit while
     /// playing, and resetting here would click on every knob movement.
     fn apply_effects(&mut self) {
+        self.effects_modulated = ModDestination::ALL.iter().any(|destination| {
+            destination.is_effect() && self.spec.modulation.targets(*destination)
+        });
+
+        let effects = self.spec.effects;
+        self.set_effects(effects.cutoff_hz, effects.resonance, effects.drive);
+    }
+
+    /// Move the filter and the saturator to where this frame's modulation
+    /// puts them.
+    ///
+    /// The ranges are in octaves rather than in hertz, so a sweep covers the
+    /// same musical distance wherever the knob was left.
+    fn modulate_effects(&mut self, modulation: &ModulationFrame) {
+        let effects = self.spec.effects;
+        let cutoff = effects.cutoff_hz
+            * octaves(modulation.get(ModDestination::FilterCutoff) * CUTOFF_RANGE_OCTAVES);
+        let resonance =
+            effects.resonance + modulation.get(ModDestination::Resonance) * RESONANCE_RANGE;
+        let drive =
+            effects.drive * octaves(modulation.get(ModDestination::Drive) * DRIVE_RANGE_OCTAVES);
+        self.set_effects(cutoff, resonance, drive);
+    }
+
+    /// Point the filter and the saturator at one set of values.
+    ///
+    /// Out-of-range values are the DSP's to repair, which is why modulation
+    /// can run past the ends of the knobs without being clamped twice.
+    fn set_effects(&mut self, cutoff_hz: f32, resonance: f32, drive: f32) {
         let effects = self.spec.effects;
         let mode = match effects.filter_shape {
             FilterShape::LowPass => FilterMode::LowPass,
@@ -491,7 +544,7 @@ impl Voice {
             FilterShape::Notch => FilterMode::Notch,
         };
         for filter in &mut self.filter {
-            filter.set(mode, effects.cutoff_hz, effects.resonance, self.sample_rate);
+            filter.set(mode, cutoff_hz, resonance, self.sample_rate);
         }
 
         let kind = match effects.drive_shape {
@@ -499,7 +552,7 @@ impl Voice {
             DriveShape::Hard => SaturationKind::Hard,
             DriveShape::Tube => SaturationKind::Tube,
         };
-        self.saturator.set(kind, effects.drive);
+        self.saturator.set(kind, drive);
     }
 
     /// Send the playhead back to the far end when it leaves the loop region.
@@ -572,6 +625,11 @@ fn usable_loop(spec: CellSpec) -> u64 {
 /// Rate multiplier for a transposition in semitones.
 fn semitones(value: f32) -> f32 {
     2.0f32.powf(value / 12.0)
+}
+
+/// A factor from a distance in octaves.
+fn octaves(value: f32) -> f32 {
+    2.0f32.powf(value)
 }
 
 /// Left and right gain for a pan position from -1 to 1.
@@ -684,6 +742,185 @@ mod tests {
 
     fn start(voice: &mut Voice, spec: CellSpec) {
         voice.start(60, 1.0, 0, spec, spec, SAMPLE_RATE, TEMPO);
+    }
+
+    /// Frequency the filter tests listen at.
+    ///
+    /// Well inside the band and well above the lowest cutoff, so moving the
+    /// corner across it changes how much survives. Not at Nyquist: a bilinear
+    /// low-pass is exactly zero there whatever its cutoff, which measures the
+    /// transform rather than the filter.
+    const PROBE_HZ: f32 = 4_000.0;
+
+    /// A buffer holding a steady tone at [`PROBE_HZ`].
+    fn tone_buffer(frames: usize) -> SampleBuffer {
+        let step = std::f32::consts::TAU * PROBE_HZ / SAMPLE_RATE;
+        let data: Vec<f32> = (0..frames)
+            .map(|index| (index as f32 * step).sin())
+            .collect();
+        SampleBuffer::new(vec![data.clone(), data], 48_000)
+    }
+
+    /// Loudest the voice gets playing that tone.
+    fn brightness(spec: CellSpec, frames: usize) -> f32 {
+        let buffer = tone_buffer(frames + 1_000);
+        let mut voice = Voice::default();
+        start(&mut voice, spec);
+        // Past the attack, so the envelope is not what is being measured.
+        for _ in 0..500 {
+            voice.next_frame(&buffer);
+        }
+        (0..frames).fold(0.0f32, |loudest, _| {
+            let (left, _) = voice.next_frame(&buffer);
+            loudest.max(left.abs())
+        })
+    }
+
+    #[test]
+    fn a_route_to_the_cutoff_opens_the_filter() {
+        use saempler_model::CellEffects;
+
+        let effects = CellEffects {
+            filter_on: true,
+            // Far below the probe, so little of it survives unmodulated.
+            cutoff_hz: 200.0,
+            ..CellEffects::default()
+        };
+        let mut routes = default_routes();
+        routes.push(ModulationRoute {
+            source: ModSource::Velocity,
+            destination: ModDestination::FilterCutoff,
+            amount: 1.0,
+        });
+
+        let shut = brightness(
+            CellSpec {
+                effects,
+                ..spec(0, 20_000)
+            },
+            2_000,
+        );
+        let swept = brightness(
+            CellSpec {
+                effects,
+                modulation: modulation(&routes),
+                ..spec(0, 20_000)
+            },
+            2_000,
+        );
+
+        assert!(
+            swept > shut * 4.0,
+            "the route did not move the cutoff: {shut} -> {swept}"
+        );
+    }
+
+    #[test]
+    fn a_route_to_the_cutoff_can_close_the_filter_as_well() {
+        use saempler_model::CellEffects;
+
+        let effects = CellEffects {
+            filter_on: true,
+            cutoff_hz: 18_000.0,
+            ..CellEffects::default()
+        };
+        let mut routes = default_routes();
+        routes.push(ModulationRoute {
+            source: ModSource::Velocity,
+            destination: ModDestination::FilterCutoff,
+            amount: -1.0,
+        });
+
+        let open = brightness(
+            CellSpec {
+                effects,
+                ..spec(0, 20_000)
+            },
+            2_000,
+        );
+        let closed = brightness(
+            CellSpec {
+                effects,
+                modulation: modulation(&routes),
+                ..spec(0, 20_000)
+            },
+            2_000,
+        );
+
+        assert!(
+            closed < open * 0.5,
+            "a negative amount did not close it: {open} -> {closed}"
+        );
+    }
+
+    #[test]
+    fn a_route_to_the_drive_squashes_the_voice() {
+        use saempler_model::{CellEffects, DriveShape};
+
+        let effects = CellEffects {
+            drive_on: true,
+            drive_shape: DriveShape::Hard,
+            drive: 1.0,
+            ..CellEffects::default()
+        };
+        let mut routes = default_routes();
+        routes.push(ModulationRoute {
+            source: ModSource::Velocity,
+            destination: ModDestination::Drive,
+            amount: 1.0,
+        });
+
+        let buffer = SampleBuffer::new(vec![vec![0.2; 4_000], vec![0.2; 4_000]], 48_000);
+        let level = |spec: CellSpec| {
+            let mut voice = Voice::default();
+            start(&mut voice, spec);
+            for _ in 0..500 {
+                voice.next_frame(&buffer);
+            }
+            voice.next_frame(&buffer).0
+        };
+
+        let plain = level(CellSpec {
+            effects,
+            ..spec(0, 3_000)
+        });
+        let driven = level(CellSpec {
+            effects,
+            modulation: modulation(&routes),
+            ..spec(0, 3_000)
+        });
+
+        assert!(
+            driven > plain * 1.5,
+            "the route did not reach the drive: {plain} -> {driven}"
+        );
+    }
+
+    #[test]
+    fn a_cell_with_no_effect_route_is_unchanged() {
+        use saempler_model::CellEffects;
+
+        // The filter still has to be set from the knobs when nothing is
+        // routed at it: the per-frame path is skipped, not the settings.
+        let effects = CellEffects {
+            filter_on: true,
+            cutoff_hz: 200.0,
+            ..CellEffects::default()
+        };
+
+        let filtered = brightness(
+            CellSpec {
+                effects,
+                ..spec(0, 20_000)
+            },
+            2_000,
+        );
+        let unfiltered = brightness(spec(0, 20_000), 2_000);
+
+        assert!(
+            filtered < unfiltered * 0.5,
+            "the filter was not applied at all: {unfiltered} -> {filtered}"
+        );
     }
 
     #[test]

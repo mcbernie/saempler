@@ -31,3 +31,4 @@ pub use modulation::{
     division_hz, Modulation, ModulationFrame, ModulationSpec, RouteSpec, PITCH_RANGE_SEMITONES,
 };
 pub use sample::SampleBuffer;
+pub use voice::{CUTOFF_RANGE_OCTAVES, DRIVE_RANGE_OCTAVES, RESONANCE_RANGE};

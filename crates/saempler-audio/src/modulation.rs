@@ -70,6 +70,18 @@ impl ModulationSpec {
         }
         spec
     }
+
+    /// Whether anything actually reaches this destination.
+    ///
+    /// A route at zero counts as nothing: it is a line somebody left in the
+    /// matrix, not a modulation, and acting on it would cost work every
+    /// frame for a value that never moves.
+    pub fn targets(&self, destination: ModDestination) -> bool {
+        self.routes
+            .iter()
+            .flatten()
+            .any(|route| route.destination == destination && route.amount != 0.0)
+    }
 }
 
 /// Stage of a four stage envelope.

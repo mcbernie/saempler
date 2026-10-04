@@ -234,15 +234,24 @@ pub enum ModDestination {
     PlaybackRate,
     /// Length of the loop a stutter imposes.
     LoopLength,
+    /// The cell filter's corner, in octaves at full amount.
+    FilterCutoff,
+    /// The cell filter's resonance.
+    Resonance,
+    /// How hard the cell's saturator is driven.
+    Drive,
 }
 
 impl ModDestination {
-    pub const ALL: [ModDestination; 5] = [
+    pub const ALL: [ModDestination; 8] = [
         ModDestination::Volume,
         ModDestination::Pan,
         ModDestination::Pitch,
         ModDestination::PlaybackRate,
         ModDestination::LoopLength,
+        ModDestination::FilterCutoff,
+        ModDestination::Resonance,
+        ModDestination::Drive,
     ];
 
     pub fn label(self) -> &'static str {
@@ -252,7 +261,21 @@ impl ModDestination {
             ModDestination::Pitch => "Pitch",
             ModDestination::PlaybackRate => "Rate",
             ModDestination::LoopLength => "Loop Length",
+            ModDestination::FilterCutoff => "Cutoff",
+            ModDestination::Resonance => "Resonance",
+            ModDestination::Drive => "Drive",
         }
+    }
+
+    /// Whether this destination acts on the cell's effect chain.
+    ///
+    /// Those cost a coefficient update per frame, so a voice only recomputes
+    /// its filter when something is actually routed at one of them.
+    pub fn is_effect(self) -> bool {
+        matches!(
+            self,
+            ModDestination::FilterCutoff | ModDestination::Resonance | ModDestination::Drive
+        )
     }
 
     pub fn index(self) -> usize {
@@ -262,6 +285,9 @@ impl ModDestination {
             ModDestination::Pitch => 2,
             ModDestination::PlaybackRate => 3,
             ModDestination::LoopLength => 4,
+            ModDestination::FilterCutoff => 5,
+            ModDestination::Resonance => 6,
+            ModDestination::Drive => 7,
         }
     }
 }

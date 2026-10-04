@@ -1,8 +1,8 @@
 use nih_plug_egui::egui::{self, epaint::PathShape, pos2, vec2, Align2, FontId, Sense, Stroke, Ui};
 use saempler_model::{
     note_name, Division, EnvelopeDefinition, LfoDefinition, LfoShape, ModDestination, ModSource,
-    ModulationRoute, PerformanceCell, PlaybackMode, MAX_COLLAPSE, MAX_PITCH_SEMITONES, MAX_ROUTES,
-    MAX_SPEED, MIN_COLLAPSE, MIN_SPEED,
+    ModulationRoute, PerformanceCell, PlaybackMode, DESTINATION_COUNT, MAX_COLLAPSE,
+    MAX_PITCH_SEMITONES, MAX_ROUTES, MAX_SPEED, MIN_COLLAPSE, MIN_SPEED,
 };
 
 use crate::screens::main::{
@@ -75,7 +75,7 @@ pub fn cell_section(ui: &mut Ui, state: &ViewState<'_>) {
         changed |= modulation_section(ui, &mut cell, live);
     });
     region(ui, effects, |ui| {
-        changed |= crate::screens::effects::effects_section(ui, &mut cell, live.sounding);
+        changed |= crate::screens::effects::effects_section(ui, &mut cell, live);
     });
     changed |= matrix_window(ui, &mut cell);
 
@@ -211,7 +211,9 @@ pub(crate) struct Live {
     pub sounding: bool,
     pub envelopes: [f32; 2],
     pub lfos: [f32; 2],
-    pub destinations: [f32; 5],
+    /// Indexed by [`ModDestination::index`], so it has to hold every one of
+    /// them rather than the handful the interface happens to draw.
+    pub destinations: [f32; DESTINATION_COUNT],
 }
 
 impl Live {
@@ -221,13 +223,12 @@ impl Live {
             sounding,
             envelopes: [state.meters.envelope(0), state.meters.envelope(1)],
             lfos: [state.meters.lfo(0), state.meters.lfo(1)],
-            destinations: [
-                state.meters.destination(ModDestination::Volume),
-                state.meters.destination(ModDestination::Pan),
-                state.meters.destination(ModDestination::Pitch),
-                state.meters.destination(ModDestination::PlaybackRate),
-                state.meters.destination(ModDestination::LoopLength),
-            ],
+            destinations: std::array::from_fn(|index| {
+                ModDestination::ALL
+                    .iter()
+                    .find(|destination| destination.index() == index)
+                    .map_or(0.0, |destination| state.meters.destination(*destination))
+            }),
         }
     }
 
@@ -237,7 +238,7 @@ impl Live {
     }
 
     /// How much is reaching a destination, or nothing while silent.
-    fn reaching(self, destination: ModDestination) -> Option<f32> {
+    pub(crate) fn reaching(self, destination: ModDestination) -> Option<f32> {
         let amount = self.destinations[destination.index()];
         (self.sounding && amount.abs() > 0.001).then_some(amount)
     }
