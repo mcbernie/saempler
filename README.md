@@ -5,7 +5,7 @@
 [![Latest release](https://img.shields.io/github/v/release/mcbernie/saempler?sort=semver&label=release)](https://github.com/mcbernie/saempler/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/mcbernie/saempler/total?label=downloads)](https://github.com/mcbernie/saempler/releases)
 [![License](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
-[![Rust](https://img.shields.io/badge/rust-1.85%2B-dea584?logo=rust&logoColor=white)](https://www.rust-lang.org)
+[![Rust](https://img.shields.io/badge/rust-1.88%2B-dea584?logo=rust&logoColor=white)](https://www.rust-lang.org)
 [![Formats](https://img.shields.io/badge/formats-VST3%20%7C%20CLAP%20%7C%20standalone-1af0e6)](#building)
 [![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-c8f4f0)](#building)
 [![Sponsor](https://img.shields.io/github/sponsors/mcbernie?label=sponsor&logo=githubsponsors&color=ff2e7e)](https://github.com/sponsors/mcbernie)

@@ -12,6 +12,7 @@ runs:
       run: |
         sudo apt-get update
         sudo apt-get install --no-install-recommends -y \
-          libasound2-dev libgl-dev libjack-jackd2-dev libx11-xcb-dev \
-          libxcb1-dev libxcb-dri2-0-dev libxcb-icccm4-dev libxcursor-dev \
-          libxkbcommon-dev
+          libasound2-dev libgl-dev libjack-jackd2-dev libwayland-dev \
+          libx11-xcb-dev libxcb1-dev libxcb-dri2-0-dev libxcb-icccm4-dev \
+          libxcursor-dev libxi-dev libxkbcommon-dev libxkbcommon-x11-dev \
+          libxrandr-dev
