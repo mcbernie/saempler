@@ -166,7 +166,7 @@ pub fn performance_pad(ui: &mut Ui, theme: &Theme, view: &PadView<'_>) -> PadAct
         painter.rect_stroke(
             rect.expand(1.0),
             theme.radius_sm,
-            Stroke::new(1.0, color.gamma_multiply(0.35)),
+            Stroke::new(1.0_f32, color.gamma_multiply(0.35)),
             nih_plug_egui::egui::StrokeKind::Outside,
         );
         painter.rect_stroke(
@@ -244,7 +244,7 @@ fn draw_thumbnail(
             (top, bottom)
         };
 
-        painter.line_segment([pos2(x, top), pos2(x, bottom)], Stroke::new(1.0, color));
+        painter.line_segment([pos2(x, top), pos2(x, bottom)], Stroke::new(1.0_f32, color));
     }
 }
 

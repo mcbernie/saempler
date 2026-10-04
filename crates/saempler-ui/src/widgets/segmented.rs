@@ -90,7 +90,7 @@ pub fn segmented(ui: &mut Ui, theme: &Theme, labels: &[&str], selected: usize) -
                         pos2(bounds.min.x, bounds.min.y + 4.0),
                         pos2(bounds.min.x, bounds.max.y - 4.0),
                     ],
-                    Stroke::new(1.0, theme.outline),
+                    Stroke::new(1.0_f32, theme.outline),
                 );
             }
         } else {

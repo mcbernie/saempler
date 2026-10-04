@@ -101,20 +101,20 @@ fn bevel(shapes: &mut Vec<Shape>, theme: &Theme, rect: Rect) {
             pos2(inner.min.x + f32::from(radius.nw), inner.min.y + 0.5),
             pos2(inner.max.x - f32::from(radius.ne), inner.min.y + 0.5),
         ],
-        Stroke::new(1.0, Color32::from_white_alpha(42)),
+        Stroke::new(1.0_f32, Color32::from_white_alpha(42)),
     ));
     shapes.push(Shape::line_segment(
         [
             pos2(inner.min.x + f32::from(radius.sw), inner.max.y - 0.5),
             pos2(inner.max.x - f32::from(radius.se), inner.max.y - 0.5),
         ],
-        Stroke::new(1.0, Color32::from_black_alpha(120)),
+        Stroke::new(1.0_f32, Color32::from_black_alpha(120)),
     ));
 
     shapes.push(Shape::Rect(RectShape::stroke(
         rect,
         radius,
-        Stroke::new(1.0, theme.chassis_shadow),
+        Stroke::new(1.0_f32, theme.chassis_shadow),
         StrokeKind::Inside,
     )));
 }
@@ -241,7 +241,7 @@ pub fn raised_body(
             pos2(rect.min.x + f32::from(radius.nw), rect.min.y + 1.0),
             pos2(rect.max.x - f32::from(radius.ne), rect.min.y + 1.0),
         ],
-        Stroke::new(1.0, theme.control_highlight),
+        Stroke::new(1.0_f32, theme.control_highlight),
     );
     painter.rect_stroke(
         rect,

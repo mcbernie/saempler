@@ -393,7 +393,7 @@ fn draw_slice_labels(
             painter.rect_stroke(
                 chip.expand(1.5),
                 theme.radius_sm,
-                Stroke::new(1.0, Color32::WHITE),
+                Stroke::new(1.0_f32, Color32::WHITE),
                 StrokeKind::Outside,
             );
         }
@@ -428,7 +428,7 @@ fn draw_ruler(ui: &Ui, theme: &Theme, rect: Rect, view: ViewRange, sample_rate: 
         let x = frame_to_x(rect, view, frame);
         painter.line_segment(
             [pos2(x, band.min.y), pos2(x, band.min.y + 4.0)],
-            Stroke::new(1.0, theme.text_dim),
+            Stroke::new(1.0_f32, theme.text_dim),
         );
         painter.text(
             pos2(x + 3.0, band.center().y),
@@ -467,7 +467,7 @@ fn draw_markers(ui: &Ui, theme: &Theme, rect: Rect, view: ViewRange, source: &Wa
             } else {
                 painter.extend(nih_plug_egui::egui::Shape::dashed_line(
                     &ends,
-                    Stroke::new(1.0, color),
+                    Stroke::new(1.0_f32, color),
                     5.0,
                     4.0,
                 ));

@@ -42,14 +42,14 @@ pub fn dial(painter: &Painter, theme: &Theme, centre: Pos2, radius: f32, state: 
         track_radius,
         START_ANGLE,
         END_ANGLE,
-        Stroke::new(4.0, theme.chassis_shadow),
+        Stroke::new(4.0_f32, theme.chassis_shadow),
     ));
     painter.add(arc(
         centre + vec2(0.0, 1.0),
         track_radius,
         START_ANGLE,
         END_ANGLE,
-        Stroke::new(1.0, theme.chassis_edge),
+        Stroke::new(1.0_f32, theme.chassis_edge),
     ));
 
     let value_angle = angle_of(state.normalized);
@@ -67,14 +67,14 @@ pub fn dial(painter: &Painter, theme: &Theme, centre: Pos2, radius: f32, state: 
             track_radius,
             START_ANGLE,
             value_angle,
-            Stroke::new(7.0, lit.gamma_multiply(0.18)),
+            Stroke::new(7.0_f32, lit.gamma_multiply(0.18)),
         ));
         painter.add(arc(
             centre,
             track_radius,
             START_ANGLE,
             value_angle,
-            Stroke::new(3.0, lit),
+            Stroke::new(3.0_f32, lit),
         ));
     }
 
@@ -88,14 +88,14 @@ pub fn dial(painter: &Painter, theme: &Theme, centre: Pos2, radius: f32, state: 
                 track_radius,
                 value_angle,
                 target,
-                Stroke::new(7.0, theme.active.gamma_multiply(0.22)),
+                Stroke::new(7.0_f32, theme.active.gamma_multiply(0.22)),
             ));
             painter.add(arc(
                 centre,
                 track_radius,
                 value_angle,
                 target,
-                Stroke::new(3.0, theme.active),
+                Stroke::new(3.0_f32, theme.active),
             ));
         }
     }
@@ -127,12 +127,12 @@ fn body(painter: &Painter, theme: &Theme, centre: Pos2, radius: f32, state: Dial
         radius - 0.5,
         -0.95 * std::f32::consts::PI,
         -0.05 * std::f32::consts::PI,
-        Stroke::new(1.2, Color32::from_white_alpha(70)),
+        Stroke::new(1.2_f32, Color32::from_white_alpha(70)),
     ));
     painter.circle_stroke(
         centre,
         radius,
-        Stroke::new(1.0, Color32::from_black_alpha(200)),
+        Stroke::new(1.0_f32, Color32::from_black_alpha(200)),
     );
 }
 
@@ -157,14 +157,14 @@ fn pointer(
             centre + direction * (radius * 0.3) + vec2(0.0, 1.0),
             centre + direction * (radius - 2.0) + vec2(0.0, 1.0),
         ],
-        Stroke::new(2.4, Color32::from_black_alpha(160)),
+        Stroke::new(2.4_f32, Color32::from_black_alpha(160)),
     );
     painter.line_segment(
         [
             centre + direction * (radius * 0.3),
             centre + direction * (radius - 2.0),
         ],
-        Stroke::new(2.0, color),
+        Stroke::new(2.0_f32, color),
     );
 }
 

@@ -69,7 +69,7 @@ pub fn value_slider(ui: &mut Ui, theme: &Theme, spec: SliderSpec<'_>, value: &mu
         if origin != min {
             painter.line_segment(
                 [pos2(at(0.0), inner.min.y), pos2(at(0.0), inner.max.y)],
-                Stroke::new(1.0, theme.outline),
+                Stroke::new(1.0_f32, theme.outline),
             );
         }
     }

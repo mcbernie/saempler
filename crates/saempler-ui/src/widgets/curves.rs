@@ -66,7 +66,7 @@ pub fn envelope_display(
         let y = level_y(level);
         painter.line_segment(
             [pos2(inner.min.x, y), pos2(inner.max.x, y)],
-            Stroke::new(1.0, theme.active.gamma_multiply(0.5)),
+            Stroke::new(1.0_f32, theme.active.gamma_multiply(0.5)),
         );
         painter.circle_filled(pos2(inner.max.x, y), 3.0, theme.active);
     }
@@ -93,7 +93,7 @@ pub fn lfo_display(
             pos2(inner.min.x, inner.center().y),
             pos2(inner.max.x, inner.center().y),
         ],
-        Stroke::new(1.0, theme.waveform_axis),
+        Stroke::new(1.0_f32, theme.waveform_axis),
     );
 
     let half = inner.height() * 0.5;
@@ -119,7 +119,7 @@ pub fn lfo_display(
         let y = inner.center().y - value.clamp(-1.0, 1.0) * half;
         painter.line_segment(
             [pos2(inner.min.x, y), pos2(inner.max.x, y)],
-            Stroke::new(1.0, theme.active.gamma_multiply(0.5)),
+            Stroke::new(1.0_f32, theme.active.gamma_multiply(0.5)),
         );
         painter.circle_filled(pos2(inner.max.x, y), 3.0, theme.active);
     }

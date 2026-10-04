@@ -288,7 +288,7 @@ pub(crate) fn logo_mark(painter: &egui::Painter, centre: egui::Pos2) {
                 pos2(centre.x + offset, centre.y - height),
                 pos2(centre.x + offset, centre.y + height),
             ],
-            Stroke::new(2.0, THEME.accent),
+            Stroke::new(2.0_f32, THEME.accent),
         );
     }
 }

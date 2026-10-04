@@ -16,7 +16,10 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
-  RUSTFLAGS: -D warnings
+# Deliberately no `RUSTFLAGS: -D warnings` here. It would apply to the
+# dependencies as well as to this code, it defeats the build cache, and it
+# turns every future-compatibility warning a new compiler introduces into a
+# failed build. Clippy denies warnings where that belongs: on our own crates.
 
 jobs:
   lint:
