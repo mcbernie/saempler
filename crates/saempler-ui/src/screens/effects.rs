@@ -1,9 +1,13 @@
 use nih_plug_egui::egui::{self, pos2, vec2, Align2, FontId, Id, Rect, Ui};
 use saempler_model::{
-    CellEffects, Division, DriveShape, FilterShape, PerformanceCell, MAX_CUTOFF_HZ, MAX_DRIVE,
-    MAX_RESONANCE, MIN_CUTOFF_HZ, MIN_RESONANCE,
+    CellEffects, Division, DriveShape, FilterShape, ModDestination, PerformanceCell, SendEffects,
+    MAX_CUTOFF_HZ, MAX_DRIVE, MAX_RESONANCE, MAX_SEND_DRIVE, MAX_SEND_LEVEL, MIN_CUTOFF_HZ,
+    MIN_RESONANCE,
 };
 
+use saempler_audio::{CUTOFF_RANGE_OCTAVES, DRIVE_RANGE_OCTAVES, RESONANCE_RANGE};
+
+use crate::screens::cell::Live;
 use crate::screens::main::{hint_light, section_with, ViewState, THEME};
 use crate::widgets::{
     dropdown, icon_button, inset, lamp, toggle, value_knob, value_slider, Icon, KnobSpec,
@@ -34,7 +38,8 @@ fn sends_open_id() -> Id {
 /// Filter and drive belong to the chop and run per voice. The four sends are
 /// amounts only: the effects themselves are shared, because sixteen voices
 /// would otherwise mean sixteen reverbs.
-pub fn effects_section(ui: &mut Ui, cell: &mut PerformanceCell, sounding: bool) -> bool {
+pub(crate) fn effects_section(ui: &mut Ui, cell: &mut PerformanceCell, live: Live) -> bool {
+    let sounding = live.sounding;
     let mut changed = false;
     let mut open_sends = false;
 
@@ -54,8 +59,8 @@ pub fn effects_section(ui: &mut Ui, cell: &mut PerformanceCell, sounding: bool) 
             // full width to line their four bars up, and a row of unequal
             // cards reads as a leftover rather than as a layout.
             ui.horizontal(|ui| {
-                changed |= filter_card(ui, &mut cell.effects);
-                changed |= drive_card(ui, &mut cell.effects);
+                changed |= filter_card(ui, &mut cell.effects, live);
+                changed |= drive_card(ui, &mut cell.effects, live);
             });
             changed |= send_card(ui, &mut cell.effects);
         },
@@ -115,7 +120,7 @@ fn card(ui: &mut Ui, title: &str, size: (f32, f32), lit: bool, contents: impl Fn
     ui.advance_cursor_after_rect(rect);
 }
 
-fn filter_card(ui: &mut Ui, effects: &mut CellEffects) -> bool {
+fn filter_card(ui: &mut Ui, effects: &mut CellEffects, live: Live) -> bool {
     let mut changed = false;
 
     card(ui, "FILTER", (330.0, KNOB_CARD), effects.filter_on, |ui| {
@@ -144,7 +149,12 @@ fn filter_card(ui: &mut Ui, effects: &mut CellEffects) -> bool {
                 taper: Taper::Logarithmic,
                 unit: Unit::Hertz,
                 diameter: KNOB,
-                modulated: None,
+                // The route works in octaves, so the mark lands where the
+                // filter actually is rather than where a linear reading of
+                // the amount would put it.
+                modulated: live
+                    .reaching(ModDestination::FilterCutoff)
+                    .map(|amount| effects.cutoff_hz * 2.0f32.powf(amount * CUTOFF_RANGE_OCTAVES)),
             },
             &mut effects.cutoff_hz,
         );
@@ -158,7 +168,9 @@ fn filter_card(ui: &mut Ui, effects: &mut CellEffects) -> bool {
                 taper: Taper::Logarithmic,
                 unit: Unit::Plain,
                 diameter: KNOB,
-                modulated: None,
+                modulated: live
+                    .reaching(ModDestination::Resonance)
+                    .map(|amount| effects.resonance + amount * RESONANCE_RANGE),
             },
             &mut effects.resonance,
         );
@@ -167,7 +179,7 @@ fn filter_card(ui: &mut Ui, effects: &mut CellEffects) -> bool {
     changed
 }
 
-fn drive_card(ui: &mut Ui, effects: &mut CellEffects) -> bool {
+fn drive_card(ui: &mut Ui, effects: &mut CellEffects, live: Live) -> bool {
     let mut changed = false;
 
     card(ui, "DRIVE", (262.0, KNOB_CARD), effects.drive_on, |ui| {
@@ -196,7 +208,9 @@ fn drive_card(ui: &mut Ui, effects: &mut CellEffects) -> bool {
                 taper: Taper::Logarithmic,
                 unit: Unit::Multiplier,
                 diameter: KNOB,
-                modulated: None,
+                modulated: live
+                    .reaching(ModDestination::Drive)
+                    .map(|amount| effects.drive * 2.0f32.powf(amount * DRIVE_RANGE_OCTAVES)),
             },
             &mut effects.drive,
         );
@@ -237,6 +251,11 @@ fn send_card(ui: &mut Ui, effects: &mut CellEffects) -> bool {
     changed
 }
 
+/// Memory key for which half of the rack the window is editing.
+fn driven_page_id() -> Id {
+    Id::new("sends-driven-page")
+}
+
 /// The window the shared sends are set up in.
 ///
 /// A window rather than a panel: these settings are shared by every cell, so
@@ -251,154 +270,235 @@ pub fn sends_window(ui: &Ui, state: &ViewState<'_>) {
     let Ok(mut project) = state.project.lock() else {
         return;
     };
-    let mut sends = project.project.sends();
-    let before = sends;
+    let mut rack = project.project.sends();
+    let before = rack;
+    let mut page_driven = ui.memory(|memory| {
+        memory
+            .data
+            .get_temp::<bool>(driven_page_id())
+            .unwrap_or(false)
+    });
 
     egui::Window::new("Send-Effekte")
         .id(Id::new("sends-window"))
         .open(&mut open)
         .collapsible(false)
         .resizable(false)
-        .default_pos(pos2(300.0, 260.0))
+        .default_pos(pos2(300.0, 200.0))
         .show(ui.ctx(), |ui| {
             ui.spacing_mut().item_spacing = vec2(THEME.spacing_sm, THEME.spacing_sm);
 
-            hint_light(ui, "DELAY");
+            // The two halves of the rack are the same four effects set up
+            // twice, so they share one page rather than sitting side by side:
+            // double the knobs on screen would make neither set readable.
             ui.horizontal(|ui| {
-                if toggle(ui, &THEME, "Sync", sends.delay_sync) {
-                    sends.delay_sync = !sends.delay_sync;
+                if toggle(ui, &THEME, "Normal", !page_driven) {
+                    page_driven = false;
                 }
-                if sends.delay_sync {
-                    let divisions: Vec<&str> = Division::ALL
-                        .iter()
-                        .map(|division| division.label())
-                        .collect();
-                    let selected = Division::ALL
-                        .iter()
-                        .position(|division| *division == sends.delay_division)
-                        .unwrap_or(0);
-                    if let Some(index) =
-                        dropdown(ui, &THEME, "delay-division", &divisions, selected, 80.0)
-                    {
-                        sends.delay_division = Division::ALL[index];
-                    }
-                } else {
+                if toggle(ui, &THEME, "Getrieben", page_driven) {
+                    page_driven = true;
+                }
+                hint_light(
+                    ui,
+                    if page_driven {
+                        "Mit gehaltener Modifier-Taste"
+                    } else {
+                        "Im Normalbetrieb"
+                    },
+                );
+            });
+
+            let sends = if page_driven {
+                &mut rack.driven
+            } else {
+                &mut rack.normal
+            };
+            send_controls(ui, sends);
+
+            if page_driven {
+                hint_light(ui, "SÄTTIGUNG");
+                ui.horizontal(|ui| {
                     knob(
                         ui,
-                        "Zeit",
-                        &mut sends.delay_seconds,
-                        (0.01, 2.0),
-                        0.25,
-                        Unit::Plain,
+                        "Drive",
+                        &mut rack.drive,
+                        (1.0, MAX_SEND_DRIVE),
+                        6.0,
+                        Unit::Multiplier,
                     );
-                }
-                knob(
-                    ui,
-                    "Feedback",
-                    &mut sends.delay_feedback,
-                    (0.0, 0.95),
-                    0.35,
-                    Unit::Plain,
-                );
-                knob(
-                    ui,
-                    "Dämpfung",
-                    &mut sends.delay_damping_hz,
-                    (200.0, 18_000.0),
-                    6_000.0,
-                    Unit::Hertz,
-                );
-            });
+                    let shapes: Vec<&str> =
+                        DriveShape::ALL.iter().map(|shape| shape.label()).collect();
+                    let selected = DriveShape::ALL
+                        .iter()
+                        .position(|shape| *shape == rack.drive_shape)
+                        .unwrap_or(0);
+                    if let Some(index) =
+                        dropdown(ui, &THEME, "send-drive-shape", &shapes, selected, SELECTOR)
+                    {
+                        rack.drive_shape = DriveShape::ALL[index];
+                    }
+                    hint_light(ui, "Nur auf dem getriebenen Weg");
+                });
+            }
 
-            hint_light(ui, "REVERB");
-            ui.horizontal(|ui| {
-                knob(
-                    ui,
-                    "Größe",
-                    &mut sends.reverb_size,
-                    (0.0, 1.0),
-                    0.6,
-                    Unit::Plain,
-                );
-                knob(
-                    ui,
-                    "Dämpfung",
-                    &mut sends.reverb_damping,
-                    (0.0, 0.95),
-                    0.4,
-                    Unit::Plain,
-                );
-            });
-
-            hint_light(ui, "PHASER");
-            ui.horizontal(|ui| {
-                knob(
-                    ui,
-                    "Rate",
-                    &mut sends.phaser_rate_hz,
-                    (0.01, 10.0),
-                    0.5,
-                    Unit::Hertz,
-                );
-                knob(
-                    ui,
-                    "Tiefe",
-                    &mut sends.phaser_depth,
-                    (0.0, 1.0),
-                    0.7,
-                    Unit::Plain,
-                );
-                knob(
-                    ui,
-                    "Feedback",
-                    &mut sends.phaser_feedback,
-                    (0.0, 0.9),
-                    0.4,
-                    Unit::Plain,
-                );
-            });
-
-            hint_light(ui, "FLANGER");
-            ui.horizontal(|ui| {
-                knob(
-                    ui,
-                    "Rate",
-                    &mut sends.flanger_rate_hz,
-                    (0.01, 10.0),
-                    0.3,
-                    Unit::Hertz,
-                );
-                knob(
-                    ui,
-                    "Tiefe",
-                    &mut sends.flanger_depth,
-                    (0.0, 1.0),
-                    0.8,
-                    Unit::Plain,
-                );
-                knob(
-                    ui,
-                    "Feedback",
-                    &mut sends.flanger_feedback,
-                    (-0.95, 0.95),
-                    0.5,
-                    Unit::Plain,
-                );
-            });
-
-            hint_light(
-                ui,
-                "Diese Effekte teilen sich alle Cells; wie viel ankommt, steht pro Cell",
-            );
+            hint_light(ui, "Pegel regelt, wie laut ein Send zurückkommt");
         });
 
-    if sends != before {
-        project.project.set_sends(sends);
+    if rack != before {
+        project.project.set_sends(rack);
         state.send(saempler_audio::EngineCommand::SetSends(
             project.project.sends(),
         ));
     }
-    ui.memory_mut(|memory| memory.data.insert_temp(sends_open_id(), open));
+    ui.memory_mut(|memory| {
+        memory.data.insert_temp(sends_open_id(), open);
+        memory.data.insert_temp(driven_page_id(), page_driven);
+    });
+}
+
+/// The four effects of one half of the rack.
+///
+/// Every group ends in its return level, because that is the control reached
+/// for first when an effect is too loud, and it reads as part of the effect
+/// rather than as a mixer somewhere else.
+fn send_controls(ui: &mut Ui, sends: &mut SendEffects) {
+    hint_light(ui, "DELAY");
+    ui.horizontal(|ui| {
+        if toggle(ui, &THEME, "Sync", sends.delay_sync) {
+            sends.delay_sync = !sends.delay_sync;
+        }
+        if sends.delay_sync {
+            let divisions: Vec<&str> = Division::ALL
+                .iter()
+                .map(|division| division.label())
+                .collect();
+            let selected = Division::ALL
+                .iter()
+                .position(|division| *division == sends.delay_division)
+                .unwrap_or(0);
+            if let Some(index) = dropdown(ui, &THEME, "delay-division", &divisions, selected, 80.0)
+            {
+                sends.delay_division = Division::ALL[index];
+            }
+        } else {
+            knob(
+                ui,
+                "Zeit",
+                &mut sends.delay_seconds,
+                (0.01, 2.0),
+                0.25,
+                Unit::Plain,
+            );
+        }
+        knob(
+            ui,
+            "Feedback",
+            &mut sends.delay_feedback,
+            (0.0, 0.95),
+            0.35,
+            Unit::Plain,
+        );
+        knob(
+            ui,
+            "Dämpfung",
+            &mut sends.delay_damping_hz,
+            (200.0, 18_000.0),
+            6_000.0,
+            Unit::Hertz,
+        );
+        level_knob(ui, &mut sends.delay_level, 0.45);
+    });
+
+    hint_light(ui, "REVERB");
+    ui.horizontal(|ui| {
+        knob(
+            ui,
+            "Größe",
+            &mut sends.reverb_size,
+            (0.0, 1.0),
+            0.6,
+            Unit::Plain,
+        );
+        knob(
+            ui,
+            "Dämpfung",
+            &mut sends.reverb_damping,
+            (0.0, 0.95),
+            0.4,
+            Unit::Plain,
+        );
+        level_knob(ui, &mut sends.reverb_level, 0.35);
+    });
+
+    hint_light(ui, "PHASER");
+    ui.horizontal(|ui| {
+        knob(
+            ui,
+            "Rate",
+            &mut sends.phaser_rate_hz,
+            (0.01, 10.0),
+            0.5,
+            Unit::Hertz,
+        );
+        knob(
+            ui,
+            "Tiefe",
+            &mut sends.phaser_depth,
+            (0.0, 1.0),
+            0.7,
+            Unit::Plain,
+        );
+        knob(
+            ui,
+            "Feedback",
+            &mut sends.phaser_feedback,
+            (0.0, 0.9),
+            0.4,
+            Unit::Plain,
+        );
+        level_knob(ui, &mut sends.phaser_level, 0.5);
+    });
+
+    hint_light(ui, "FLANGER");
+    ui.horizontal(|ui| {
+        knob(
+            ui,
+            "Rate",
+            &mut sends.flanger_rate_hz,
+            (0.01, 10.0),
+            0.3,
+            Unit::Hertz,
+        );
+        knob(
+            ui,
+            "Tiefe",
+            &mut sends.flanger_depth,
+            (0.0, 1.0),
+            0.8,
+            Unit::Plain,
+        );
+        knob(
+            ui,
+            "Feedback",
+            &mut sends.flanger_feedback,
+            (-0.95, 0.95),
+            0.5,
+            Unit::Plain,
+        );
+        level_knob(ui, &mut sends.flanger_level, 0.5);
+    });
+}
+
+/// The return level of one send.
+fn level_knob(ui: &mut Ui, value: &mut f32, default: f32) {
+    knob(
+        ui,
+        "Pegel",
+        value,
+        (0.0, MAX_SEND_LEVEL),
+        default,
+        Unit::Plain,
+    );
 }
 
 /// A knob on the send window, where every one looks the same.
