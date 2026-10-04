@@ -10,11 +10,10 @@ use std::sync::{Arc, Mutex};
 use nih_plug::prelude::*;
 use nih_plug_egui::create_egui_editor;
 use saempler_audio::{
-    command_queue, disposal_queue, CellSpec, CommandProducer, DisposalConsumer, Engine,
-    EngineCommand, Meters,
+    command_queue, disposal_queue, CommandProducer, DisposalConsumer, Engine, EngineCommand, Meters,
 };
 use saempler_core::{cell_spec, load_sample};
-use saempler_model::{Modifier, ModifierMode};
+use saempler_model::Project;
 use saempler_ui::{EditorState, ViewState};
 
 mod params;
@@ -145,10 +144,6 @@ impl Plugin for Saempler {
             view.buffer = Some(Arc::clone(&loaded.buffer));
             view.reset_view();
 
-            // The keyboard mapping is rebuilt from the project: a restored
-            // project brings its own cells, a fresh import has none yet.
-            let mut specs: Vec<(u8, CellSpec)> = Vec::new();
-            let mut modifiers: Vec<(u8, (Modifier, ModifierMode))> = Vec::new();
             {
                 let mut project = match project.lock() {
                     Ok(project) => project,
@@ -159,31 +154,10 @@ impl Plugin for Saempler {
                 } else {
                     project.project.set_sample(Some(loaded.source));
                 }
-                for cell in project.project.cells() {
-                    if let Some(spec) = cell_spec(&project.project, cell) {
-                        specs.push((cell.midi_note, spec));
-                    }
-                }
-                for entry in project.project.modifiers() {
-                    modifiers.push((entry.note, (entry.modifier, entry.mode)));
-                }
-            }
 
-            if let Ok(mut commands) = commands.lock() {
-                let _ = commands.push(EngineCommand::SetSample(loaded.buffer));
-                let _ = commands.push(EngineCommand::ClearCells);
-                for (note, spec) in specs {
-                    let _ = commands.push(EngineCommand::SetCell {
-                        note,
-                        spec: Some(spec),
-                    });
-                }
-                let _ = commands.push(EngineCommand::ClearModifiers);
-                for (note, assignment) in modifiers {
-                    let _ = commands.push(EngineCommand::SetModifier {
-                        note,
-                        assignment: Some(assignment),
-                    });
+                if let Ok(mut commands) = commands.lock() {
+                    let _ = commands.push(EngineCommand::SetSample(loaded.buffer));
+                    push_project(&mut commands, &project.project);
                 }
             }
         })
@@ -257,17 +231,13 @@ impl Plugin for Saempler {
 
         self.engine.prepare(buffer_config.sample_rate);
 
-        // The modifier layout exists before any sample does, so it is pushed
-        // here rather than from the import task alone.
+        // Sends and modifiers exist before any sample does, so the project is
+        // handed over here as well as from the import task. Without this a
+        // restored session sounded dry until the send window happened to be
+        // opened.
         if let Ok(project) = self.params.project.lock() {
             if let Ok(mut commands) = self.commands.lock() {
-                let _ = commands.push(EngineCommand::ClearModifiers);
-                for entry in project.project.modifiers() {
-                    let _ = commands.push(EngineCommand::SetModifier {
-                        note: entry.note,
-                        assignment: Some((entry.modifier, entry.mode)),
-                    });
-                }
+                push_project(&mut commands, &project.project);
             }
         }
 
@@ -329,6 +299,17 @@ impl Plugin for Saempler {
             }
 
             let frames = block_end - block_start;
+
+            // The host's automation is taken once per sub-block and written
+            // straight into the engine: it owns the engine, this is already
+            // the audio thread, and a queue would only add latency to a value
+            // that is meant to be sample accurate.
+            let steps = frames.saturating_sub(1) as u32;
+            self.engine
+                .set_automation(&self.params.take_automation(steps));
+            self.engine
+                .set_send_scale(self.params.take_send_scale(steps));
+
             let gain_start = self.params.gain.smoothed.next();
             let gain_end = if frames > 1 {
                 self.params.gain.smoothed.next_step(frames as u32 - 1)
@@ -364,6 +345,37 @@ fn apply_note_event(engine: &mut Engine, event: &NoteEvent<()>) {
         // the same release path as a note off until voices gain a fast mute.
         NoteEvent::NoteOff { note, .. } | NoteEvent::Choke { note, .. } => engine.note_off(note),
         _ => {}
+    }
+}
+
+/// Hand everything a project describes to the engine.
+///
+/// The engine holds no project state of its own, so a restored session only
+/// sounds right if all of it is pushed. Leaving one of these out is silent -
+/// the instrument simply keeps playing whatever it had - which is why they
+/// are pushed from one place rather than from each caller.
+///
+/// The sample itself is not included: it has to be decoded first, and the
+/// caller that did so pushes it.
+fn push_project(commands: &mut CommandProducer, project: &Project) {
+    let _ = commands.push(EngineCommand::SetSends(project.sends()));
+
+    let _ = commands.push(EngineCommand::ClearCells);
+    for cell in project.cells() {
+        if let Some(spec) = cell_spec(project, cell) {
+            let _ = commands.push(EngineCommand::SetCell {
+                note: cell.midi_note,
+                spec: Some(spec),
+            });
+        }
+    }
+
+    let _ = commands.push(EngineCommand::ClearModifiers);
+    for entry in project.modifiers() {
+        let _ = commands.push(EngineCommand::SetModifier {
+            note: entry.note,
+            assignment: Some((entry.modifier, entry.mode)),
+        });
     }
 }
 
@@ -412,7 +424,7 @@ nih_export_vst3!(Saempler);
 #[cfg(test)]
 mod tests {
     use super::*;
-    use saempler_audio::{SampleBuffer, SliceBounds};
+    use saempler_audio::{CellSpec, SampleBuffer, SliceBounds};
 
     const SAMPLE_RATE: f32 = 48_000.0;
 
@@ -648,6 +660,129 @@ mod tests {
             1,
             "an unmapped note must stay silent"
         );
+    }
+
+    #[test]
+    fn a_saved_session_reaches_the_engine_in_full() {
+        use saempler_model::{
+            CellEffects, ModDestination, ModSource, ModulationRoute, PlaybackSettings, ProjectFile,
+            SendEffects, SendRack,
+        };
+
+        let path = write_test_wav("session", 48_000);
+        let _cleanup = TempFile(path.clone());
+
+        // What the user had when they saved: a sample, slices on notes, a
+        // cell with its own effects and modulation, and the send rack set up.
+        let mut saved = ProjectFile::default();
+        saved.project.sample = Some(saempler_model::SampleRef {
+            path: path.clone(),
+            frames: 48_000,
+            sample_rate: 48_000,
+            channels: 2,
+        });
+        let slice = saved.project.add_slice(0, 24_000);
+        let cell = saved.project.assign(60, slice).expect("the slice exists");
+        saved.project.set_playback(
+            cell,
+            PlaybackSettings {
+                reverse: true,
+                gain: 0.25,
+                ..Default::default()
+            },
+        );
+        saved.project.set_cell_effects(
+            cell,
+            CellEffects {
+                filter_on: true,
+                cutoff_hz: 440.0,
+                reverb_send: 0.75,
+                ..Default::default()
+            },
+        );
+        saved.project.with_cell_mut(cell, |cell| {
+            cell.routes.push(ModulationRoute {
+                source: ModSource::Lfo1,
+                destination: ModDestination::FilterCutoff,
+                amount: 0.5,
+            });
+        });
+        saved.project.set_sends(SendRack {
+            normal: SendEffects {
+                reverb_level: 0.8,
+                ..SendEffects::default()
+            },
+            drive: 11.0,
+            ..SendRack::default()
+        });
+
+        // Through the host's state and back, which is where a dropped field
+        // would actually be lost.
+        let json = serde_json::to_string(&saved).expect("state must serialize");
+        let restored: ProjectFile = serde_json::from_str(&json).expect("state must deserialize");
+
+        let mut plugin = Saempler::default();
+        *plugin.params.project.lock().expect("fresh mutex") = restored;
+
+        // Stands in for `initialize`, which needs a host context.
+        {
+            let project = plugin.params.project.lock().expect("fresh mutex");
+            let mut commands = plugin.commands.lock().expect("fresh mutex");
+            push_project(&mut commands, &project.project);
+        }
+        let executor = plugin.task_executor();
+        executor(Task::Restore(path.clone()));
+        plugin.engine.apply_commands();
+
+        assert!(plugin.engine.has_sample(), "the audio was decoded again");
+
+        let spec = plugin.engine.cell(60).expect("the note came back");
+        assert!(spec.reverse, "the playback settings came back");
+        assert_eq!(spec.gain, 0.25);
+        assert!(spec.effects.filter_on, "the cell effects came back");
+        assert_eq!(spec.effects.cutoff_hz, 440.0);
+        assert_eq!(spec.effects.reverb_send, 0.75);
+        assert!(
+            spec.modulation.targets(ModDestination::FilterCutoff),
+            "the modulation matrix came back"
+        );
+
+        let sends = plugin.engine.sends();
+        assert_eq!(sends.normal.reverb_level, 0.8, "the send rack came back");
+        assert_eq!(sends.drive, 11.0);
+
+        plugin.engine.note_on(60, 1.0);
+        assert_eq!(plugin.engine.active_voices(), 1, "and it plays");
+    }
+
+    #[test]
+    fn a_session_without_a_sample_still_hands_over_its_settings() {
+        // Nothing to play yet, but the modifier layout and the sends still
+        // belong to the engine, and `initialize` is the only place that can
+        // give them to it.
+        use saempler_model::{SendEffects, SendRack};
+
+        let mut plugin = Saempler::default();
+        {
+            let mut project = plugin.params.project.lock().expect("fresh mutex");
+            project.project.set_sends(SendRack {
+                normal: SendEffects {
+                    delay_level: 0.12,
+                    ..SendEffects::default()
+                },
+                ..SendRack::default()
+            });
+        }
+
+        {
+            let project = plugin.params.project.lock().expect("fresh mutex");
+            let mut commands = plugin.commands.lock().expect("fresh mutex");
+            push_project(&mut commands, &project.project);
+        }
+        plugin.engine.apply_commands();
+
+        assert_eq!(plugin.engine.sends().normal.delay_level, 0.12);
+        assert!(!plugin.engine.has_sample());
     }
 
     #[test]

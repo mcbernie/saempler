@@ -3,6 +3,8 @@ use std::sync::Arc;
 use saempler_dsp::{Delay, Flanger, Phaser, Reverb, SaturationKind, Saturator};
 use saempler_model::{DriveShape, Modifier, ModifierMode, SendRack};
 
+use crate::automation::{SliceAutomation, AUTOMATION_SLOTS};
+
 use crate::command::{CellSpec, CommandConsumer, DisposalProducer, EngineCommand};
 use crate::meters::Meters;
 use crate::modifiers::{ModifierState, DEFAULT_TEMPO};
@@ -75,6 +77,18 @@ pub struct Engine {
     /// Host tempo, for the musical lengths stutter and brake work in.
     tempo: f64,
     voices: [Voice; MAX_VOICES],
+    /// What the host rides each send's return level by.
+    ///
+    /// A multiplier on top of the rack's own level rather than a replacement,
+    /// so the knob in the window still says what the send is set to and the
+    /// automation lane says how much of it is wanted right now.
+    send_scale: [f32; SEND_COUNT],
+    /// What the host is automating, one slot per slice.
+    ///
+    /// One longer than the bank: the last entry is left at its defaults and is
+    /// what a voice without a slot reads, so the render loop never has to ask
+    /// whether a voice has one.
+    automation: [SliceAutomation; AUTOMATION_SLOTS + 1],
     /// Monotonic counter assigning an age to each started voice.
     next_age: u64,
     commands: CommandConsumer,
@@ -102,6 +116,8 @@ impl Engine {
             modifiers: ModifierState::new(),
             tempo: DEFAULT_TEMPO,
             voices: [Voice::default(); MAX_VOICES],
+            send_scale: [1.0; SEND_COUNT],
+            automation: [SliceAutomation::default(); AUTOMATION_SLOTS + 1],
             next_age: 0,
             commands,
             disposal,
@@ -379,6 +395,43 @@ impl Engine {
         }
     }
 
+    /// Take the host's send levels for this block.
+    pub fn set_send_scale(&mut self, scale: [f32; SEND_COUNT]) {
+        for (slot, value) in self.send_scale.iter_mut().zip(scale) {
+            *slot = if value.is_finite() {
+                value.clamp(0.0, 1.0)
+            } else {
+                1.0
+            };
+        }
+    }
+
+    /// Take the host's automation for this block.
+    ///
+    /// Written straight into the engine rather than sent through the command
+    /// queue: the plugin owns the engine and calls this from the audio
+    /// callback, so there is nothing to synchronise and nothing to allocate.
+    /// Values are repaired here, once per block, rather than per frame.
+    pub fn set_automation(&mut self, slots: &[SliceAutomation; AUTOMATION_SLOTS]) {
+        for (slot, value) in self.automation.iter_mut().zip(slots) {
+            *slot = value.sanitized();
+        }
+    }
+
+    /// What a slot is currently doing, for tests.
+    pub fn automation(&self, slot: usize) -> SliceAutomation {
+        self.automation[slot.min(AUTOMATION_SLOTS)]
+    }
+
+    /// The send settings the engine is running from.
+    ///
+    /// For tests and inspection: the engine is handed its settings and keeps
+    /// no project of its own, so this is the only way to ask whether a
+    /// restored session actually reached it.
+    pub fn sends(&self) -> SendRack {
+        self.sends
+    }
+
     /// Number of voices that are currently sounding.
     pub fn active_voices(&self) -> usize {
         self.voices.iter().filter(|voice| voice.is_active()).count()
@@ -530,11 +583,12 @@ impl Engine {
             let mut feed = [(0.0f32, 0.0f32); SEND_COUNT];
 
             for voice in &mut self.voices {
-                let (voice_left, voice_right) = voice.next_frame(sample);
+                let automation = &self.automation[voice.slot()];
+                let (voice_left, voice_right) = voice.next_frame(sample, automation);
                 mix_left += voice_left;
                 mix_right += voice_right;
 
-                let amounts = voice.sends();
+                let amounts = voice.sends(automation);
                 for (index, amount) in amounts.iter().enumerate() {
                     if *amount > 0.0 {
                         feed[index].0 += voice_left * amount;
@@ -553,7 +607,7 @@ impl Engine {
                 self.flanger.process(feed[3].0, feed[3].1),
             ];
             for (index, (wet_left, wet_right)) in wet.into_iter().enumerate() {
-                let level = self.levels[index];
+                let level = self.levels[index] * self.send_scale[index];
                 if level <= 0.0 {
                     continue;
                 }
@@ -589,6 +643,7 @@ impl Engine {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::automation::NO_SLOT;
     use crate::command::{
         command_queue, disposal_queue, CommandProducer, DisposalConsumer, SliceBounds,
     };
@@ -619,6 +674,18 @@ mod tests {
 
     /// A buffer of constant full-scale samples, so measured output reflects
     /// envelope and gain alone.
+    /// A steady tone, for the one thing a constant cannot be asked about.
+    ///
+    /// A low pass passes a constant whatever its corner, so a filter test on
+    /// the DC buffer measures nothing at all.
+    fn tone_sample(frames: usize) -> Arc<SampleBuffer> {
+        let step = std::f32::consts::TAU * 4_000.0 / SAMPLE_RATE;
+        let data: Vec<f32> = (0..frames)
+            .map(|index| (index as f32 * step).sin())
+            .collect();
+        Arc::new(SampleBuffer::new(vec![data.clone(), data], 48_000))
+    }
+
     fn dc_sample(frames: usize) -> Arc<SampleBuffer> {
         Arc::new(SampleBuffer::new(
             vec![vec![1.0; frames], vec![1.0; frames]],
@@ -1106,6 +1173,287 @@ mod tests {
             after < held * 0.5,
             "letting go did not put the send back: {held} -> {after}"
         );
+    }
+
+    /// A harness with a cell on note 60 following automation slot `slot`.
+    fn slotted(slot: u8) -> Harness {
+        let mut h = harness();
+        load(&mut h, 48_000);
+        h.commands
+            .push(EngineCommand::SetCell {
+                note: 60,
+                spec: Some(CellSpec {
+                    slot,
+                    ..spec(0, 48_000)
+                }),
+            })
+            .expect("the queue has capacity");
+        h.engine.apply_commands();
+        h
+    }
+
+    /// Set one slot and leave the rest of the bank alone.
+    fn automate(engine: &mut Engine, slot: usize, values: SliceAutomation) {
+        let mut bank = [SliceAutomation::default(); AUTOMATION_SLOTS];
+        bank[slot] = values;
+        engine.set_automation(&bank);
+    }
+
+    #[test]
+    fn an_untouched_bank_leaves_the_sound_exactly_as_it_was() {
+        // The promise the whole design rests on: a project nobody automated
+        // has to sound the way it was built.
+        let mut plain = slotted(NO_SLOT);
+        plain.engine.note_on(60, 1.0);
+        let before = render(&mut plain.engine, 2_400);
+
+        let mut banked = slotted(0);
+        banked
+            .engine
+            .set_automation(&[SliceAutomation::default(); AUTOMATION_SLOTS]);
+        banked.engine.note_on(60, 1.0);
+        let after = render(&mut banked.engine, 2_400);
+
+        assert_eq!(before, after);
+    }
+
+    #[test]
+    fn the_gain_of_a_slot_reaches_the_voice_that_follows_it() {
+        let mut h = slotted(0);
+        h.engine.note_on(60, 1.0);
+        let full = peak(&mut h.engine, 2_400);
+
+        let mut quiet = slotted(0);
+        automate(
+            &mut quiet.engine,
+            0,
+            SliceAutomation {
+                gain: 0.25,
+                ..Default::default()
+            },
+        );
+        quiet.engine.note_on(60, 1.0);
+        let turned_down = peak(&mut quiet.engine, 2_400);
+
+        assert!(
+            (turned_down - full * 0.25).abs() < 0.05,
+            "the slot did not reach the voice: {full} -> {turned_down}"
+        );
+    }
+
+    #[test]
+    fn a_voice_only_follows_its_own_slot() {
+        // Two chops side by side must not move together because the host
+        // automated one of them.
+        let mut h = slotted(0);
+        h.engine.note_on(60, 1.0);
+        let untouched = peak(&mut h.engine, 2_400);
+
+        let mut other = slotted(0);
+        automate(
+            &mut other.engine,
+            1,
+            SliceAutomation {
+                gain: 0.0,
+                ..Default::default()
+            },
+        );
+        other.engine.note_on(60, 1.0);
+        let still_playing = peak(&mut other.engine, 2_400);
+
+        assert!((untouched - still_playing).abs() < 1e-6);
+    }
+
+    #[test]
+    fn a_cell_without_a_slot_ignores_the_whole_bank() {
+        let mut h = slotted(NO_SLOT);
+        h.engine.note_on(60, 1.0);
+        let untouched = peak(&mut h.engine, 2_400);
+
+        let mut silenced = slotted(NO_SLOT);
+        silenced.engine.set_automation(
+            &[SliceAutomation {
+                gain: 0.0,
+                ..Default::default()
+            }; AUTOMATION_SLOTS],
+        );
+        silenced.engine.note_on(60, 1.0);
+        let still_playing = peak(&mut silenced.engine, 2_400);
+
+        assert!((untouched - still_playing).abs() < 1e-6);
+    }
+
+    #[test]
+    fn the_speed_of_a_slot_moves_the_playhead() {
+        let mut h = slotted(0);
+        automate(
+            &mut h.engine,
+            0,
+            SliceAutomation {
+                speed: 2.0,
+                ..Default::default()
+            },
+        );
+        h.engine.note_on(60, 1.0);
+        render(&mut h.engine, 12_000);
+
+        // At twice the speed the slice is read out in half the frames, so a
+        // cell covering the whole sample is finished long before it would be.
+        render(&mut h.engine, 12_500);
+        assert_eq!(
+            h.engine.active_voices(),
+            0,
+            "the voice should have run out of slice"
+        );
+    }
+
+    #[test]
+    fn the_reverb_of_a_slot_adds_to_what_the_cell_sends() {
+        let mut dry = slotted(0);
+        dry.engine.note_on(60, 1.0);
+        render(&mut dry.engine, 480);
+        dry.engine.note_off(60);
+        let without = tail(&mut dry.engine, 24_000);
+
+        let mut wet = slotted(0);
+        automate(
+            &mut wet.engine,
+            0,
+            SliceAutomation {
+                reverb_send: 1.0,
+                ..Default::default()
+            },
+        );
+        wet.engine.note_on(60, 1.0);
+        render(&mut wet.engine, 480);
+        wet.engine.note_off(60);
+        let with = tail(&mut wet.engine, 24_000);
+
+        assert!(
+            with > without + 0.001,
+            "the slot did not open the send: {without} -> {with}"
+        );
+    }
+
+    #[test]
+    fn the_cutoff_of_a_slot_moves_the_filter() {
+        use saempler_model::CellEffects;
+
+        let shut = CellEffects {
+            filter_on: true,
+            cutoff_hz: 200.0,
+            ..CellEffects::default()
+        };
+        let cell = |engine: &mut Engine, commands: &mut CommandProducer| {
+            commands
+                .push(EngineCommand::SetSample(tone_sample(48_000)))
+                .expect("the queue has capacity");
+            commands
+                .push(EngineCommand::SetCell {
+                    note: 60,
+                    spec: Some(CellSpec {
+                        slot: 0,
+                        effects: shut,
+                        ..spec(0, 48_000)
+                    }),
+                })
+                .expect("the queue has capacity");
+            engine.apply_commands();
+        };
+
+        let mut closed = harness();
+        cell(&mut closed.engine, &mut closed.commands);
+        closed.engine.note_on(60, 1.0);
+        let dark = peak(&mut closed.engine, 2_400);
+
+        let mut opened = harness();
+        cell(&mut opened.engine, &mut opened.commands);
+        automate(
+            &mut opened.engine,
+            0,
+            SliceAutomation {
+                cutoff_octaves: 4.0,
+                ..Default::default()
+            },
+        );
+        opened.engine.note_on(60, 1.0);
+        let bright = peak(&mut opened.engine, 2_400);
+
+        assert!(
+            bright > dark * 1.5,
+            "the slot did not open the filter: {dark} -> {bright}"
+        );
+    }
+
+    #[test]
+    fn the_host_can_turn_a_send_down_without_touching_its_settings() {
+        use saempler_model::CellEffects;
+
+        let wet_cell = CellSpec {
+            effects: CellEffects {
+                reverb_send: 1.0,
+                ..CellEffects::default()
+            },
+            ..spec(0, 48_000)
+        };
+
+        let mut open = harness();
+        load(&mut open, 48_000);
+        open.commands
+            .push(EngineCommand::SetCell {
+                note: 60,
+                spec: Some(wet_cell),
+            })
+            .expect("the queue has capacity");
+        open.engine.apply_commands();
+        open.engine.note_on(60, 1.0);
+        render(&mut open.engine, 480);
+        open.engine.note_off(60);
+        let heard = tail(&mut open.engine, 24_000);
+
+        let mut shut = harness();
+        load(&mut shut, 48_000);
+        shut.commands
+            .push(EngineCommand::SetCell {
+                note: 60,
+                spec: Some(wet_cell),
+            })
+            .expect("the queue has capacity");
+        shut.engine.apply_commands();
+        shut.engine.set_send_scale([1.0, 0.0, 1.0, 1.0]);
+        shut.engine.note_on(60, 1.0);
+        render(&mut shut.engine, 480);
+        shut.engine.note_off(60);
+        let silenced = tail(&mut shut.engine, 24_000);
+
+        assert!(heard > 0.0, "nothing came back to turn down");
+        assert!(silenced < 1e-6, "the send was still heard: {silenced}");
+        assert_eq!(
+            shut.engine.sends(),
+            open.engine.sends(),
+            "the settings themselves must be untouched"
+        );
+    }
+
+    #[test]
+    fn a_broken_value_from_the_host_does_not_reach_the_voice() {
+        let mut h = slotted(0);
+        automate(
+            &mut h.engine,
+            0,
+            SliceAutomation {
+                gain: f32::NAN,
+                speed: 0.0,
+                cutoff_octaves: f32::INFINITY,
+                ..Default::default()
+            },
+        );
+        h.engine.note_on(60, 1.0);
+
+        let output = render(&mut h.engine, 4_800);
+
+        assert!(output.iter().all(|sample| sample.is_finite()));
+        assert!(h.engine.automation(0).gain.is_finite());
     }
 
     #[test]

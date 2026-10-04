@@ -25,3 +25,7 @@ saempler-ui.workspace = true
 nih_plug = { workspace = true, features = ["assert_process_allocs", "standalone"] }
 nih_plug_egui.workspace = true
 rfd.workspace = true
+
+[dev-dependencies]
+# Stands in for the host's state format in the round trip tests.
+serde_json.workspace = true

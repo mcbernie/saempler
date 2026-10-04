@@ -518,10 +518,3 @@ fn knob(ui: &mut Ui, label: &str, value: &mut f32, range: (f32, f32), default: f
         value,
     );
 }
-
-/// Push the send settings to the engine, after a project is loaded.
-pub fn sync_sends(state: &ViewState<'_>, project: &saempler_model::ProjectFile) {
-    state.send(saempler_audio::EngineCommand::SetSends(
-        project.project.sends(),
-    ));
-}

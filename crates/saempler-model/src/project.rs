@@ -15,6 +15,14 @@ use crate::slice::{Slice, SliceId};
 /// be detected instead of silently misinterpreting old data.
 pub const PROJECT_VERSION: u32 = 1;
 
+/// Most slices a project may hold.
+///
+/// Each slice owns one slot in the host's automation bank, and those slots
+/// have to exist before the host ever asks for the parameter list. The limit
+/// is therefore what makes every slice automatable rather than only the ones
+/// that happened to be made first.
+pub const MAX_SLICES: usize = 20;
+
 /// Where the source sample came from and what it contains.
 ///
 /// Only the reference is persisted, never the audio itself: a project must not
@@ -147,10 +155,13 @@ impl Project {
     ///
     /// Returns the two resulting identities, or `None` when `frame` does not
     /// lie strictly inside the slice: a split at either boundary would produce
-    /// an empty slice.
+    /// an empty slice. Also `None` at [`MAX_SLICES`], since a split adds one.
     pub fn split_slice(&mut self, id: SliceId, frame: u64) -> Option<(SliceId, SliceId)> {
         let slice = *self.slice(id)?;
         if frame <= slice.start_frame || frame >= slice.end_frame {
+            return None;
+        }
+        if self.slices.len() >= MAX_SLICES {
             return None;
         }
 
@@ -289,11 +300,14 @@ impl Project {
     /// Divide the sample into `count` slices of equal length.
     ///
     /// Replaces any existing slices. This is the quickest way to get usable
-    /// markers; individual bounds are adjusted afterwards.
+    /// markers; individual bounds are adjusted afterwards. More than
+    /// [`MAX_SLICES`] is cut down rather than refused, so that asking for too
+    /// many still leaves a usable set of markers.
     pub fn slice_evenly(&mut self, count: u32) {
         let Some(frames) = self.sample.as_ref().map(|sample| sample.frames) else {
             return;
         };
+        let count = count.min(MAX_SLICES as u32);
         if count == 0 || frames == 0 {
             return;
         }
@@ -307,6 +321,17 @@ impl Project {
                 self.add_slice(start, end);
             }
         }
+    }
+
+    /// Which automation slot a slice owns, by its position in the list.
+    ///
+    /// The list is kept ordered by start frame, so the slot is the number the
+    /// interface already shows on the marker: slot 0 is S1. Two cells playing
+    /// the same slice share its slot, which is the price of indexing by what
+    /// the user can see rather than by a cell they cannot name.
+    pub fn automation_slot(&self, slice: SliceId) -> Option<u8> {
+        let index = self.slices.iter().position(|entry| entry.id == slice)?;
+        (index < MAX_SLICES).then_some(index as u8)
     }
 
     /// All performance cells, ordered by MIDI note.
@@ -1824,6 +1849,297 @@ mod tests {
         assert_eq!(
             restored.project.modifiers().len(),
             crate::Modifier::DEFAULT_LAYOUT.len()
+        );
+    }
+
+    /// A project with something changed in every corner a user can reach.
+    ///
+    /// Built field by field rather than with `..Default::default()` so that a
+    /// newly added setting has to be added here too before this test can be
+    /// said to cover the save format.
+    fn fully_configured_project() -> Project {
+        use crate::cell::PlaybackMode;
+        use crate::effect::{DriveShape, FilterShape, SendEffects};
+        use crate::modulation::{
+            Division, EnvelopeDefinition, LfoDefinition, LfoShape, ModDestination, ModSource,
+            ModulationRoute,
+        };
+
+        let mut project = project_with_sample(48_000);
+        project.set_white_keys_only(true);
+        project.slice_evenly(4);
+        let slices: Vec<SliceId> = project.slices().iter().map(|slice| slice.id).collect();
+
+        // Two cells on the same slice, set up differently: the one thing the
+        // instrument exists to do, and the one thing a broken save format
+        // would be most embarrassing to lose.
+        let first = project.assign(60, slices[0]).expect("the slice exists");
+        let second = project.assign(64, slices[0]).expect("the slice exists");
+        project.assign(67, slices[2]).expect("the slice exists");
+
+        project.set_playback(
+            first,
+            PlaybackSettings {
+                reverse: true,
+                speed: 0.5,
+                pitch_semitones: -7.0,
+                gain: 0.8,
+                mode: PlaybackMode::Loop,
+                division: Division::Sixteenth,
+                collapse: 0.75,
+                release_trigger: true,
+            },
+        );
+        project.set_playback(
+            second,
+            PlaybackSettings {
+                speed: 2.0,
+                pitch_semitones: 12.0,
+                ..Default::default()
+            },
+        );
+
+        project.set_cell_effects(
+            first,
+            CellEffects {
+                filter_on: true,
+                filter_shape: FilterShape::BandPass,
+                cutoff_hz: 900.0,
+                resonance: 4.5,
+                drive_on: true,
+                drive_shape: DriveShape::Tube,
+                drive: 9.0,
+                delay_send: 0.3,
+                reverb_send: 0.65,
+                phaser_send: 0.1,
+                flanger_send: 0.2,
+            },
+        );
+
+        project.with_cell_mut(first, |cell| {
+            cell.envelopes[0] = EnvelopeDefinition {
+                attack_ms: 55.0,
+                decay_ms: 120.0,
+                sustain: 0.4,
+                release_ms: 900.0,
+            };
+            cell.envelopes[1] = EnvelopeDefinition {
+                attack_ms: 1.0,
+                decay_ms: 5.0,
+                sustain: 0.0,
+                release_ms: 10.0,
+            };
+            cell.lfos[0] = LfoDefinition {
+                shape: LfoShape::SampleHold,
+                rate_hz: 7.5,
+                sync: true,
+                division: Division::ThirtySecond,
+                retrigger: false,
+            };
+            cell.routes = vec![
+                ModulationRoute {
+                    source: ModSource::EnvelopeA,
+                    destination: ModDestination::Volume,
+                    amount: 1.0,
+                },
+                ModulationRoute {
+                    source: ModSource::Lfo1,
+                    destination: ModDestination::FilterCutoff,
+                    amount: -0.6,
+                },
+                ModulationRoute {
+                    source: ModSource::Velocity,
+                    destination: ModDestination::Drive,
+                    amount: 0.45,
+                },
+            ];
+        });
+
+        project.set_sends(SendRack {
+            normal: SendEffects {
+                delay_sync: false,
+                delay_seconds: 0.33,
+                delay_feedback: 0.7,
+                delay_level: 0.9,
+                reverb_size: 0.95,
+                reverb_level: 0.15,
+                phaser_feedback: 0.8,
+                flanger_rate_hz: 5.0,
+                ..SendEffects::default()
+            },
+            driven: SendEffects {
+                delay_division: Division::ThirtySecond,
+                reverb_damping: 0.9,
+                phaser_level: 0.25,
+                flanger_level: 1.0,
+                ..SendEffects::default()
+            },
+            drive: 12.0,
+            drive_shape: DriveShape::Hard,
+        });
+
+        let modifier_note = project.modifiers()[0].note;
+        project.set_modifier_mode(modifier_note, ModifierMode::Toggle);
+        project.move_modifier(modifier_note, 36);
+        project.select(Some(slices[1]));
+        project.select_cell(Some(second));
+        project
+    }
+
+    #[test]
+    fn everything_a_user_configures_survives_a_save_and_load() {
+        // What the host does when the session is reopened. If this breaks, a
+        // finished arrangement comes back wrong, which is the one failure
+        // there is no way to work around from inside the plugin.
+        let original = ProjectFile {
+            version: PROJECT_VERSION,
+            project: fully_configured_project(),
+        };
+
+        let json = serde_json::to_string(&original).expect("serialization must succeed");
+        let mut restored: ProjectFile =
+            serde_json::from_str(&json).expect("deserialization must succeed");
+        assert_eq!(restored.migrate(), Ok(()));
+
+        assert_eq!(restored, original);
+    }
+
+    #[test]
+    fn the_restored_cells_keep_their_own_settings() {
+        use crate::cell::PlaybackMode;
+
+        // Spelled out rather than left to the equality above, so a failure
+        // says which setting was lost instead of printing two whole projects.
+        let original = fully_configured_project();
+        let json = serde_json::to_string(&ProjectFile {
+            version: PROJECT_VERSION,
+            project: original.clone(),
+        })
+        .expect("serialization must succeed");
+        let restored: ProjectFile = serde_json::from_str(&json).expect("must deserialize");
+        let project = restored.project;
+
+        let first = project.cell_for_note(60).expect("the cell came back");
+        assert!(first.playback.reverse);
+        assert_eq!(first.playback.mode, PlaybackMode::Loop);
+        assert_eq!(first.playback.collapse, 0.75);
+        assert!(first.playback.release_trigger);
+        assert!(first.effects.filter_on);
+        assert_eq!(first.effects.cutoff_hz, 900.0);
+        assert_eq!(first.effects.drive, 9.0);
+        assert_eq!(first.effects.reverb_send, 0.65);
+        assert_eq!(first.envelopes[0].release_ms, 900.0);
+        assert_eq!(first.lfos[0].rate_hz, 7.5);
+        assert_eq!(first.routes.len(), 3);
+
+        let second = project.cell_for_note(64).expect("the cell came back");
+        assert_eq!(
+            first.slice, second.slice,
+            "both cells still point at one slice"
+        );
+        assert_eq!(second.playback.pitch_semitones, 12.0);
+        assert!(
+            !second.playback.reverse,
+            "the two cells did not share settings"
+        );
+
+        assert!(project.white_keys_only());
+        assert_eq!(project.sends().drive, 12.0);
+        assert_eq!(project.sends().normal.delay_seconds, 0.33);
+        assert_eq!(project.sends().driven.flanger_level, 1.0);
+        assert_eq!(
+            project.modifier_for_note(36).map(|entry| entry.mode),
+            Some(ModifierMode::Toggle)
+        );
+    }
+
+    #[test]
+    fn a_project_saved_before_the_sends_existed_still_loads() {
+        // Every field added since has a default, so an older session opens
+        // with the new settings at their defaults rather than failing.
+        let restored: ProjectFile = serde_json::from_str(
+            r#"{"version":1,"project":{"slices":[],"cells":[],"next_slice_id":0,"next_cell_id":0}}"#,
+        )
+        .expect("missing fields must fall back to defaults");
+
+        assert_eq!(restored.project.sends(), SendRack::default());
+        assert!(!restored.project.white_keys_only());
+    }
+
+    #[test]
+    fn slicing_evenly_makes_exactly_as_many_as_asked_for() {
+        // Integer division across an awkward frame count must not drop the
+        // last marker, which is the kind of thing only a real length shows.
+        for frames in [48_000, 114_720, 114_719, 100_001] {
+            for count in [4u32, 8, 16, MAX_SLICES as u32] {
+                let mut project = project_with_sample(frames);
+                project.slice_evenly(count);
+                assert_eq!(
+                    project.slices().len(),
+                    count as usize,
+                    "{count} slices over {frames} frames"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn slicing_evenly_stops_at_the_limit() {
+        // The automation bank has one slot per slice, so a project cannot hold
+        // more slices than the bank has room for.
+        let mut project = project_with_sample(48_000);
+
+        project.slice_evenly(64);
+
+        assert_eq!(project.slices().len(), MAX_SLICES);
+    }
+
+    #[test]
+    fn a_split_is_refused_once_the_limit_is_reached() {
+        let mut project = project_with_sample(48_000);
+        project.slice_evenly(MAX_SLICES as u32);
+        let first = project.slices()[0];
+        let middle = (first.start_frame + first.end_frame) / 2;
+
+        assert_eq!(project.split_slice(first.id, middle), None);
+        assert_eq!(project.slices().len(), MAX_SLICES);
+    }
+
+    #[test]
+    fn a_split_below_the_limit_still_works() {
+        let mut project = project_with_sample(48_000);
+        project.slice_evenly(4);
+        let first = project.slices()[0];
+        let middle = (first.start_frame + first.end_frame) / 2;
+
+        assert!(project.split_slice(first.id, middle).is_some());
+        assert_eq!(project.slices().len(), 5);
+    }
+
+    #[test]
+    fn every_slice_owns_the_slot_its_marker_shows() {
+        let mut project = project_with_sample(48_000);
+        project.slice_evenly(MAX_SLICES as u32);
+
+        for (index, slice) in project.slices().iter().enumerate() {
+            assert_eq!(project.automation_slot(slice.id), Some(index as u8));
+        }
+    }
+
+    #[test]
+    fn two_cells_on_one_slice_share_its_slot() {
+        // The bank is indexed by slice, which is what the interface labels.
+        let mut project = project_with_sample(48_000);
+        project.slice_evenly(4);
+        let slice = project.slices()[1].id;
+        project.assign(60, slice);
+        project.assign(64, slice);
+
+        let first = project.cell_for_note(60).expect("assigned");
+        let second = project.cell_for_note(64).expect("assigned");
+        assert_eq!(
+            project.automation_slot(first.slice),
+            project.automation_slot(second.slice)
         );
     }
 
