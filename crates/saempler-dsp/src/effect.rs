@@ -105,6 +105,12 @@ pub struct Phaser {
     phase_delta: f32,
     depth: f32,
     feedback: f32,
+    /// Undoes the gain the feedback loop adds.
+    ///
+    /// Without it, turning the resonance up turns the effect up, and every
+    /// setting has to be matched by a trip to the level control. An effect
+    /// should change the sound at the level it was set to.
+    makeup: f32,
     sample_rate: f32,
 }
 
@@ -131,6 +137,9 @@ impl Phaser {
         self.phase_delta = rate / self.sample_rate.max(1.0);
         self.depth = finite_or(depth, 0.7).clamp(0.0, 1.0);
         self.feedback = finite_or(feedback, 0.4).clamp(0.0, 0.9);
+        // The chain has unity magnitude, so the loop's gain is the whole of
+        // what the feedback adds.
+        self.makeup = 1.0 - self.feedback;
     }
 
     /// Process one frame, returning the wet signal alone.
@@ -157,7 +166,7 @@ impl Phaser {
             }
 
             self.feedback_state[channel] = if value.is_finite() { value } else { 0.0 };
-            output[channel] = self.feedback_state[channel];
+            output[channel] = self.feedback_state[channel] * self.makeup;
         }
 
         (output[0], output[1])
@@ -185,6 +194,8 @@ pub struct Flanger {
     phase_delta: f32,
     depth: f32,
     feedback: f32,
+    /// Undoes the gain the comb's feedback adds, as in the phaser.
+    makeup: f32,
     sample_rate: f32,
 }
 
@@ -217,6 +228,7 @@ impl Flanger {
         self.depth = finite_or(depth, 0.8).clamp(0.0, 1.0);
         // Short of one: at one the comb never decays.
         self.feedback = finite_or(feedback, 0.5).clamp(-0.95, 0.95);
+        self.makeup = 1.0 - self.feedback.abs();
     }
 
     /// Process one frame, returning the wet signal alone.
@@ -236,7 +248,7 @@ impl Flanger {
             let delayed = self.lines[channel].read(frames.max(1.0));
             self.lines[channel].write(input + delayed * self.feedback);
             self.feedback_state[channel] = if delayed.is_finite() { delayed } else { 0.0 };
-            output[channel] = self.feedback_state[channel];
+            output[channel] = self.feedback_state[channel] * self.makeup;
         }
 
         (output[0], output[1])
@@ -264,6 +276,12 @@ pub struct Reverb {
     allpass_frames: [[f32; ALLPASS_LENGTHS.len()]; 2],
     feedback: f32,
     damping: f32,
+    /// Undoes the gain the combs add.
+    ///
+    /// A comb fed back at `f` has a standing gain of `1 / (1 - f)`, so a big
+    /// room was many times louder than a small one for no reason anybody
+    /// asked for.
+    makeup: f32,
 }
 
 impl Reverb {
@@ -310,6 +328,7 @@ impl Reverb {
         // Short of one: at one the combs never decay.
         self.feedback = 0.7 + size * 0.28;
         self.damping = finite_or(damping, 0.4).clamp(0.0, 0.95);
+        self.makeup = 1.0 - self.feedback;
     }
 
     /// Process one frame, returning the wet signal alone.
@@ -339,7 +358,8 @@ impl Reverb {
                 summed = delayed - summed * 0.5;
             }
 
-            output[channel] = if summed.is_finite() { summed } else { 0.0 };
+            let scaled = summed * self.makeup;
+            output[channel] = if scaled.is_finite() { scaled } else { 0.0 };
         }
 
         (output[0], output[1])
@@ -432,6 +452,97 @@ mod tests {
 
         assert!(loudest > 0.1, "it swallowed everything: {loudest}");
         assert!(loudest < 20.0, "the resonance ran away: {loudest}");
+    }
+
+    /// Loudest the effect gets on a steady tone, once it has settled.
+    fn settled_peak(mut step: impl FnMut(f32) -> (f32, f32)) -> f32 {
+        for index in 0..24_000 {
+            step((index as f32 * 0.07).sin());
+        }
+        (24_000..48_000).fold(0.0f32, |loudest, index| {
+            let (left, right) = step((index as f32 * 0.07).sin());
+            loudest.max(left.abs()).max(right.abs())
+        })
+    }
+
+    #[test]
+    fn turning_up_the_resonance_does_not_turn_up_the_phaser() {
+        let mut gentle = Phaser::default();
+        gentle.prepare(RATE);
+        gentle.set(1.0, 1.0, 0.1);
+        let mut resonant = Phaser::default();
+        resonant.prepare(RATE);
+        resonant.set(1.0, 1.0, 0.9);
+
+        let quiet = settled_peak(|input| gentle.process(input, input));
+        let loud = settled_peak(|input| resonant.process(input, input));
+
+        assert!(
+            loud < quiet * 2.0,
+            "the resonance became a level control: {quiet} -> {loud}"
+        );
+    }
+
+    #[test]
+    fn turning_up_the_feedback_does_not_turn_up_the_flanger() {
+        let mut gentle = Flanger::default();
+        gentle.prepare(RATE);
+        gentle.set(1.0, 1.0, 0.1);
+        let mut resonant = Flanger::default();
+        resonant.prepare(RATE);
+        resonant.set(1.0, 1.0, 0.92);
+
+        let quiet = settled_peak(|input| gentle.process(input, input));
+        let loud = settled_peak(|input| resonant.process(input, input));
+
+        assert!(
+            loud < quiet * 2.5,
+            "the feedback became a level control: {quiet} -> {loud}"
+        );
+    }
+
+    #[test]
+    fn a_big_room_is_not_louder_than_a_small_one() {
+        let mut small = Reverb::default();
+        small.prepare(RATE);
+        small.set(0.1, 0.4);
+        let mut large = Reverb::default();
+        large.prepare(RATE);
+        large.set(1.0, 0.4);
+
+        let near = settled_peak(|input| small.process(input, input));
+        let far = settled_peak(|input| large.process(input, input));
+
+        assert!(
+            far < near * 2.5,
+            "the size became a level control: {near} -> {far}"
+        );
+    }
+
+    #[test]
+    fn an_effect_stays_near_the_level_it_was_given() {
+        // A send is mixed back in at its own level, so an effect that comes
+        // out many times louder than it went in cannot be balanced by ear.
+        let mut reverb = Reverb::default();
+        reverb.prepare(RATE);
+        reverb.set(0.6, 0.4);
+        let mut phaser = Phaser::default();
+        phaser.prepare(RATE);
+        phaser.set(0.5, 0.7, 0.4);
+        let mut flanger = Flanger::default();
+        flanger.prepare(RATE);
+        flanger.set(0.3, 0.8, 0.5);
+
+        for (name, peak) in [
+            ("reverb", settled_peak(|input| reverb.process(input, input))),
+            ("phaser", settled_peak(|input| phaser.process(input, input))),
+            (
+                "flanger",
+                settled_peak(|input| flanger.process(input, input)),
+            ),
+        ] {
+            assert!(peak < 1.6, "{name} came back at {peak}");
+        }
     }
 
     #[test]
