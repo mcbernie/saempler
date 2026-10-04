@@ -1,6 +1,6 @@
 use nih_plug_egui::egui::{self, Align2, FontId, Ui};
 use saempler_audio::EngineCommand;
-use saempler_model::ProjectFile;
+use saempler_model::{ProjectFile, MAX_SLICES};
 
 use crate::screens::main::{preview_spec, EditorState, ViewState, THEME};
 use crate::screens::performance::sync_cells;
@@ -9,7 +9,7 @@ use crate::widgets::{icon_button, segmented, waveform, Icon, ViewRange, Waveform
 const WAVEFORM_HEIGHT: f32 = 100.0;
 
 /// Slice counts offered by the quick division buttons.
-const EVEN_DIVISIONS: [u32; 4] = [4, 8, 16, 32];
+const EVEN_DIVISIONS: [u32; 4] = [4, 8, 16, MAX_SLICES as u32];
 
 /// Waveform, slicing controls and selection. Returns true on an import request.
 pub fn source_section(ui: &mut Ui, state: &ViewState<'_>) -> bool {

@@ -12,6 +12,7 @@
 //!   sample buffers handed back through [`disposal_queue`] so that the audio
 //!   thread never frees them.
 
+mod automation;
 mod command;
 mod engine;
 mod meters;
@@ -20,6 +21,10 @@ mod modulation;
 mod sample;
 mod voice;
 
+pub use automation::{
+    SliceAutomation, AUTOMATION_CUTOFF_OCTAVES, AUTOMATION_PITCH_SEMITONES, AUTOMATION_SLOTS,
+    NO_SLOT,
+};
 pub use command::{
     command_queue, disposal_queue, CellSpec, CommandConsumer, CommandProducer, DisposalConsumer,
     DisposalProducer, EngineCommand, SliceBounds, DISPOSAL_CAPACITY, QUEUE_CAPACITY,

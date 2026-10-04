@@ -2364,6 +2364,7 @@ dependencies = [
  "saempler-core",
  "saempler-model",
  "saempler-ui",
+ "serde_json",
 ]
 
 [[package]]

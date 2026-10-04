@@ -1,4 +1,4 @@
-use saempler_audio::{CellSpec, ModulationSpec, SliceBounds};
+use saempler_audio::{CellSpec, ModulationSpec, SliceBounds, NO_SLOT};
 use saempler_model::{PerformanceCell, Project};
 
 /// Flatten a cell into the form the engine plays.
@@ -35,6 +35,10 @@ pub fn cell_spec(project: &Project, cell: &PerformanceCell) -> Option<CellSpec> 
         collapse: playback.collapse,
         release_trigger: playback.release_trigger,
         effects: cell.effects.sanitized(),
+        // The host automates by slice number, which is what the markers and
+        // the pads are labelled with. A slice past the bank has no slot, which
+        // the model's own limit means cannot happen.
+        slot: project.automation_slot(cell.slice).unwrap_or(NO_SLOT),
     })
 }
 

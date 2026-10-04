@@ -1,6 +1,7 @@
 use saempler_dsp::{FilterMode, SaturationKind, Saturator, Svf};
 use saempler_model::{DriveShape, FilterShape, ModDestination, PlaybackMode};
 
+use crate::automation::{SliceAutomation, AUTOMATION_SLOTS};
 use crate::command::CellSpec;
 use crate::modulation::{Modulation, ModulationFrame, ModulationMonitor, PITCH_RANGE_SEMITONES};
 use crate::sample::SampleBuffer;
@@ -169,14 +170,30 @@ impl Voice {
     }
 
     /// How much of this voice each send should receive.
-    pub fn sends(&self) -> [f32; 4] {
+    ///
+    /// The automation adds to the reverb amount rather than replacing it, so a
+    /// lane left alone leaves the cell's own setting standing.
+    pub fn sends(&self, automation: &SliceAutomation) -> [f32; 4] {
         let effects = self.spec.effects;
         [
             effects.delay_send,
-            effects.reverb_send,
+            (effects.reverb_send + automation.reverb_send).clamp(0.0, 1.0),
             effects.phaser_send,
             effects.flanger_send,
         ]
+    }
+
+    /// Which automation slot this voice follows.
+    ///
+    /// Out of range slots read the idle slot the engine keeps past the bank,
+    /// so a voice never has to check whether it has one.
+    pub fn slot(&self) -> usize {
+        let slot = self.spec.slot as usize;
+        if slot < AUTOMATION_SLOTS {
+            slot
+        } else {
+            AUTOMATION_SLOTS
+        }
     }
 
     /// Start this voice, replacing whatever it was playing before.
@@ -417,7 +434,11 @@ impl Voice {
     /// voice therefore never reads past its own slice: doing so would mix the
     /// neighbouring chop into the tail, and would show a playhead running on
     /// past the region it is playing.
-    pub fn next_frame(&mut self, sample: &SampleBuffer) -> (f32, f32) {
+    pub fn next_frame(
+        &mut self,
+        sample: &SampleBuffer,
+        automation: &SliceAutomation,
+    ) -> (f32, f32) {
         if !self.active {
             return (0.0, 0.0);
         }
@@ -462,9 +483,11 @@ impl Voice {
 
         // Pitch and rate both scale the read speed: pitch in semitones, rate
         // as a plain multiplier, exactly as the destinations are named.
-        let pitch = modulation.get(ModDestination::Pitch) * PITCH_RANGE_SEMITONES;
+        let pitch = modulation.get(ModDestination::Pitch) * PITCH_RANGE_SEMITONES
+            + automation.pitch_semitones;
         let rate_mod = (1.0 + modulation.get(ModDestination::PlaybackRate)).max(0.01);
-        let step = self.rate * self.rate_scale * (rate_mod * semitones(pitch)) as f64;
+        let step =
+            self.rate * self.rate_scale * (rate_mod * semitones(pitch) * automation.speed) as f64;
 
         if self.reverse {
             self.position -= step;
@@ -477,7 +500,8 @@ impl Voice {
         self.loop_scale =
             2.0f32.powf(modulation.get(ModDestination::LoopLength) * LOOP_RANGE_OCTAVES);
 
-        let level = (modulation.get(ModDestination::Volume) * self.spec.gain).clamp(0.0, 4.0);
+        let level = (modulation.get(ModDestination::Volume) * self.spec.gain * automation.gain)
+            .clamp(0.0, 4.0);
         let pan = modulation.get(ModDestination::Pan).clamp(-1.0, 1.0);
         let (left_gain, right_gain) = pan_gains(pan);
 
@@ -485,8 +509,8 @@ impl Voice {
         // to work with, and the level is the last thing in the chain so that
         // turning a voice down turns down what it actually produced.
         let effects = self.spec.effects;
-        if self.effects_modulated {
-            self.modulate_effects(&modulation);
+        if self.effects_modulated || automation.moves_the_filter() {
+            self.modulate_effects(&modulation, automation);
         }
         let (mut left, mut right) = (left, right);
         if effects.filter_on {
@@ -520,10 +544,13 @@ impl Voice {
     ///
     /// The ranges are in octaves rather than in hertz, so a sweep covers the
     /// same musical distance wherever the knob was left.
-    fn modulate_effects(&mut self, modulation: &ModulationFrame) {
+    fn modulate_effects(&mut self, modulation: &ModulationFrame, automation: &SliceAutomation) {
         let effects = self.spec.effects;
         let cutoff = effects.cutoff_hz
-            * octaves(modulation.get(ModDestination::FilterCutoff) * CUTOFF_RANGE_OCTAVES);
+            * octaves(
+                modulation.get(ModDestination::FilterCutoff) * CUTOFF_RANGE_OCTAVES
+                    + automation.cutoff_octaves,
+            );
         let resonance =
             effects.resonance + modulation.get(ModDestination::Resonance) * RESONANCE_RANGE;
         let drive =
@@ -632,6 +659,20 @@ fn octaves(value: f32) -> f32 {
     2.0f32.powf(value)
 }
 
+#[cfg(test)]
+mod automation_ranges {
+    use super::*;
+    use crate::automation::{AUTOMATION_CUTOFF_OCTAVES, AUTOMATION_PITCH_SEMITONES};
+
+    #[test]
+    fn the_automation_reaches_as_far_as_the_matrix_does() {
+        // The host's parameter is labelled in octaves and semitones; those
+        // labels are only true while these agree.
+        assert_eq!(AUTOMATION_CUTOFF_OCTAVES, CUTOFF_RANGE_OCTAVES);
+        assert_eq!(AUTOMATION_PITCH_SEMITONES, PITCH_RANGE_SEMITONES);
+    }
+}
+
 /// Left and right gain for a pan position from -1 to 1.
 ///
 /// Constant power, so a sound does not jump in level as it moves across. The
@@ -696,6 +737,12 @@ fn interpolated(sample: &SampleBuffer, position: f64) -> (f32, f32) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An automation slot that changes nothing, for tests that are not about
+    /// automation.
+    fn idle() -> SliceAutomation {
+        SliceAutomation::default()
+    }
     use crate::command::SliceBounds;
     use crate::modulation::ModulationSpec;
     use saempler_model::{
@@ -768,10 +815,10 @@ mod tests {
         start(&mut voice, spec);
         // Past the attack, so the envelope is not what is being measured.
         for _ in 0..500 {
-            voice.next_frame(&buffer);
+            voice.next_frame(&buffer, &idle());
         }
         (0..frames).fold(0.0f32, |loudest, _| {
-            let (left, _) = voice.next_frame(&buffer);
+            let (left, _) = voice.next_frame(&buffer, &idle());
             loudest.max(left.abs())
         })
     }
@@ -875,9 +922,9 @@ mod tests {
             let mut voice = Voice::default();
             start(&mut voice, spec);
             for _ in 0..500 {
-                voice.next_frame(&buffer);
+                voice.next_frame(&buffer, &idle());
             }
-            voice.next_frame(&buffer).0
+            voice.next_frame(&buffer, &idle()).0
         };
 
         let plain = level(CellSpec {
@@ -929,7 +976,7 @@ mod tests {
         let mut voice = Voice::default();
 
         assert!(!voice.is_active());
-        assert_eq!(voice.next_frame(&buffer), (0.0, 0.0));
+        assert_eq!(voice.next_frame(&buffer, &idle()), (0.0, 0.0));
     }
 
     #[test]
@@ -941,13 +988,13 @@ mod tests {
         let mut inside = Voice::default();
         start(&mut inside, spec(500, 700));
         let heard = (0..100)
-            .map(|_| inside.next_frame(&buffer).0.abs())
+            .map(|_| inside.next_frame(&buffer, &idle()).0.abs())
             .fold(0.0f32, f32::max);
 
         let mut before = Voice::default();
         start(&mut before, spec(0, 200));
         let silent = (0..100)
-            .map(|_| before.next_frame(&buffer).0.abs())
+            .map(|_| before.next_frame(&buffer, &idle()).0.abs())
             .fold(0.0f32, f32::max);
 
         assert!(heard > 0.0, "a slice over audio must sound");
@@ -967,7 +1014,7 @@ mod tests {
         );
 
         let peak = (0..5_000)
-            .map(|_| voice.next_frame(&buffer).0.abs())
+            .map(|_| voice.next_frame(&buffer, &idle()).0.abs())
             .fold(0.0f32, f32::max);
 
         assert_eq!(peak, 0.0, "an empty matrix means no amplitude");
@@ -995,14 +1042,14 @@ mod tests {
         start(&mut voice, spec);
 
         for _ in 0..4_800 {
-            voice.next_frame(&buffer);
+            voice.next_frame(&buffer, &idle());
         }
-        let peak = voice.next_frame(&buffer).0;
+        let peak = voice.next_frame(&buffer, &idle()).0;
 
         for _ in 0..19_200 {
-            voice.next_frame(&buffer);
+            voice.next_frame(&buffer, &idle());
         }
-        let sustain = voice.next_frame(&buffer).0;
+        let sustain = voice.next_frame(&buffer, &idle()).0;
 
         assert!(peak > 0.9, "the attack should have opened: {peak}");
         assert!(
@@ -1028,7 +1075,7 @@ mod tests {
         quiet.start(60, 0.25, 0, spec, spec, SAMPLE_RATE, TEMPO);
 
         let peak = (0..1_000)
-            .map(|_| quiet.next_frame(&buffer).0.abs())
+            .map(|_| quiet.next_frame(&buffer, &idle()).0.abs())
             .fold(0.0f32, f32::max);
 
         assert!((peak - 0.25).abs() < 0.05, "{peak}");
@@ -1066,8 +1113,8 @@ mod tests {
         // A square wave at full amount spends the first half cycle up, so the
         // modulated voice reads further in the same time.
         for _ in 0..6_000 {
-            modulated.next_frame(&buffer);
-            plain.next_frame(&buffer);
+            modulated.next_frame(&buffer, &idle());
+            plain.next_frame(&buffer, &idle());
         }
 
         assert!(
@@ -1095,9 +1142,9 @@ mod tests {
         let mut voice = Voice::default();
         voice.start(60, 1.0, 0, spec, spec, SAMPLE_RATE, TEMPO);
         for _ in 0..1_000 {
-            voice.next_frame(&buffer);
+            voice.next_frame(&buffer, &idle());
         }
-        let (left, right) = voice.next_frame(&buffer);
+        let (left, right) = voice.next_frame(&buffer, &idle());
 
         assert!(right > left * 4.0, "full right expected: {left} vs {right}");
     }
@@ -1132,7 +1179,7 @@ mod tests {
         start(&mut voice, spec(0, 1_000));
 
         for _ in 0..2_000 {
-            voice.next_frame(&buffer);
+            voice.next_frame(&buffer, &idle());
         }
 
         assert!(!voice.is_active());
@@ -1149,7 +1196,7 @@ mod tests {
         start(&mut voice, spec);
 
         for _ in 0..10_000 {
-            voice.next_frame(&buffer);
+            voice.next_frame(&buffer, &idle());
         }
 
         assert!(voice.is_active(), "the loop should still be running");
@@ -1161,7 +1208,7 @@ mod tests {
 
         voice.release();
         for _ in 0..10_000 {
-            voice.next_frame(&buffer);
+            voice.next_frame(&buffer, &idle());
         }
 
         assert!(!voice.is_active(), "the release should have ended it");
@@ -1180,7 +1227,7 @@ mod tests {
 
         let mut heard = 0.0f32;
         for _ in 0..20_000 {
-            heard = heard.max(voice.next_frame(&buffer).0.abs());
+            heard = heard.max(voice.next_frame(&buffer, &idle()).0.abs());
             assert!(
                 (1_000..3_000).contains(&voice.position()),
                 "left the slice: {}",
@@ -1203,7 +1250,7 @@ mod tests {
         let mut voice = Voice::default();
         start(&mut voice, forwards);
         for _ in 0..3_000 {
-            voice.next_frame(&buffer);
+            voice.next_frame(&buffer, &idle());
         }
 
         // The reverse modifier, engaged while the loop is already running.
@@ -1214,7 +1261,7 @@ mod tests {
 
         let mut heard = 0.0f32;
         for _ in 0..20_000 {
-            heard = heard.max(voice.next_frame(&buffer).0.abs());
+            heard = heard.max(voice.next_frame(&buffer, &idle()).0.abs());
         }
 
         assert!(voice.is_active(), "reversing should not end the voice");
@@ -1238,7 +1285,7 @@ mod tests {
         let mut lowest = u64::MAX;
         let mut previous = voice.position();
         for _ in 0..40_000 {
-            voice.next_frame(&buffer);
+            voice.next_frame(&buffer, &idle());
             let position = voice.position();
             if position > previous {
                 passes.push(previous);
@@ -1276,10 +1323,10 @@ mod tests {
         let mut voice = Voice::default();
         start(&mut voice, spec);
 
-        voice.next_frame(&buffer);
+        voice.next_frame(&buffer, &idle());
         voice.release();
         for _ in 0..1_000 {
-            voice.next_frame(&buffer);
+            voice.next_frame(&buffer, &idle());
         }
 
         assert!(voice.is_active(), "it should play on");
@@ -1287,7 +1334,7 @@ mod tests {
 
         // It still ends at the slice edge rather than running on.
         for _ in 0..5_000 {
-            voice.next_frame(&buffer);
+            voice.next_frame(&buffer, &idle());
         }
         assert!(!voice.is_active());
     }
@@ -1306,7 +1353,7 @@ mod tests {
 
         let mut highest = 0;
         for _ in 0..30_000 {
-            voice.next_frame(&buffer);
+            voice.next_frame(&buffer, &idle());
             highest = highest.max(voice.position());
         }
 
@@ -1332,7 +1379,7 @@ mod tests {
         let mut highest = 0;
         let mut previous = 0;
         for _ in 0..40_000 {
-            voice.next_frame(&buffer);
+            voice.next_frame(&buffer, &idle());
             let position = voice.position();
             if position < previous {
                 passes.push(highest);
@@ -1370,7 +1417,7 @@ mod tests {
         start(&mut voice, spec);
 
         for _ in 0..200_000 {
-            voice.next_frame(&buffer);
+            voice.next_frame(&buffer, &idle());
         }
 
         assert!(voice.is_active(), "it should still be looping");
@@ -1395,7 +1442,7 @@ mod tests {
 
         // While held it plays straight through, past the loop length.
         for _ in 0..20_000 {
-            voice.next_frame(&buffer);
+            voice.next_frame(&buffer, &idle());
         }
         assert!(
             voice.position() > 10_000,
@@ -1407,7 +1454,7 @@ mod tests {
         voice.release();
         let mut highest = 0;
         for _ in 0..5_000 {
-            voice.next_frame(&buffer);
+            voice.next_frame(&buffer, &idle());
             highest = highest.max(voice.position());
         }
 
@@ -1434,7 +1481,7 @@ mod tests {
 
         let edge = 4_000.0 / frames as f32;
         for _ in 0..50_000 {
-            let (left, _) = voice.next_frame(&buffer);
+            let (left, _) = voice.next_frame(&buffer, &idle());
             assert!(left <= edge, "read past the slice end: {left} > {edge}");
         }
     }
@@ -1460,7 +1507,7 @@ mod tests {
 
         let mut highest = 0;
         for _ in 0..30_000 {
-            voice.next_frame(&buffer);
+            voice.next_frame(&buffer, &idle());
             highest = highest.max(voice.position());
         }
 
@@ -1488,8 +1535,8 @@ mod tests {
         );
 
         for _ in 0..200 {
-            forward.next_frame(&buffer);
-            backward.next_frame(&buffer);
+            forward.next_frame(&buffer, &idle());
+            backward.next_frame(&buffer, &idle());
         }
 
         assert_eq!(forward.position(), 300);
@@ -1503,7 +1550,7 @@ mod tests {
         start(&mut voice, spec(0, 500));
 
         for _ in 0..10_000 {
-            voice.next_frame(&buffer);
+            voice.next_frame(&buffer, &idle());
         }
 
         assert!(!voice.is_active());
@@ -1519,7 +1566,7 @@ mod tests {
         start(&mut voice, spec(0, 10_000));
 
         let peak = (0..20_000)
-            .map(|_| voice.next_frame(&buffer).0.abs())
+            .map(|_| voice.next_frame(&buffer, &idle()).0.abs())
             .fold(0.0f32, f32::max);
 
         assert_eq!(peak, 0.0, "the voice read past its own slice");
@@ -1547,7 +1594,7 @@ mod tests {
         let mut voice = Voice::default();
         start(&mut voice, long);
         let peak = (0..40_000)
-            .map(|_| voice.next_frame(&buffer).0.abs())
+            .map(|_| voice.next_frame(&buffer, &idle()).0.abs())
             .fold(0.0f32, f32::max);
 
         assert_eq!(peak, 0.0, "a long release must not borrow the next slice");
@@ -1561,7 +1608,7 @@ mod tests {
         start(&mut voice, spec(20_000, 30_000));
 
         while voice.is_active() {
-            voice.next_frame(&buffer);
+            voice.next_frame(&buffer, &idle());
             if !voice.is_active() {
                 break;
             }
@@ -1586,7 +1633,7 @@ mod tests {
         );
 
         for _ in 0..10_000 {
-            voice.next_frame(&buffer);
+            voice.next_frame(&buffer, &idle());
             assert!(
                 voice.position() <= 1_000,
                 "a looping voice left its loop at {}",
@@ -1609,7 +1656,7 @@ mod tests {
         );
 
         for _ in 0..50_000 {
-            voice.next_frame(&buffer);
+            voice.next_frame(&buffer, &idle());
         }
 
         assert!(!voice.is_active(), "it must still end at the slice");
@@ -1627,12 +1674,12 @@ mod tests {
             },
         );
         for _ in 0..5_000 {
-            voice.next_frame(&buffer);
+            voice.next_frame(&buffer, &idle());
         }
 
         voice.release();
         for _ in 0..10_000 {
-            voice.next_frame(&buffer);
+            voice.next_frame(&buffer, &idle());
         }
 
         assert!(!voice.is_active());
@@ -1652,7 +1699,7 @@ mod tests {
 
         let mut positions = Vec::new();
         for frame in 0..4_800 {
-            voice.next_frame(&buffer);
+            voice.next_frame(&buffer, &idle());
             if frame % 800 == 0 {
                 positions.push(voice.position());
             }
@@ -1684,14 +1731,14 @@ mod tests {
         let mut first = Voice::default();
         start(&mut first, slow_attack);
         for _ in 0..8_000 {
-            first.next_frame(&buffer);
+            first.next_frame(&buffer, &idle());
         }
 
         let mut second = Voice::default();
         second.start(60, 1.0, 1, slow_attack, slow_attack, SAMPLE_RATE, TEMPO);
 
-        let early = first.next_frame(&buffer).0;
-        let late = second.next_frame(&buffer).0;
+        let early = first.next_frame(&buffer, &idle()).0;
+        let late = second.next_frame(&buffer, &idle()).0;
 
         assert!(
             early > late * 4.0,
@@ -1723,7 +1770,7 @@ mod tests {
             );
 
             for _ in 0..5_000 {
-                let (left, right) = voice.next_frame(&buffer);
+                let (left, right) = voice.next_frame(&buffer, &idle());
                 assert!(left.is_finite() && right.is_finite(), "rate {rate}");
                 assert!(left.abs() <= 1.5, "rate {rate} produced {left}");
             }
@@ -1739,7 +1786,7 @@ mod tests {
         voice.kill();
 
         assert!(!voice.is_active());
-        assert_eq!(voice.next_frame(&buffer), (0.0, 0.0));
+        assert_eq!(voice.next_frame(&buffer, &idle()), (0.0, 0.0));
     }
 
     #[test]
@@ -1749,7 +1796,7 @@ mod tests {
         start(&mut voice, spec(1_000, 2_000));
 
         for _ in 0..64 {
-            assert_eq!(voice.next_frame(&buffer), (0.0, 0.0));
+            assert_eq!(voice.next_frame(&buffer, &idle()), (0.0, 0.0));
         }
     }
 }

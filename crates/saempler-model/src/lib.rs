@@ -26,5 +26,5 @@ pub use modulation::{
     default_routes, Division, EnvelopeDefinition, LfoDefinition, LfoShape, ModDestination,
     ModSource, ModulationRoute, DESTINATION_COUNT, ENVELOPE_COUNT, LFO_COUNT, MAX_ROUTES,
 };
-pub use project::{Project, ProjectError, ProjectFile, SampleRef, PROJECT_VERSION};
+pub use project::{Project, ProjectError, ProjectFile, SampleRef, MAX_SLICES, PROJECT_VERSION};
 pub use slice::{Slice, SliceId};

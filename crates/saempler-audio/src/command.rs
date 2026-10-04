@@ -2,6 +2,8 @@ use std::sync::Arc;
 
 use saempler_model::{CellEffects, Modifier, ModifierMode, PlaybackMode, SendRack};
 
+use crate::automation::NO_SLOT;
+
 use crate::modulation::ModulationSpec;
 use crate::sample::SampleBuffer;
 
@@ -76,6 +78,12 @@ pub struct CellSpec {
     pub release_trigger: bool,
     /// Filter, drive and how much of this cell reaches each send.
     pub effects: CellEffects,
+    /// Which automation slot this cell follows, or [`NO_SLOT`].
+    ///
+    /// The slot belongs to the slice rather than to the cell, because the
+    /// slice is what the interface numbers and what the host's parameter is
+    /// named after.
+    pub slot: u8,
 }
 
 impl Default for CellSpec {
@@ -92,6 +100,7 @@ impl Default for CellSpec {
             cycle_whole_notes: 0.0625,
             collapse: 0.75,
             release_trigger: false,
+            slot: NO_SLOT,
             effects: CellEffects {
                 // An audition and a hand built spec should sound like the
                 // cell they stand for, which by default is untouched.
