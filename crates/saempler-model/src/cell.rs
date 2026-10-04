@@ -254,6 +254,14 @@ impl PerformanceCell {
     }
 }
 
+/// Whether a key is a black one.
+///
+/// The twelve semitones repeat, and the five raised keys of an octave sit at
+/// these offsets from its C.
+pub fn is_black_key(note: u8) -> bool {
+    matches!(note % 12, 1 | 3 | 6 | 8 | 10)
+}
+
 /// Name of a MIDI note, with C3 at note 60.
 ///
 /// Octave numbering differs between makers; this follows the convention most

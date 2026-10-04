@@ -1,4 +1,4 @@
-use nih_plug_egui::egui::{self, pos2, vec2, Align2, FontId, Id, Sense, Ui};
+use nih_plug_egui::egui::{self, pos2, vec2, Align2, FontId, Id, Rect, Sense, Ui};
 use saempler_audio::EngineCommand;
 use saempler_model::{note_name, Modifier, ModifierMode, ProjectFile};
 
@@ -121,8 +121,9 @@ pub fn modifier_section(ui: &mut Ui, state: &ViewState<'_>) {
 
 /// One key's display card: lamp, what it does, which key, how it responds.
 fn card(ui: &mut Ui, note: u8, modifier: Modifier, mode: ModifierMode, engaged: bool) {
-    let (rect, _) = ui.allocate_exact_size(vec2(CARD_WIDTH, CARD_HEIGHT), Sense::hover());
+    let rect = Rect::from_min_size(ui.cursor().min, vec2(CARD_WIDTH, CARD_HEIGHT));
     inset(ui.painter(), &THEME, rect, THEME.control_pressed_bg);
+    ui.advance_cursor_after_rect(rect);
 
     let painter = ui.painter();
     lamp(

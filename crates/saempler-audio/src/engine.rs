@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use saempler_dsp::{Delay, Flanger, Phaser, Reverb};
+use saempler_dsp::{Delay, Flanger, Phaser, Reverb, SaturationKind, Saturator};
 use saempler_model::{Modifier, ModifierMode, SendEffects};
 
 use crate::command::{CellSpec, CommandConsumer, DisposalProducer, EngineCommand};
@@ -56,6 +56,9 @@ pub struct Engine {
     phaser: Phaser,
     flanger: Flanger,
     sends: SendEffects,
+    /// Saturates the wet path while an effect modifier is held.
+    send_drive: Saturator,
+    driving: bool,
     sample: Option<Arc<SampleBuffer>>,
     /// What each MIDI note plays. A fixed array rather than a map, so that a
     /// note on is a single index instead of a lookup.
@@ -84,6 +87,8 @@ impl Engine {
             phaser: Phaser::default(),
             flanger: Flanger::default(),
             sends: SendEffects::default(),
+            send_drive: Saturator::default(),
+            driving: false,
             sample: None,
             cells: [None; NOTE_COUNT],
             modifier_notes: [None; NOTE_COUNT],
@@ -281,6 +286,9 @@ impl Engine {
         if let Some((modifier, mode)) = self.modifier_note(note) {
             self.modifiers.press(modifier, mode);
             self.retune_voices();
+            // An effect modifier changes the shared sends, not only the
+            // voices, so they are pointed at their driven settings here.
+            self.apply_sends();
             self.meters.store_modifiers(self.modifiers.bits());
             return;
         }
@@ -352,6 +360,7 @@ impl Engine {
         if let Some((modifier, mode)) = self.modifier_note(note) {
             self.modifiers.release(modifier, mode);
             self.retune_voices();
+            self.apply_sends();
             self.meters.store_modifiers(self.modifiers.bits());
             return;
         }
@@ -374,22 +383,59 @@ impl Engine {
     /// of these allocate, and a synced delay has to follow the host.
     fn apply_sends(&mut self) {
         let sends = self.sends.sanitized();
-        self.delay.set(
-            sends.delay_time(self.tempo),
-            sends.delay_feedback,
-            sends.delay_damping_hz,
+
+        // An effect modifier drives its send far past where the settings are,
+        // because the point of the key is a gesture that wrecks the sound for
+        // as long as it is held. The settings are untouched: letting go puts
+        // the send straight back where it was.
+        if self.modifiers.driven_send(0) {
+            self.delay
+                .set(sends.delay_time(self.tempo) * 0.5, 0.92, 16_000.0);
+        } else {
+            self.delay.set(
+                sends.delay_time(self.tempo),
+                sends.delay_feedback,
+                sends.delay_damping_hz,
+            );
+        }
+
+        if self.modifiers.driven_send(1) {
+            self.reverb.set(1.0, 0.05);
+        } else {
+            self.reverb.set(sends.reverb_size, sends.reverb_damping);
+        }
+
+        if self.modifiers.driven_send(2) {
+            self.phaser.set(4.0, 1.0, 0.9);
+        } else {
+            self.phaser.set(
+                sends.phaser_rate_hz,
+                sends.phaser_depth,
+                sends.phaser_feedback,
+            );
+        }
+
+        if self.modifiers.driven_send(3) {
+            self.flanger.set(2.0, 1.0, 0.92);
+        } else {
+            self.flanger.set(
+                sends.flanger_rate_hz,
+                sends.flanger_depth,
+                sends.flanger_feedback,
+            );
+        }
+
+        // The wet path is saturated while a send is being driven, which is
+        // what makes it sound thrown rather than merely turned up.
+        self.send_drive.set(
+            SaturationKind::Tube,
+            if (0..SEND_COUNT).any(|index| self.modifiers.driven_send(index)) {
+                6.0
+            } else {
+                1.0
+            },
         );
-        self.reverb.set(sends.reverb_size, sends.reverb_damping);
-        self.phaser.set(
-            sends.phaser_rate_hz,
-            sends.phaser_depth,
-            sends.phaser_feedback,
-        );
-        self.flanger.set(
-            sends.flanger_rate_hz,
-            sends.flanger_depth,
-            sends.flanger_feedback,
-        );
+        self.driving = (0..SEND_COUNT).any(|index| self.modifiers.driven_send(index));
     }
 
     /// Count down the audition and let go of its key when the time is up.
@@ -503,8 +549,13 @@ impl Engine {
                 self.phaser.process(feed[2].0, feed[2].1),
                 self.flanger.process(feed[3].0, feed[3].1),
             ] {
-                mix_left += wet_left;
-                mix_right += wet_right;
+                if self.driving {
+                    mix_left += self.send_drive.process(wet_left);
+                    mix_right += self.send_drive.process(wet_right);
+                } else {
+                    mix_left += wet_left;
+                    mix_right += wet_right;
+                }
             }
 
             mix_left *= gain;
@@ -746,6 +797,77 @@ mod tests {
             closed < open * 0.5,
             "the filter did nothing: {open} -> {closed}"
         );
+    }
+
+    #[test]
+    fn an_effect_modifier_throws_a_dry_cell_into_its_send() {
+        let mut h = harness();
+        load(&mut h, 48_000);
+        h.commands
+            .push(EngineCommand::SetModifier {
+                note: 48,
+                assignment: Some((Modifier::Reverb, ModifierMode::Hold)),
+            })
+            .expect("the queue has capacity");
+        h.engine.apply_commands();
+
+        // The cell feeds nothing: without the key held there is no tail.
+        h.engine.note_on(60, 1.0);
+        render(&mut h.engine, 480);
+        h.engine.note_off(60);
+        let dry_tail = peak(&mut h.engine, 48_000);
+
+        let mut wet = harness();
+        load(&mut wet, 48_000);
+        wet.commands
+            .push(EngineCommand::SetModifier {
+                note: 48,
+                assignment: Some((Modifier::Reverb, ModifierMode::Hold)),
+            })
+            .expect("the queue has capacity");
+        wet.engine.apply_commands();
+
+        wet.engine.note_on(48, 1.0);
+        wet.engine.note_on(60, 1.0);
+        render(&mut wet.engine, 480);
+        wet.engine.note_off(60);
+        let wet_tail = peak(&mut wet.engine, 48_000);
+
+        assert!(
+            wet_tail > dry_tail + 0.001,
+            "the key did not throw it into the send: {dry_tail} vs {wet_tail}"
+        );
+    }
+
+    #[test]
+    fn letting_go_of_an_effect_modifier_puts_the_send_back() {
+        let mut h = harness();
+        load(&mut h, 48_000);
+        h.commands
+            .push(EngineCommand::SetModifier {
+                note: 48,
+                assignment: Some((Modifier::Delay, ModifierMode::Hold)),
+            })
+            .expect("the queue has capacity");
+        h.engine.apply_commands();
+
+        h.engine.note_on(48, 1.0);
+        h.engine.note_on(60, 1.0);
+        render(&mut h.engine, 4_800);
+        h.engine.note_off(48);
+        h.engine.note_off(60);
+
+        // Whatever is still ringing has to die away rather than build up on
+        // the driven feedback it was left with.
+        let output = render(&mut h.engine, 48_000 * 10);
+
+        assert!(output.iter().all(|sample| sample.is_finite()));
+        let tail = output
+            .iter()
+            .rev()
+            .take(4_800)
+            .fold(0.0f32, |loudest, sample| loudest.max(sample.abs()));
+        assert!(tail < 0.5, "it never settled: {tail}");
     }
 
     #[test]

@@ -4,7 +4,7 @@ use saempler_core::cell_spec;
 use saempler_model::ProjectFile;
 
 use crate::screens::main::{placeholder, section, ViewState, THEME};
-use crate::widgets::{icon_button, performance_pad, Icon, PadView, MIN_PAD_SIZE, PAD_SIZE};
+use crate::widgets::{icon_button, performance_pad, toggle, Icon, PadView, MIN_PAD_SIZE, PAD_SIZE};
 
 /// Note the automatic mapping starts at.
 const BASE_NOTE: u8 = 60;
@@ -234,6 +234,19 @@ fn toolbar(ui: &mut Ui, state: &ViewState<'_>) {
         ) {
             copy_selected_to_next_note(state);
         }
+
+        ui.add_space(THEME.spacing_md);
+        let white_only = state
+            .project
+            .lock()
+            .map(|project| project.project.white_keys_only())
+            .unwrap_or(false);
+        if toggle(ui, &THEME, "Nur weiße Tasten", white_only) {
+            if let Ok(mut project) = state.project.lock() {
+                project.project.set_white_keys_only(!white_only);
+            }
+        }
+        ui.add_space(THEME.spacing_md);
 
         if icon_button(ui, &THEME, Icon::Clear, "Alle Noten leeren") {
             if let Ok(mut project) = state.project.lock() {

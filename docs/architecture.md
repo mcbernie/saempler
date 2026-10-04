@@ -291,6 +291,33 @@ so one chop can be soaked while the next stays dry.
 The sends run every frame whether or not anything is feeding them, because a
 reverb tail has to carry on after the last voice has stopped.
 
+## Effect modifiers
+
+Four of the modifier keys throw the sound into a send. They do two things at
+once: the send amount of every voice they touch goes to one, and the shared
+send itself is pointed at a driven setting far past where its knobs are, with
+the wet path saturated on top. That is what makes the key a gesture rather
+than a louder version of a knob.
+
+The settings are untouched by any of it. Letting go of the key puts the send
+straight back where the user left it.
+
+They are not in the default layout. The playback modifiers already take five
+keys of the bottom octave, and an effect key is something to reach for
+deliberately.
+
+## Keys
+
+Modifiers start at C2, an octave below where chops are usually mapped and
+still reachable on a short keyboard without shifting octaves.
+
+A project can be told to keep chops off the raised keys, which lines a run of
+them up with the scale under the hand. It applies wherever the instrument
+places a cell itself and wherever one is moved to, so a layout cannot drift
+off the rule once it is set. Switching it on does not rearrange what is
+already mapped: a layout built by hand is the user's, and moving it under them
+would lose work.
+
 ## Editing while playing
 
 An edit to a cell reaches the voices already sounding it, not only the next

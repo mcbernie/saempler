@@ -151,6 +151,14 @@ The CELL page edits the selected pad. Playback holds reverse, speed, pitch and
 gain; speed and pitch both change the read rate, so a transposed cell is also
 shorter.
 
+The modifier keys start at C2. Besides the five playback ones there are four
+that throw everything into a send, driven far harder than its own settings:
+delay, reverb, phaser and flanger. They are not mapped by default; add them in
+the modifier window, where any key can also be cloned onto the next free one.
+
+"Nur weiße Tasten" in the performance panel keeps chops off the black keys, so
+a run of them lines up with the scale under the hand.
+
 ```
 Gate        plays while the key is held
 One Shot    plays the slice to its end, whatever the key does

@@ -126,7 +126,36 @@ impl ModifierState {
             spec.tape_stop_frames = division_frames(tempo, sample_rate, 1);
         }
 
+        // An effect modifier opens its send all the way, whatever the cell
+        // was set to. The send itself is driven hard at the same time, by the
+        // engine, because the effects are shared and a per-voice amount
+        // cannot change how a shared reverb sounds.
+        let sends = [
+            &mut spec.effects.delay_send,
+            &mut spec.effects.reverb_send,
+            &mut spec.effects.phaser_send,
+            &mut spec.effects.flanger_send,
+        ];
+        for (index, amount) in sends.into_iter().enumerate() {
+            let driving = Modifier::ALL
+                .iter()
+                .any(|modifier| modifier.send() == Some(index) && engaged(self, *modifier));
+            if driving {
+                *amount = 1.0;
+            }
+        }
+
         spec
+    }
+
+    /// Whether any effect modifier is in effect right now.
+    ///
+    /// Used by the engine to decide whether the shared sends run at their
+    /// settings or at the driven ones.
+    pub fn driven_send(&self, index: usize) -> bool {
+        Modifier::ALL
+            .iter()
+            .any(|modifier| modifier.send() == Some(index) && self.is_live(*modifier))
     }
 }
 

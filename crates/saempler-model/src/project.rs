@@ -3,7 +3,7 @@ use std::path::PathBuf;
 
 use serde::{Deserialize, Serialize};
 
-use crate::cell::{CellId, PerformanceCell, PlaybackSettings};
+use crate::cell::{is_black_key, CellId, PerformanceCell, PlaybackSettings};
 use crate::effect::{CellEffects, SendEffects};
 use crate::modifier::{default_layout, Modifier, ModifierAssignment, ModifierMode};
 use crate::modulation::{EnvelopeDefinition, LfoDefinition};
@@ -61,6 +61,14 @@ pub struct Project {
     /// The sends, shared by every voice.
     #[serde(default)]
     sends: SendEffects,
+    /// Whether chops are kept off the raised keys.
+    ///
+    /// On a white-keys-only layout a run of chops lines up with the scale
+    /// under the hand, which is how most people play a chop kit. It applies
+    /// wherever the instrument places a cell itself and wherever one is moved
+    /// to, so that a layout cannot drift off the rule once it is set.
+    #[serde(default)]
+    white_keys_only: bool,
     /// Hands out the next slice identity. Kept in the project so identities
     /// stay unique across a session even when slices are deleted.
     next_slice_id: u32,
@@ -367,8 +375,9 @@ impl Project {
     ///
     /// Returns whether anything moved.
     pub fn move_cell_to_note(&mut self, id: CellId, note: u8) -> bool {
-        // A modifier key is not available for playing.
-        if self.modifier_for_note(note).is_some() {
+        // A modifier key is not available for playing, and nor is a raised
+        // one while they are being avoided.
+        if !self.key_allows_cell(note) {
             return false;
         }
 
@@ -525,7 +534,25 @@ impl Project {
 
     /// The lowest free note at or above `from`, for placing a new modifier.
     pub fn first_free_note(&self, from: u8) -> Option<u8> {
-        (from..=127).find(|note| !self.note_is_taken(*note))
+        (from..=127).find(|note| !self.note_is_taken(*note) && self.key_allows_cell(*note))
+    }
+
+    /// Whether chops are kept off the raised keys.
+    pub fn white_keys_only(&self) -> bool {
+        self.white_keys_only
+    }
+
+    /// Keep chops off the raised keys, or stop doing so.
+    ///
+    /// Switching it on does not move what is already mapped: a layout someone
+    /// built by hand is theirs, and rearranging it under them would lose work.
+    pub fn set_white_keys_only(&mut self, only: bool) {
+        self.white_keys_only = only;
+    }
+
+    /// Whether a cell may be put on this key.
+    pub fn key_allows_cell(&self, note: u8) -> bool {
+        self.modifier_for_note(note).is_none() && !(self.white_keys_only && is_black_key(note))
     }
 
     /// The sends every voice shares.
@@ -560,9 +587,10 @@ impl Project {
         let ids: Vec<SliceId> = self.slices.iter().map(|slice| slice.id).collect();
         let mut note = base_note;
         for slice in ids {
-            // Step over anything a modifier already owns, rather than losing
-            // that slice to a key it could never be played from.
-            while note <= 127 && self.modifier_for_note(note).is_some() {
+            // Step over anything a modifier owns, and over the raised keys
+            // when they are being avoided, rather than losing that slice to a
+            // key it could never be played from.
+            while note <= 127 && !self.key_allows_cell(note) {
                 note += 1;
             }
             if note > 127 {
@@ -687,6 +715,7 @@ impl Default for Project {
             cell_selection: None,
             modifiers: default_layout(),
             sends: SendEffects::default(),
+            white_keys_only: false,
             next_slice_id: 0,
             next_cell_id: 0,
         }
@@ -1259,6 +1288,54 @@ mod tests {
     }
 
     #[test]
+    fn mapping_skips_the_black_keys_when_asked_to() {
+        let mut project = project_with_sample(8_000);
+        project.slice_evenly(7);
+        project.set_white_keys_only(true);
+
+        project.map_slices_from(72);
+
+        let notes: Vec<u8> = project.cells().iter().map(|cell| cell.midi_note).collect();
+        assert_eq!(notes, vec![72, 74, 76, 77, 79, 81, 83], "{notes:?}");
+    }
+
+    #[test]
+    fn mapping_uses_every_key_when_not_asked_to() {
+        let mut project = project_with_sample(8_000);
+        project.slice_evenly(4);
+
+        project.map_slices_from(72);
+
+        let notes: Vec<u8> = project.cells().iter().map(|cell| cell.midi_note).collect();
+        assert_eq!(notes, vec![72, 73, 74, 75]);
+    }
+
+    #[test]
+    fn a_cell_will_not_move_onto_a_black_key_when_they_are_avoided() {
+        let mut project = project_with_sample(4_000);
+        let slice = project.add_slice(0, 1_000);
+        let id = project.assign(72, slice).expect("the slice exists");
+        project.set_white_keys_only(true);
+
+        assert!(!project.move_cell_to_note(id, 73), "C#4 is a black key");
+        assert!(project.move_cell_to_note(id, 74));
+    }
+
+    #[test]
+    fn switching_the_rule_on_leaves_what_is_already_mapped_alone() {
+        let mut project = project_with_sample(4_000);
+        let slice = project.add_slice(0, 1_000);
+        project.assign(73, slice).expect("the slice exists");
+
+        project.set_white_keys_only(true);
+
+        assert!(
+            project.cell_for_note(73).is_some(),
+            "a layout built by hand should not be rearranged under the user"
+        );
+    }
+
+    #[test]
     fn cloning_a_modifier_lands_on_the_next_free_key() {
         let mut project = Project::default();
         project.reset_modifiers();
@@ -1577,8 +1654,13 @@ mod tests {
     fn a_new_project_comes_with_the_modifier_layout() {
         let project = Project::default();
 
-        assert_eq!(project.modifiers().len(), crate::MODIFIER_COUNT);
-        assert!(project.modifier_for_note(36).is_some());
+        assert_eq!(
+            project.modifiers().len(),
+            crate::Modifier::DEFAULT_LAYOUT.len()
+        );
+        assert!(project
+            .modifier_for_note(crate::modifier::MODIFIER_BASE_NOTE)
+            .is_some());
     }
 
     #[test]
@@ -1739,7 +1821,10 @@ mod tests {
         let restored: ProjectFile =
             serde_json::from_str(r#"{"version":1,"project":{}}"#).expect("must deserialize");
 
-        assert_eq!(restored.project.modifiers().len(), crate::MODIFIER_COUNT);
+        assert_eq!(
+            restored.project.modifiers().len(),
+            crate::Modifier::DEFAULT_LAYOUT.len()
+        );
     }
 
     #[test]

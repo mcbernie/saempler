@@ -1,4 +1,4 @@
-use nih_plug_egui::egui::{self, pos2, vec2, Align2, FontId, Id, Rect, Sense, Ui};
+use nih_plug_egui::egui::{self, pos2, vec2, Align2, FontId, Id, Rect, Ui};
 use saempler_model::{
     CellEffects, Division, DriveShape, FilterShape, PerformanceCell, MAX_CUTOFF_HZ, MAX_DRIVE,
     MAX_RESONANCE, MIN_CUTOFF_HZ, MIN_RESONANCE,
@@ -13,9 +13,16 @@ use crate::widgets::{
 /// Diameter of a knob on an effect card.
 const KNOB: f32 = 34.0;
 /// Width of a send amount bar.
-const SEND_WIDTH: f32 = 84.0;
+const SEND_WIDTH: f32 = 136.0;
 /// Width of a selector on a card.
-const SELECTOR: f32 = 78.0;
+const SELECTOR: f32 = 84.0;
+/// Height of a card carrying knobs: the legend, the dial and its two label
+/// lines.
+const KNOB_CARD: f32 = 86.0;
+/// Height of a card carrying only bars.
+const BAR_CARD: f32 = 50.0;
+/// Room the legend takes at the top of a card.
+const CARD_LEGEND: f32 = 22.0;
 
 /// Memory key for whether the send window is open.
 fn sends_open_id() -> Id {
@@ -42,11 +49,15 @@ pub fn effects_section(ui: &mut Ui, cell: &mut PerformanceCell, sounding: bool) 
             }
         },
         |ui| {
+            ui.spacing_mut().item_spacing.y = THEME.spacing_sm;
+            // Two rows rather than three cards in one: the sends need the
+            // full width to line their four bars up, and a row of unequal
+            // cards reads as a leftover rather than as a layout.
             ui.horizontal(|ui| {
                 changed |= filter_card(ui, &mut cell.effects);
                 changed |= drive_card(ui, &mut cell.effects);
-                changed |= send_card(ui, &mut cell.effects);
             });
+            changed |= send_card(ui, &mut cell.effects);
         },
     );
 
@@ -62,34 +73,36 @@ pub fn effects_section(ui: &mut Ui, cell: &mut PerformanceCell, sounding: bool) 
 
 /// The recessed plate a card sits on, with its name and its lamp.
 ///
-/// Returns the area left for the controls.
-fn card(ui: &mut Ui, title: &str, width: f32, lit: bool) -> Rect {
-    let height = 86.0;
-    let (rect, _) = ui.allocate_exact_size(vec2(width, height), Sense::hover());
+/// Returns the area left for the controls, laid out the same way on every
+/// card so the three of them read as one row of equipment.
+fn card(ui: &mut Ui, title: &str, size: (f32, f32), lit: bool, contents: impl FnOnce(&mut Ui)) {
+    // The card's own rectangle, taken before anything is drawn in it. The
+    // cursor is advanced past it at the end rather than by allocating here:
+    // a child laid out in a given rectangle reports only the room it used,
+    // which would pull the cursor back inside the card and overlap the next.
+    let rect = Rect::from_min_size(ui.cursor().min, vec2(size.0, size.1));
     inset(ui.painter(), &THEME, rect, THEME.control_pressed_bg);
 
+    // The legend runs down the left edge of the card, which leaves the whole
+    // width for the controls and keeps every card the same shape.
     lamp(
         ui.painter(),
         &THEME,
-        pos2(rect.min.x + 12.0, rect.min.y + 13.0),
+        pos2(rect.min.x + 13.0, rect.min.y + 14.0),
         lit.then_some(THEME.accent),
     );
     ui.painter().text(
-        pos2(rect.min.x + 24.0, rect.min.y + 13.0),
+        pos2(rect.min.x + 25.0, rect.min.y + 14.0),
         Align2::LEFT_CENTER,
         title,
         FontId::proportional(THEME.font_sm),
         if lit { THEME.accent } else { THEME.text_dim },
     );
 
-    Rect::from_min_max(
-        pos2(rect.min.x + 6.0, rect.min.y + 22.0),
-        pos2(rect.max.x - 6.0, rect.max.y - 2.0),
-    )
-}
-
-/// Lay controls out inside a card.
-fn inside(ui: &mut Ui, area: Rect, contents: impl FnOnce(&mut Ui)) {
+    let area = Rect::from_min_max(
+        pos2(rect.min.x + 8.0, rect.min.y + CARD_LEGEND),
+        pos2(rect.max.x - 8.0, rect.max.y - 2.0),
+    );
     ui.scope_builder(
         egui::UiBuilder::new()
             .max_rect(area)
@@ -99,14 +112,14 @@ fn inside(ui: &mut Ui, area: Rect, contents: impl FnOnce(&mut Ui)) {
             contents(ui);
         },
     );
+    ui.advance_cursor_after_rect(rect);
 }
 
 fn filter_card(ui: &mut Ui, effects: &mut CellEffects) -> bool {
     let mut changed = false;
-    let area = card(ui, "FILTER", 216.0, effects.filter_on);
 
-    inside(ui, area, |ui| {
-        if toggle(ui, &THEME, "On", effects.filter_on) {
+    card(ui, "FILTER", (330.0, KNOB_CARD), effects.filter_on, |ui| {
+        if toggle(ui, &THEME, "An", effects.filter_on) {
             effects.filter_on = !effects.filter_on;
             changed = true;
         }
@@ -156,10 +169,9 @@ fn filter_card(ui: &mut Ui, effects: &mut CellEffects) -> bool {
 
 fn drive_card(ui: &mut Ui, effects: &mut CellEffects) -> bool {
     let mut changed = false;
-    let area = card(ui, "DRIVE", 158.0, effects.drive_on);
 
-    inside(ui, area, |ui| {
-        if toggle(ui, &THEME, "On", effects.drive_on) {
+    card(ui, "DRIVE", (262.0, KNOB_CARD), effects.drive_on, |ui| {
+        if toggle(ui, &THEME, "An", effects.drive_on) {
             effects.drive_on = !effects.drive_on;
             changed = true;
         }
@@ -169,7 +181,7 @@ fn drive_card(ui: &mut Ui, effects: &mut CellEffects) -> bool {
             .iter()
             .position(|shape| *shape == effects.drive_shape)
             .unwrap_or(0);
-        if let Some(index) = dropdown(ui, &THEME, "drive-shape", &shapes, selected, 62.0) {
+        if let Some(index) = dropdown(ui, &THEME, "drive-shape", &shapes, selected, SELECTOR) {
             effects.drive_shape = DriveShape::ALL[index];
             changed = true;
         }
@@ -199,48 +211,27 @@ fn send_card(ui: &mut Ui, effects: &mut CellEffects) -> bool {
         || effects.reverb_send > 0.0
         || effects.phaser_send > 0.0
         || effects.flanger_send > 0.0;
-    let area = card(ui, "SENDS", 198.0, any);
 
-    inside(ui, area, |ui| {
-        ui.spacing_mut().item_spacing = vec2(THEME.spacing_sm, 2.0);
-        ui.vertical(|ui| {
-            for (label, amount) in [
-                ("Delay", &mut effects.delay_send),
-                ("Reverb", &mut effects.reverb_send),
-            ] {
-                changed |= value_slider(
-                    ui,
-                    &THEME,
-                    SliderSpec {
-                        label,
-                        range: (0.0, 1.0),
-                        default: 0.0,
-                        unit: Unit::Plain,
-                        width: SEND_WIDTH,
-                    },
-                    amount,
-                );
-            }
-        });
-        ui.vertical(|ui| {
-            for (label, amount) in [
-                ("Phaser", &mut effects.phaser_send),
-                ("Flanger", &mut effects.flanger_send),
-            ] {
-                changed |= value_slider(
-                    ui,
-                    &THEME,
-                    SliderSpec {
-                        label,
-                        range: (0.0, 1.0),
-                        default: 0.0,
-                        unit: Unit::Plain,
-                        width: SEND_WIDTH,
-                    },
-                    amount,
-                );
-            }
-        });
+    card(ui, "SENDS", (600.0, BAR_CARD), any, |ui| {
+        for (label, amount) in [
+            ("Delay", &mut effects.delay_send),
+            ("Reverb", &mut effects.reverb_send),
+            ("Phaser", &mut effects.phaser_send),
+            ("Flanger", &mut effects.flanger_send),
+        ] {
+            changed |= value_slider(
+                ui,
+                &THEME,
+                SliderSpec {
+                    label,
+                    range: (0.0, 1.0),
+                    default: 0.0,
+                    unit: Unit::Plain,
+                    width: SEND_WIDTH,
+                },
+                amount,
+            );
+        }
     });
 
     changed

@@ -48,8 +48,11 @@ What works today:
 - a modulation matrix of up to eight routes, from envelopes, LFOs or velocity
   to volume, pan, pitch, playback rate or loop length; the amplitude envelope
   is one of those routes rather than a special case
-- modifier keys below the playing range: reverse, stutter, repeat, half-time
-  and brake, each in hold, toggle or one-shot mode, on freely chosen notes
+- modifier keys from C2: reverse, stutter, repeat, half-time and brake, plus
+  four that throw everything into a send driven far past its own settings,
+  each in hold, toggle or one-shot mode, on freely chosen notes
+- an option to keep chops off the black keys, so a run of them lines up with
+  the scale under the hand
 - modifiers take effect on notes already sounding, so a phrase can be turned
   round, stuttered and braked while it plays
 - polyphonic playback with a playhead per voice on the waveform and the pads

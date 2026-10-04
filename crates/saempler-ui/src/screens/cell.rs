@@ -27,7 +27,7 @@ const ARROW_WIDTH: f32 = 20.0;
 /// Height of the playback panel. The modulation panel takes what is left.
 const PLAYBACK_HEIGHT: f32 = 112.0;
 /// Height of the effects panel at the foot of the editor column.
-const EFFECTS_HEIGHT: f32 = 130.0;
+const EFFECTS_HEIGHT: f32 = 186.0;
 /// Keys a cell may be put on.
 ///
 /// Six octaves around where chops are usually mapped. The whole keyboard
