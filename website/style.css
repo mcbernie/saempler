@@ -233,6 +233,52 @@ p { margin: 0 0 1.1em; max-width: var(--measure); }
 .arrow { color: var(--dim); transform: rotate(-90deg); }
 .chain-note { margin: 0 auto; color: var(--dim); font-size: .94rem; }
 
+/* --- Hinweisband --------------------------------------------------------- */
+
+.banner {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 18px;
+  margin: 0 0 8px;
+  padding: 20px 22px;
+  border-radius: var(--radius);
+  background: linear-gradient(180deg, rgba(255, 196, 31, .09), rgba(255, 196, 31, .03));
+  border: 1px solid rgba(255, 196, 31, .3);
+}
+.banner p { margin: 0; flex: 1 1 24ch; max-width: var(--measure); font-size: .97rem; }
+.banner strong { color: var(--armed); }
+.banner .button { flex: none; }
+
+/* --- Bilder -------------------------------------------------------------- */
+
+figure { margin: 0 0 22px; }
+
+figure img {
+  display: block;
+  width: 100%;
+  height: auto;
+  border-radius: var(--radius);
+  border: 1px solid rgba(255, 255, 255, .09);
+  background: var(--inset);
+  box-shadow: 0 10px 40px rgba(0, 0, 0, .6);
+}
+
+figcaption {
+  margin-top: 10px;
+  color: var(--dim);
+  font-size: .9rem;
+  max-width: var(--measure);
+}
+
+/* The detail shots are small side by side, so they open on click. */
+figure a { display: block; text-decoration: none; }
+figure a img { transition: border-color .12s ease; }
+figure a:hover img { border-color: rgba(26, 240, 230, .5); }
+
+.shots { display: grid; grid-template-columns: 1fr; gap: 22px; }
+@media (min-width: 860px) { .shots { grid-template-columns: repeat(2, 1fr); } }
+
 /* --- Zweispalter --------------------------------------------------------- */
 
 .split { display: grid; grid-template-columns: 1fr; gap: 36px; align-items: start; }
