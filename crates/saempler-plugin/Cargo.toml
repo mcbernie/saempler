@@ -29,3 +29,19 @@ rfd.workspace = true
 [dev-dependencies]
 # Stands in for the host's state format in the round trip tests.
 serde_json.workspace = true
+
+[lints.rust]
+# `nih_export_vst3!` expands to `vst3_com::vtable`, which puts a trailing
+# semicolon in expression position. Newer compilers refuse that, and nothing
+# in this crate can change the macro; it goes when nih-plug's VST3 bindings
+# are updated.
+#
+# The lint was renamed along the way, so both names are listed and unknown
+# ones are tolerated: whichever compiler builds this, exactly one of the two
+# exists and the other would otherwise fail the check it is here to pass.
+#
+# Declared here rather than as an attribute on the invocation, because a
+# compiler that does not raise the lint reports the attribute as unused.
+unknown_lints = "allow"
+semicolon_in_expressions_from_macros = "allow"
+semicolon_in_expressions_from_non_local_macros = "allow"
