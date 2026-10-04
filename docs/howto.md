@@ -67,8 +67,9 @@ just verify
 ```
 
 That is formatting, compilation, Clippy with warnings as errors, and the
-tests — the chain to run before every commit. The individual steps
-are `just fmt-check`, `just check`, `just clippy` and `just test`.
+tests — the chain to run before every commit, and the same one CI runs. The
+individual steps are `just fmt-check`, `just check`, `just clippy` and
+`just test`.
 
 ## Running the standalone
 

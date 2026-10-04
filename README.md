@@ -1,6 +1,20 @@
 # Sämpler
 
+[![CI](https://github.com/mcbernie/saempler/actions/workflows/ci.yml/badge.svg)](https://github.com/mcbernie/saempler/actions/workflows/ci.yml)
+[![Release](https://github.com/mcbernie/saempler/actions/workflows/release.yml/badge.svg)](https://github.com/mcbernie/saempler/actions/workflows/release.yml)
+[![Latest release](https://img.shields.io/github/v/release/mcbernie/saempler?sort=semver&label=release)](https://github.com/mcbernie/saempler/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/mcbernie/saempler/total?label=downloads)](https://github.com/mcbernie/saempler/releases)
+[![License](https://img.shields.io/badge/license-GPL--3.0--or--later-blue)](LICENSE)
+[![Rust](https://img.shields.io/badge/rust-1.85%2B-dea584?logo=rust&logoColor=white)](https://www.rust-lang.org)
+[![Formats](https://img.shields.io/badge/formats-VST3%20%7C%20CLAP%20%7C%20standalone-1af0e6)](#building)
+[![Platforms](https://img.shields.io/badge/platforms-Windows%20%7C%20macOS%20%7C%20Linux-c8f4f0)](#building)
+[![Sponsor](https://img.shields.io/github/sponsors/mcbernie?label=sponsor&logo=githubsponsors&color=ff2e7e)](https://github.com/sponsors/mcbernie)
+
 A playable remix and vocal chop instrument, written in Rust.
+
+> **The design is not settled yet.** How it looks and how it plays are both
+> still open, and feedback is wanted while changing them is still cheap.
+> [Open an issue](https://github.com/mcbernie/saempler/issues/new).
 
 The idea is a separation that most slicers do not make:
 
@@ -20,6 +34,10 @@ D#3 -> Slice 4 -> stutter 1/16
 
 Modifier notes change how the next trigger behaves rather than producing sound
 themselves.
+
+![The Sämpler interface: a waveform cut into sixteen slices, the chops laid out
+as pads on the left, and the selected cell with its playback, modulation and
+effect settings on the right.](website/screenshot-main.png)
 
 ## Status
 
@@ -102,6 +120,26 @@ xtask                    bundler entry point
 
 ## Licensing
 
-NIH-plug's VST3 bindings are GPLv3, so any VST3 build of this plugin has to
-comply with the GPLv3. The manifests declare `GPL-3.0-or-later`; a `LICENSE`
-file still needs to be added.
+Dual licensed. Pick whichever applies to you:
+
+- **GPL-3.0-or-later** for the source, in [LICENSE](LICENSE). Use it, change
+  it, pass it on; a modified copy you distribute has to stay under the GPL.
+  Music you make with it is yours, the licence covers the code.
+- **A commercial licence** on request, for building it into something whose
+  source stays closed.
+
+The GPL is not a preference but a requirement: Steinberg's VST3 SDK is itself
+dual licensed, and without an agreement with Steinberg anything shipping VST3
+has to be GPL-3. [LICENSING.md](LICENSING.md) has the details and the list of
+third-party components.
+
+## Releases
+
+Tagging `v*` builds every platform, assembles the Windows and macOS installers
+and opens a draft release. See [docs/releasing.md](docs/releasing.md) for the
+version scheme and what signing would still take.
+
+## Website
+
+The page in [website/](website/) is plain HTML and CSS, published to GitHub
+Pages by [a workflow](.github/workflows/pages.yml) whenever it changes.

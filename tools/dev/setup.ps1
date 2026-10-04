@@ -1,17 +1,42 @@
-# Bring the freshly started standalone into a state worth looking at:
-# a sample loaded, sliced and mapped across the keyboard. Development aid.
-param([string]$Out = "target/shot.png", [int]$Tab = 0)
+# Bring a freshly started standalone into a state worth looking at: a sample
+# loaded, sliced and mapped across the keyboard. Development aid, not shipped.
+#
+#   .\tools\dev\setup.ps1 -Sample "C:\pfad\zum\sample.wav"
+#
+# The coordinates below are the editor's own, at its default size. They are
+# read off the interface and have to be corrected whenever the layout moves.
+param(
+    [Parameter(Mandatory = $true)][string]$Sample,
+    [string]$Out = "target/setup.png",
+    [ValidateSet(4, 8, 16, 20)][int]$Slices = 16
+)
 
-$shot = "C:\Users\nbrue\dev\saempler\target\shot.ps1"
-# SLICE / SOUND, SOURCE, MODIFIERS
-$tabs = @(570, 666, 753)
-$tabY = 211
+$ErrorActionPreference = 'Stop'
+$here = Split-Path -Parent $MyInvocation.MyCommand.Path
+$shot = Join-Path $here 'shot.ps1'
+$dialog = Join-Path $here 'dialog.ps1'
 
-# Open the source page and load a file.
-& $shot -Out target/setup.png -Click @($tabs[1], $tabY, 590, 290) | Out-Null
-Start-Sleep -Seconds 1
-& $shot -Out target/setup.png -Click @(250, 409, 1015, 650) | Out-Null
+# SOURCE SAMPLE toolbar: the folder icon, then the even divisions.
+$folder = @(193, 84)
+$divisions = @{ 4 = 245; 8 = 289; 16 = 332; 20 = 375 }
+$divideY = 84
+# PERFORMANCE toolbar: lay every slice on a note.
+$mapToKeys = @(37, 281)
+
+Write-Host "Dateidialog oeffnen"
+& $shot -Out $Out -Click $folder | Out-Null
+Start-Sleep -Seconds 3
+
+Write-Host "Sample waehlen: $Sample"
+& $dialog -Path $Sample
+Start-Sleep -Seconds 5
+
+Write-Host "In $Slices Teile schneiden"
+& $shot -Out $Out -Click @($divisions[$Slices], $divideY) | Out-Null
 Start-Sleep -Seconds 2
-# Cut into sixteen, then lay them across the keyboard.
-& $shot -Out target/setup.png -Click @(778, 290) | Out-Null
-& $shot -Out $Out -Click @(100, 290, $tabs[$Tab], $tabY)
+
+Write-Host "Auf die Tastatur legen"
+& $shot -Out $Out -Click $mapToKeys | Out-Null
+Start-Sleep -Seconds 2
+
+& $shot -Out $Out

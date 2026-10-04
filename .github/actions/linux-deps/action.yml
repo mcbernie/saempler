@@ -1,0 +1,17 @@
+name: Linux dependencies
+description: >
+  Install the system libraries the plug-in needs on Linux. A no-op elsewhere,
+  so every job can use it unconditionally instead of repeating the same `if`
+  and the same package list four times.
+
+runs:
+  using: composite
+  steps:
+    - if: runner.os == 'Linux'
+      shell: bash
+      run: |
+        sudo apt-get update
+        sudo apt-get install --no-install-recommends -y \
+          libasound2-dev libgl-dev libjack-jackd2-dev libx11-xcb-dev \
+          libxcb1-dev libxcb-dri2-0-dev libxcb-icccm4-dev libxcursor-dev \
+          libxkbcommon-dev

@@ -27,13 +27,7 @@ jobs:
         with:
           components: rustfmt, clippy
       - uses: Swatinem/rust-cache@v2
-      - name: System libraries
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y \
-            libasound2-dev libgl-dev libjack-jackd2-dev libx11-xcb-dev \
-            libxcb1-dev libxcb-dri2-0-dev libxcb-icccm4-dev libxcursor-dev \
-            libxkbcommon-dev
+      - uses: ./.github/actions/linux-deps
       - run: cargo fmt --all --check
       - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
       - run: cargo test --workspace
@@ -65,14 +59,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
 
-      - name: System libraries
-        if: runner.os == 'Linux'
-        run: |
-          sudo apt-get update
-          sudo apt-get install --no-install-recommends -y \
-            libasound2-dev libgl-dev libjack-jackd2-dev libx11-xcb-dev \
-            libxcb1-dev libxcb-dri2-0-dev libxcb-icccm4-dev libxcursor-dev \
-            libxkbcommon-dev
+      - uses: ./.github/actions/linux-deps
 
       - name: Bundle VST3 and CLAP
         run: cargo xtask bundle saempler-plugin --release ${{ matrix.target && format('--target {0}', matrix.target) || '' }}

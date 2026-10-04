@@ -7,6 +7,10 @@ on:
     paths:
       - "website/**"
       - ".github/workflows/pages.yml"
+  # A new release changes the version the page shows, so the page is rebuilt
+  # even though nothing in website/ moved.
+  release:
+    types: [published]
   workflow_dispatch:
 
 permissions:
@@ -27,6 +31,34 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+
+      - name: Version
+        id: version
+        env:
+          GH_TOKEN: ${{ github.token }}
+        # What a visitor can actually download is the newest release, not the
+        # number in the source tree. Before the first release there is none, so
+        # the manifest stands in rather than leaving the page blank.
+        run: |
+          set -euo pipefail
+          # `|| true` because the fallback below is the whole point: without
+          # it `set -e` would abort here on the very first deploy, when there
+          # is no release to find.
+          version=$(gh release list --limit 1 --json tagName \
+            --jq '.[0].tagName // empty' 2>/dev/null | sed 's/^v//' || true)
+          if [ -z "$version" ]; then
+            version=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+            echo "noch kein Release, nehme $version aus Cargo.toml"
+          fi
+          echo "version=$version" >> "$GITHUB_OUTPUT"
+
+      - name: Fill the version in
+        run: |
+          set -euo pipefail
+          version='${{ steps.version.outputs.version }}'
+          sed -i "s|\(data-version[^>]*>\)[^<]*|\1${version}|g" website/index.html
+          grep -o 'data-version[^>]*>[^<]*' website/index.html
+
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:
