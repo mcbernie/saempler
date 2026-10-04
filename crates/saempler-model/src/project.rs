@@ -4,7 +4,7 @@ use std::path::PathBuf;
 use serde::{Deserialize, Serialize};
 
 use crate::cell::{is_black_key, CellId, PerformanceCell, PlaybackSettings};
-use crate::effect::{CellEffects, SendEffects};
+use crate::effect::{CellEffects, SendRack};
 use crate::modifier::{default_layout, Modifier, ModifierAssignment, ModifierMode};
 use crate::modulation::{EnvelopeDefinition, LfoDefinition};
 use crate::slice::{Slice, SliceId};
@@ -60,7 +60,7 @@ pub struct Project {
     modifiers: Vec<ModifierAssignment>,
     /// The sends, shared by every voice.
     #[serde(default)]
-    sends: SendEffects,
+    sends: SendRack,
     /// Whether chops are kept off the raised keys.
     ///
     /// On a white-keys-only layout a run of chops lines up with the scale
@@ -556,12 +556,12 @@ impl Project {
     }
 
     /// The sends every voice shares.
-    pub fn sends(&self) -> SendEffects {
+    pub fn sends(&self) -> SendRack {
         self.sends
     }
 
     /// Replace the send settings.
-    pub fn set_sends(&mut self, sends: SendEffects) {
+    pub fn set_sends(&mut self, sends: SendRack) {
         self.sends = sends.sanitized();
     }
 
@@ -714,7 +714,7 @@ impl Default for Project {
             cells: Vec::new(),
             cell_selection: None,
             modifiers: default_layout(),
-            sends: SendEffects::default(),
+            sends: SendRack::default(),
             white_keys_only: false,
             next_slice_id: 0,
             next_cell_id: 0,

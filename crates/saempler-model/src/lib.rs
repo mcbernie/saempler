@@ -16,8 +16,8 @@ pub use cell::{
     MAX_PITCH_SEMITONES, MAX_SPEED, MIN_COLLAPSE, MIN_SPEED,
 };
 pub use effect::{
-    CellEffects, DriveShape, FilterShape, SendEffects, MAX_CUTOFF_HZ, MAX_DRIVE, MAX_RESONANCE,
-    MIN_CUTOFF_HZ, MIN_RESONANCE,
+    CellEffects, DriveShape, FilterShape, SendEffects, SendRack, MAX_CUTOFF_HZ, MAX_DRIVE,
+    MAX_RESONANCE, MAX_SEND_DRIVE, MAX_SEND_LEVEL, MIN_CUTOFF_HZ, MIN_RESONANCE,
 };
 pub use modifier::{
     default_layout, Modifier, ModifierAssignment, ModifierMode, MODIFIER_BASE_NOTE, MODIFIER_COUNT,

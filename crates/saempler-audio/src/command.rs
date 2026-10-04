@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use saempler_model::{CellEffects, Modifier, ModifierMode, PlaybackMode, SendEffects};
+use saempler_model::{CellEffects, Modifier, ModifierMode, PlaybackMode, SendRack};
 
 use crate::modulation::ModulationSpec;
 use crate::sample::SampleBuffer;
@@ -129,7 +129,7 @@ pub enum EngineCommand {
     /// itself at the end of the region, so no release command follows.
     Preview(CellSpec),
     /// Replace the settings of the shared sends.
-    SetSends(SendEffects),
+    SetSends(SendRack),
     /// Release every sounding voice immediately.
     AllNotesOff,
 }

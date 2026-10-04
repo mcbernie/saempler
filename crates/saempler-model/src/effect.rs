@@ -153,6 +153,18 @@ pub struct SendEffects {
     pub flanger_rate_hz: f32,
     pub flanger_depth: f32,
     pub flanger_feedback: f32,
+
+    /// How much of each send comes back into the mix.
+    ///
+    /// A send is added on top of the dry signal, so without a return level
+    /// the only way to make an effect quieter was to feed it less, which
+    /// changes how it sounds as well as how loud it is. These start below
+    /// unity because an effect at full return is as loud as the sound it was
+    /// made from.
+    pub delay_level: f32,
+    pub reverb_level: f32,
+    pub phaser_level: f32,
+    pub flanger_level: f32,
 }
 
 impl Default for SendEffects {
@@ -174,6 +186,11 @@ impl Default for SendEffects {
             flanger_rate_hz: 0.3,
             flanger_depth: 0.8,
             flanger_feedback: 0.5,
+
+            delay_level: 0.45,
+            reverb_level: 0.35,
+            phaser_level: 0.5,
+            flanger_level: 0.5,
         }
     }
 }
@@ -191,7 +208,25 @@ impl SendEffects {
         self.flanger_rate_hz = finite_or(self.flanger_rate_hz, 0.3).clamp(0.01, 10.0);
         self.flanger_depth = finite_or(self.flanger_depth, 0.8).clamp(0.0, 1.0);
         self.flanger_feedback = finite_or(self.flanger_feedback, 0.5).clamp(-0.95, 0.95);
+        for level in [
+            &mut self.delay_level,
+            &mut self.reverb_level,
+            &mut self.phaser_level,
+            &mut self.flanger_level,
+        ] {
+            *level = finite_or(*level, 0.4).clamp(0.0, MAX_SEND_LEVEL);
+        }
         self
+    }
+
+    /// Return level of each send, in the engine's send order.
+    pub fn levels(&self) -> [f32; 4] {
+        [
+            self.delay_level,
+            self.reverb_level,
+            self.phaser_level,
+            self.flanger_level,
+        ]
     }
 
     /// Repeat time in seconds at the given tempo.
@@ -203,6 +238,76 @@ impl SendEffects {
         } else {
             self.delay_seconds
         }
+    }
+}
+
+/// Loudest a send may come back at.
+///
+/// One is as loud as the sound that fed it, which is already more effect than
+/// dry in the mix. There is no reason to go past that.
+pub const MAX_SEND_LEVEL: f32 = 1.0;
+/// Hardest the driven sends may be saturated.
+pub const MAX_SEND_DRIVE: f32 = 16.0;
+
+/// Both settings of the shared sends, and what switches between them.
+///
+/// An effect modifier does not add an effect: it throws the whole mix into
+/// one that is already there, set up differently. Keeping the driven settings
+/// as data rather than as constants in the engine is what makes that second
+/// sound something to dial in rather than something to accept.
+#[derive(Debug, Clone, Copy, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SendRack {
+    /// How the sends sound normally.
+    pub normal: SendEffects,
+    /// How they sound while an effect modifier is held.
+    pub driven: SendEffects,
+    /// Saturation on a driven send, which is most of what makes it driven.
+    pub drive: f32,
+    pub drive_shape: DriveShape,
+}
+
+impl Default for SendRack {
+    fn default() -> Self {
+        Self {
+            normal: SendEffects::default(),
+            driven: SendEffects {
+                // Short, long-tailed and bright: a throw rather than an echo.
+                delay_sync: true,
+                delay_division: Division::Sixteenth,
+                delay_feedback: 0.85,
+                delay_damping_hz: 16_000.0,
+                delay_level: 0.8,
+
+                // The biggest room, barely damped.
+                reverb_size: 1.0,
+                reverb_damping: 0.05,
+                reverb_level: 0.7,
+
+                phaser_rate_hz: 4.0,
+                phaser_depth: 1.0,
+                phaser_feedback: 0.9,
+                phaser_level: 0.8,
+
+                flanger_rate_hz: 2.0,
+                flanger_depth: 1.0,
+                flanger_feedback: 0.92,
+                flanger_level: 0.8,
+
+                ..SendEffects::default()
+            },
+            drive: 6.0,
+            drive_shape: DriveShape::Tube,
+        }
+    }
+}
+
+impl SendRack {
+    pub fn sanitized(mut self) -> Self {
+        self.normal = self.normal.sanitized();
+        self.driven = self.driven.sanitized();
+        self.drive = finite_or(self.drive, 6.0).clamp(1.0, MAX_SEND_DRIVE);
+        self
     }
 }
 
@@ -279,6 +384,65 @@ mod tests {
         assert_eq!(repaired.delay_feedback, 0.95);
         assert_eq!(repaired.reverb_size, 0.0);
         assert_eq!(repaired.flanger_feedback, 0.5);
+    }
+
+    #[test]
+    fn a_send_comes_back_below_the_sound_that_fed_it() {
+        // A send is added on top of the dry signal. At unity the effect is as
+        // loud as the chop, which is why the four of them together were
+        // drowning everything.
+        let sends = SendEffects::default();
+
+        for level in sends.levels() {
+            assert!(level > 0.0 && level < 1.0, "{level}");
+        }
+    }
+
+    #[test]
+    fn a_broken_level_is_repaired() {
+        let repaired = SendEffects {
+            delay_level: f32::NAN,
+            reverb_level: 40.0,
+            phaser_level: -1.0,
+            ..Default::default()
+        }
+        .sanitized();
+
+        assert_eq!(repaired.delay_level, 0.4);
+        assert_eq!(repaired.reverb_level, MAX_SEND_LEVEL);
+        assert_eq!(repaired.phaser_level, 0.0);
+    }
+
+    #[test]
+    fn the_driven_settings_are_harder_than_the_normal_ones() {
+        let rack = SendRack::default();
+
+        assert!(rack.driven.delay_feedback > rack.normal.delay_feedback);
+        assert!(rack.driven.reverb_size > rack.normal.reverb_size);
+        assert!(rack.driven.phaser_feedback > rack.normal.phaser_feedback);
+        assert!(rack.driven.flanger_feedback > rack.normal.flanger_feedback);
+        assert!(rack.drive > 1.0);
+    }
+
+    #[test]
+    fn a_broken_rack_is_repaired_on_both_sides() {
+        let repaired = SendRack {
+            normal: SendEffects {
+                reverb_size: f32::NAN,
+                ..Default::default()
+            },
+            driven: SendEffects {
+                phaser_level: 9.0,
+                ..Default::default()
+            },
+            drive: f32::INFINITY,
+            ..Default::default()
+        }
+        .sanitized();
+
+        assert_eq!(repaired.normal.reverb_size, 0.6);
+        assert_eq!(repaired.driven.phaser_level, MAX_SEND_LEVEL);
+        assert_eq!(repaired.drive, 6.0);
     }
 
     #[test]

@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use saempler_dsp::{Delay, Flanger, Phaser, Reverb, SaturationKind, Saturator};
-use saempler_model::{Modifier, ModifierMode, SendEffects};
+use saempler_model::{DriveShape, Modifier, ModifierMode, SendRack};
 
 use crate::command::{CellSpec, CommandConsumer, DisposalProducer, EngineCommand};
 use crate::meters::Meters;
@@ -55,10 +55,16 @@ pub struct Engine {
     reverb: Reverb,
     phaser: Phaser,
     flanger: Flanger,
-    sends: SendEffects,
-    /// Saturates the wet path while an effect modifier is held.
+    sends: SendRack,
+    /// How much of each send comes back into the mix.
+    ///
+    /// Held here rather than read from the settings per frame so that the
+    /// render loop does not have to know which sends are being driven.
+    levels: [f32; SEND_COUNT],
+    /// Saturates the wet path of a send while its modifier is held.
     send_drive: Saturator,
-    driving: bool,
+    /// Which sends are running from the driven settings.
+    driven: [bool; SEND_COUNT],
     sample: Option<Arc<SampleBuffer>>,
     /// What each MIDI note plays. A fixed array rather than a map, so that a
     /// note on is a single index instead of a lookup.
@@ -86,9 +92,10 @@ impl Engine {
             reverb: Reverb::default(),
             phaser: Phaser::default(),
             flanger: Flanger::default(),
-            sends: SendEffects::default(),
+            sends: SendRack::default(),
+            levels: [0.0; SEND_COUNT],
             send_drive: Saturator::default(),
-            driving: false,
+            driven: [false; SEND_COUNT],
             sample: None,
             cells: [None; NOTE_COUNT],
             modifier_notes: [None; NOTE_COUNT],
@@ -382,60 +389,56 @@ impl Engine {
     /// Called whenever the settings or the tempo change, which is cheap: none
     /// of these allocate, and a synced delay has to follow the host.
     fn apply_sends(&mut self) {
-        let sends = self.sends.sanitized();
+        let rack = self.sends.sanitized();
 
-        // An effect modifier drives its send far past where the settings are,
-        // because the point of the key is a gesture that wrecks the sound for
-        // as long as it is held. The settings are untouched: letting go puts
-        // the send straight back where it was.
-        if self.modifiers.driven_send(0) {
-            self.delay
-                .set(sends.delay_time(self.tempo) * 0.5, 0.92, 16_000.0);
-        } else {
-            self.delay.set(
-                sends.delay_time(self.tempo),
-                sends.delay_feedback,
-                sends.delay_damping_hz,
-            );
+        // Which settings a send runs from is decided per send rather than for
+        // the rack as a whole: holding the reverb key should not also wreck
+        // the delay. The settings themselves are untouched, so letting go
+        // puts the send straight back where it was.
+        for (index, driven) in self.driven.iter_mut().enumerate() {
+            *driven = self.modifiers.driven_send(index);
         }
+        let settings = |driven: bool| if driven { rack.driven } else { rack.normal };
 
-        if self.modifiers.driven_send(1) {
-            self.reverb.set(1.0, 0.05);
-        } else {
-            self.reverb.set(sends.reverb_size, sends.reverb_damping);
-        }
+        let delay = settings(self.driven[0]);
+        self.delay.set(
+            delay.delay_time(self.tempo),
+            delay.delay_feedback,
+            delay.delay_damping_hz,
+        );
 
-        if self.modifiers.driven_send(2) {
-            self.phaser.set(4.0, 1.0, 0.9);
-        } else {
-            self.phaser.set(
-                sends.phaser_rate_hz,
-                sends.phaser_depth,
-                sends.phaser_feedback,
-            );
-        }
+        let reverb = settings(self.driven[1]);
+        self.reverb.set(reverb.reverb_size, reverb.reverb_damping);
 
-        if self.modifiers.driven_send(3) {
-            self.flanger.set(2.0, 1.0, 0.92);
-        } else {
-            self.flanger.set(
-                sends.flanger_rate_hz,
-                sends.flanger_depth,
-                sends.flanger_feedback,
-            );
-        }
+        let phaser = settings(self.driven[2]);
+        self.phaser.set(
+            phaser.phaser_rate_hz,
+            phaser.phaser_depth,
+            phaser.phaser_feedback,
+        );
+
+        let flanger = settings(self.driven[3]);
+        self.flanger.set(
+            flanger.flanger_rate_hz,
+            flanger.flanger_depth,
+            flanger.flanger_feedback,
+        );
+
+        self.levels = [
+            delay.delay_level,
+            reverb.reverb_level,
+            phaser.phaser_level,
+            flanger.flanger_level,
+        ];
 
         // The wet path is saturated while a send is being driven, which is
         // what makes it sound thrown rather than merely turned up.
-        self.send_drive.set(
-            SaturationKind::Tube,
-            if (0..SEND_COUNT).any(|index| self.modifiers.driven_send(index)) {
-                6.0
-            } else {
-                1.0
-            },
-        );
-        self.driving = (0..SEND_COUNT).any(|index| self.modifiers.driven_send(index));
+        let kind = match rack.drive_shape {
+            DriveShape::Soft => SaturationKind::Soft,
+            DriveShape::Hard => SaturationKind::Hard,
+            DriveShape::Tube => SaturationKind::Tube,
+        };
+        self.send_drive.set(kind, rack.drive);
     }
 
     /// Count down the audition and let go of its key when the time is up.
@@ -543,18 +546,26 @@ impl Engine {
             // The wet signal of every send is added back to the mix. They run
             // every frame whether or not anything is feeding them, because a
             // reverb tail has to carry on after the last voice has stopped.
-            for (wet_left, wet_right) in [
+            let wet = [
                 self.delay.process(feed[0].0, feed[0].1),
                 self.reverb.process(feed[1].0, feed[1].1),
                 self.phaser.process(feed[2].0, feed[2].1),
                 self.flanger.process(feed[3].0, feed[3].1),
-            ] {
-                if self.driving {
-                    mix_left += self.send_drive.process(wet_left);
-                    mix_right += self.send_drive.process(wet_right);
+            ];
+            for (index, (wet_left, wet_right)) in wet.into_iter().enumerate() {
+                let level = self.levels[index];
+                if level <= 0.0 {
+                    continue;
+                }
+                // The return level is the last thing applied, so turning a
+                // send down turns down what it produced rather than changing
+                // how hard it was driven.
+                if self.driven[index] {
+                    mix_left += self.send_drive.process(wet_left) * level;
+                    mix_right += self.send_drive.process(wet_right) * level;
                 } else {
-                    mix_left += wet_left;
-                    mix_right += wet_right;
+                    mix_left += wet_left * level;
+                    mix_right += wet_right * level;
                 }
             }
 
@@ -623,6 +634,17 @@ mod tests {
             },
             ..CellSpec::default()
         }
+    }
+
+    /// Loudest sample of what is still ringing once the note itself is over.
+    ///
+    /// Measured after the release rather than across it: a send comes back
+    /// well below the sound that fed it, so a peak taken over the dry signal
+    /// is the dry signal whatever the sends are doing.
+    fn tail(engine: &mut Engine, frames: usize) -> f32 {
+        // Long enough for the slice's release to have finished.
+        render(engine, 9_600);
+        peak(engine, frames)
     }
 
     /// Loudest sample over the next `frames`, once any ramp has settled.
@@ -815,7 +837,7 @@ mod tests {
         h.engine.note_on(60, 1.0);
         render(&mut h.engine, 480);
         h.engine.note_off(60);
-        let dry_tail = peak(&mut h.engine, 48_000);
+        let dry_tail = tail(&mut h.engine, 24_000);
 
         let mut wet = harness();
         load(&mut wet, 48_000);
@@ -831,7 +853,7 @@ mod tests {
         wet.engine.note_on(60, 1.0);
         render(&mut wet.engine, 480);
         wet.engine.note_off(60);
-        let wet_tail = peak(&mut wet.engine, 48_000);
+        let wet_tail = tail(&mut wet.engine, 24_000);
 
         assert!(
             wet_tail > dry_tail + 0.001,
@@ -879,8 +901,7 @@ mod tests {
         h.engine.note_on(60, 1.0);
         render(&mut h.engine, 480);
         h.engine.note_off(60);
-        // Long enough for the slice and its release to be over.
-        let dry_tail = peak(&mut h.engine, 48_000);
+        let dry_tail = tail(&mut h.engine, 24_000);
 
         let mut wet = harness();
         load(&mut wet, 48_000);
@@ -900,7 +921,7 @@ mod tests {
         wet.engine.note_on(60, 1.0);
         render(&mut wet.engine, 480);
         wet.engine.note_off(60);
-        let wet_tail = peak(&mut wet.engine, 48_000);
+        let wet_tail = tail(&mut wet.engine, 24_000);
 
         assert!(
             wet_tail > dry_tail + 0.001,
@@ -910,16 +931,19 @@ mod tests {
 
     #[test]
     fn the_sends_follow_their_settings() {
-        use saempler_model::SendEffects;
+        use saempler_model::{SendEffects, SendRack};
 
         let mut h = harness();
         load(&mut h, 48_000);
 
         h.commands
-            .push(EngineCommand::SetSends(SendEffects {
-                reverb_size: 1.0,
-                reverb_damping: 0.0,
-                ..SendEffects::default()
+            .push(EngineCommand::SetSends(SendRack {
+                normal: SendEffects {
+                    reverb_size: 1.0,
+                    reverb_damping: 0.0,
+                    ..SendEffects::default()
+                },
+                ..SendRack::default()
             }))
             .expect("the queue has capacity");
         h.engine.apply_commands();
@@ -929,6 +953,159 @@ mod tests {
         let output = render(&mut h.engine, 4_800);
 
         assert!(output.iter().all(|sample| sample.is_finite()));
+    }
+
+    /// Loudest the engine gets with one note fed into the reverb at `level`.
+    fn reverb_peak(level: f32) -> f32 {
+        use saempler_model::{CellEffects, SendEffects, SendRack};
+
+        let mut h = harness();
+        load(&mut h, 48_000);
+        h.commands
+            .push(EngineCommand::SetSends(SendRack {
+                normal: SendEffects {
+                    reverb_level: level,
+                    ..SendEffects::default()
+                },
+                ..SendRack::default()
+            }))
+            .expect("the queue has capacity");
+        h.commands
+            .push(EngineCommand::SetCell {
+                note: 60,
+                spec: Some(CellSpec {
+                    effects: CellEffects {
+                        reverb_send: 1.0,
+                        ..CellEffects::default()
+                    },
+                    ..spec(0, 48_000)
+                }),
+            })
+            .expect("the queue has capacity");
+        h.engine.apply_commands();
+
+        h.engine.note_on(60, 1.0);
+        render(&mut h.engine, 480);
+        h.engine.note_off(60);
+        tail(&mut h.engine, 24_000)
+    }
+
+    #[test]
+    fn a_send_turned_down_is_not_heard() {
+        // The complaint the return level exists for: before it, the only way
+        // to make an effect quieter was to feed it less, which changes how it
+        // sounds as well as how loud it is.
+        let silent = reverb_peak(0.0);
+
+        assert!(silent < 1e-6, "the send came back anyway: {silent}");
+    }
+
+    #[test]
+    fn a_send_comes_back_louder_the_further_it_is_turned_up() {
+        let quiet = reverb_peak(0.2);
+        let loud = reverb_peak(0.8);
+
+        assert!(quiet > 0.0, "nothing came back at all");
+        assert!(
+            loud > quiet * 2.0,
+            "the level barely did anything: {quiet} -> {loud}"
+        );
+    }
+
+    #[test]
+    fn the_four_sends_wide_open_do_not_overwhelm_the_dry_signal() {
+        use saempler_model::CellEffects;
+
+        let mut dry = harness();
+        load(&mut dry, 48_000);
+        dry.engine.note_on(60, 1.0);
+        let plain = peak(&mut dry.engine, 4_800);
+
+        let mut wet = harness();
+        load(&mut wet, 48_000);
+        wet.commands
+            .push(EngineCommand::SetCell {
+                note: 60,
+                spec: Some(CellSpec {
+                    effects: CellEffects {
+                        delay_send: 1.0,
+                        reverb_send: 1.0,
+                        phaser_send: 1.0,
+                        flanger_send: 1.0,
+                        ..CellEffects::default()
+                    },
+                    ..spec(0, 48_000)
+                }),
+            })
+            .expect("the queue has capacity");
+        wet.engine.apply_commands();
+        wet.engine.note_on(60, 1.0);
+        let soaked = peak(&mut wet.engine, 4_800);
+
+        // Everything into everything should colour the sound, not bury it.
+        // At the old settings this came back several times the dry level.
+        assert!(
+            soaked < plain * 2.5,
+            "the sends drowned the dry signal: {plain} -> {soaked}"
+        );
+    }
+
+    #[test]
+    fn an_effect_modifier_uses_the_driven_settings_and_gives_them_back() {
+        use saempler_model::{Modifier, ModifierMode, SendEffects, SendRack};
+
+        let mut h = harness();
+        load(&mut h, 48_000);
+        h.commands
+            .push(EngineCommand::SetSends(SendRack {
+                // Nothing comes back normally, everything comes back driven,
+                // which makes the switch audible rather than merely plausible.
+                normal: SendEffects {
+                    reverb_level: 0.0,
+                    ..SendEffects::default()
+                },
+                driven: SendEffects {
+                    reverb_level: 1.0,
+                    ..SendEffects::default()
+                },
+                ..SendRack::default()
+            }))
+            .expect("the queue has capacity");
+        h.commands
+            .push(EngineCommand::SetModifier {
+                note: 48,
+                assignment: Some((Modifier::Reverb, ModifierMode::Hold)),
+            })
+            .expect("the queue has capacity");
+        h.engine.apply_commands();
+
+        // Nothing comes back normally, so the tail is whatever the driven
+        // setting put there and nothing else.
+        h.engine.note_on(60, 1.0);
+        render(&mut h.engine, 480);
+        h.engine.note_off(60);
+        let before = tail(&mut h.engine, 24_000);
+
+        h.engine.note_on(48, 1.0);
+        h.engine.note_on(60, 1.0);
+        render(&mut h.engine, 480);
+        h.engine.note_off(60);
+        let held = tail(&mut h.engine, 24_000);
+
+        h.engine.note_off(48);
+        // Long enough for the tail the driven setting left to die away.
+        render(&mut h.engine, 48_000 * 4);
+        h.engine.note_on(60, 1.0);
+        render(&mut h.engine, 480);
+        h.engine.note_off(60);
+        let after = tail(&mut h.engine, 24_000);
+
+        assert!(before < 1e-6, "the send came back at level zero: {before}");
+        assert!(held > 0.01, "holding the key did not open the send: {held}");
+        assert!(
+            after < held * 0.5,
+            "letting go did not put the send back: {held} -> {after}"
+        );
     }
 
     #[test]
