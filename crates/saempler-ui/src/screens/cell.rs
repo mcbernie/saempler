@@ -26,6 +26,11 @@ const CURVE_SIZE: (f32, f32) = (150.0, 58.0);
 const ARROW_WIDTH: f32 = 20.0;
 /// Height of the playback panel. The modulation panel takes what is left.
 const PLAYBACK_HEIGHT: f32 = 112.0;
+/// Keys a cell may be put on.
+///
+/// Six octaves around where chops are usually mapped. The whole keyboard
+/// would be a list of 128 entries to scroll past.
+const CELL_NOTES: std::ops::Range<u8> = 36..108;
 /// Longest stage any envelope control reaches, in milliseconds.
 const MAX_STAGE_MS: f32 = 4_000.0;
 /// Range of the LFO rate control, in hertz.
@@ -76,19 +81,67 @@ pub fn cell_section(ui: &mut Ui, state: &ViewState<'_>) {
     }
 }
 
+/// Everything the header strip shows, read before the panel is drawn.
+///
+/// Gathered up front because the header and the contents of a panel are both
+/// alive inside one call, and the header cannot hold the project while the
+/// contents are editing the cell.
+#[derive(Debug, Clone, Copy)]
+struct PagerView {
+    position: usize,
+    count: usize,
+    note: u8,
+    slice_index: usize,
+    start: f32,
+    end: f32,
+}
+
+impl PagerView {
+    fn read(project: &saempler_model::ProjectFile, cell: &PerformanceCell) -> Self {
+        let rate = project
+            .project
+            .sample
+            .as_ref()
+            .map(|sample| sample.sample_rate)
+            .unwrap_or(0)
+            .max(1) as f32;
+        let slice = project.project.slice(cell.slice).copied();
+
+        Self {
+            position: project
+                .project
+                .cells()
+                .iter()
+                .position(|candidate| candidate.id == cell.id)
+                .unwrap_or(0),
+            count: project.project.cells().len(),
+            note: cell.midi_note,
+            slice_index: slice
+                .and_then(|slice| {
+                    project
+                        .project
+                        .slices()
+                        .iter()
+                        .position(|candidate| candidate.id == slice.id)
+                })
+                .unwrap_or(0),
+            start: slice
+                .map(|slice| slice.start_frame as f32 / rate)
+                .unwrap_or(0.0),
+            end: slice
+                .map(|slice| slice.end_frame as f32 / rate)
+                .unwrap_or(0.0),
+        }
+    }
+}
+
 /// The strip above the editor: which chop is up, and arrows to the others.
 ///
 /// The mockup's `< 4/12 >` row. Stepping goes by key order, which is the order
 /// the pads sit in, so the arrows walk the grid.
-fn pager(
-    ui: &mut Ui,
-    project: &mut saempler_model::ProjectFile,
-    id: saempler_model::CellId,
-    midi_note: u8,
-    slice_id: saempler_model::SliceId,
-) {
-    // This row sits on the dark bezel between panels, not on metal, so its
-    // text is light where the panel legends are dark.
+fn pager(ui: &mut Ui, view: PagerView) -> isize {
+    // This row sits on the dark bezel between panels, not on a panel, so its
+    // text is the light one.
     let light = |ui: &mut Ui, text: &str| {
         let width = text.chars().count() as f32 * THEME.font_sm * 0.62 + 4.0;
         let (rect, _) = ui.allocate_exact_size(vec2(width, THEME.font_sm * 1.7), Sense::hover());
@@ -101,45 +154,21 @@ fn pager(
         );
     };
 
+    let mut step = 0;
     ui.horizontal(|ui| {
-        let count = project.project.cells().len();
-        let position = project
-            .project
-            .cells()
-            .iter()
-            .position(|candidate| candidate.id == id)
-            .unwrap_or(0);
-
-        let mut step: isize = 0;
         if icon_button(ui, &THEME, Icon::Previous, "Vorheriges Pad") {
             step = -1;
         }
-        light(ui, &format!("{} / {count}", position + 1));
+        light(ui, &format!("{} / {}", view.position + 1, view.count));
         if icon_button(ui, &THEME, Icon::Next, "Nächstes Pad") {
             step = 1;
-        }
-        if step != 0 && count > 0 {
-            let next = (position as isize + step).rem_euclid(count as isize) as usize;
-            let id = project.project.cells()[next].id;
-            project.project.select_cell(Some(id));
-            let slice = project.project.cells()[next].slice;
-            project.project.select(Some(slice));
         }
 
         ui.add_space(THEME.spacing_md);
 
         // The chop's chip, in its colour, and where it sits in the sample.
-        let Some(slice) = project.project.slice(slice_id).copied() else {
-            return;
-        };
-        let index = project
-            .project
-            .slices()
-            .iter()
-            .position(|candidate| candidate.id == slice.id)
-            .unwrap_or(0);
-        let color = crate::widgets::slice_color(&THEME, index);
-        let name = note_name(midi_note);
+        let color = crate::widgets::slice_color(&THEME, view.slice_index);
+        let name = note_name(view.note);
         let width = name.chars().count() as f32 * THEME.font_sm * 0.68 + THEME.spacing_sm * 2.5;
         let (chip, _) = ui.allocate_exact_size(vec2(width, THEME.font_sm + 6.0), Sense::hover());
         ui.painter().rect_filled(chip, THEME.radius_sm, color);
@@ -148,27 +177,22 @@ fn pager(
             Align2::CENTER_CENTER,
             name,
             FontId::proportional(THEME.font_sm),
-            THEME.title,
+            THEME.window_bg,
         );
 
-        let rate = project
-            .project
-            .sample
-            .as_ref()
-            .map(|sample| sample.sample_rate)
-            .unwrap_or(0)
-            .max(1) as f64;
-        let start = slice.start_frame as f64 / rate;
-        let end = slice.end_frame as f64 / rate;
         light(
             ui,
             &format!(
-                "S{}  ·  START {start:.2} s  ·  ENDE {end:.2} s  ·  LÄNGE {:.2} s",
-                index + 1,
-                end - start
+                "S{}  ·  START {:.2} s  ·  ENDE {:.2} s  ·  LÄNGE {:.2} s",
+                view.slice_index + 1,
+                view.start,
+                view.end,
+                view.end - view.start
             ),
         );
     });
+
+    step
 }
 
 /// What the engine is doing right now, read once per frame.
@@ -224,17 +248,29 @@ fn playback_section(
     live: Live,
 ) -> bool {
     let mut changed = false;
+    let mut moved: Option<u8> = None;
+    let mut stepped: isize = 0;
+    let view = PagerView::read(project, cell);
 
     crate::screens::main::section_with(
         ui,
         "PLAYBACK",
         live.lamp(true),
-        {
-            let (id, midi_note, slice) = (cell.id, cell.midi_note, cell.slice);
-            move |ui: &mut Ui| pager(ui, project, id, midi_note, slice)
-        },
+        |ui| stepped = pager(ui, view),
         |ui| {
             ui.horizontal(|ui| {
+                // Which key plays this cell. Dragging a pad does the same
+                // thing and is quicker, but it is invisible until tried.
+                let names: Vec<String> = CELL_NOTES.map(note_name).collect();
+                let labels: Vec<&str> = names.iter().map(String::as_str).collect();
+                let selected = usize::from(cell.midi_note.saturating_sub(CELL_NOTES.start));
+                if let Some(index) = dropdown(ui, &THEME, "cell-note", &labels, selected, 64.0) {
+                    let target = CELL_NOTES.start + index as u8;
+                    if target != cell.midi_note {
+                        moved = Some(target);
+                    }
+                }
+
                 if toggle(ui, &THEME, "Reverse", cell.playback.reverse) {
                     cell.playback.reverse = !cell.playback.reverse;
                     changed = true;
@@ -310,6 +346,25 @@ fn playback_section(
             changed |= mode_controls(ui, cell);
         },
     );
+
+    // Moving a cell and stepping to another are the project's business, not
+    // the copy being edited, so they are applied here rather than written
+    // into the copy.
+    if let Some(note) = moved {
+        if project.project.move_cell_to_note(cell.id, note) {
+            cell.midi_note = note;
+            changed = true;
+        }
+    }
+    if stepped != 0 && view.count > 0 {
+        let next = (view.position as isize + stepped).rem_euclid(view.count as isize) as usize;
+        let (id, slice) = {
+            let target = &project.project.cells()[next];
+            (target.id, target.slice)
+        };
+        project.project.select_cell(Some(id));
+        project.project.select(Some(slice));
+    }
 
     changed
 }

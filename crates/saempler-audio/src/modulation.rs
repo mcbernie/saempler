@@ -87,9 +87,19 @@ enum Stage {
 pub struct EnvelopeState {
     stage: Stage,
     level: f32,
+    /// Level the attack rises to.
+    ///
+    /// The sustain level when there is no decay stage, so that an envelope
+    /// with the decay at zero does not spend one frame at full scale on its
+    /// way down. That frame is a click, and it is what the drawn shape shows
+    /// as a spike that should not be there.
+    peak: f32,
     attack_step: f32,
     decay_step: f32,
     sustain: f32,
+    /// Frames a full release takes, kept so the step can be worked out from
+    /// whatever level the key was let go at.
+    release_frames: f32,
     release_step: f32,
 }
 
@@ -98,9 +108,11 @@ impl Default for EnvelopeState {
         Self {
             stage: Stage::Idle,
             level: 0.0,
+            peak: 1.0,
             attack_step: 1.0,
             decay_step: 1.0,
             sustain: 1.0,
+            release_frames: 1.0,
             release_step: 1.0,
         }
     }
@@ -117,16 +129,32 @@ impl EnvelopeState {
         self.stage = Stage::Attack;
         self.level = 0.0;
         self.sustain = definition.sustain.clamp(0.0, 1.0);
-        self.attack_step = step(frames(definition.attack_ms));
-        self.decay_step = step(frames(definition.decay_ms));
-        self.release_step = step(frames(definition.release_ms));
+        self.peak = if definition.decay_ms > 0.0 {
+            1.0
+        } else {
+            self.sustain
+        };
+
+        // Each step covers the distance that stage actually travels, so a
+        // stage takes the time it was given. Scaling by the full range
+        // instead made a decay to a high sustain finish early.
+        self.attack_step = step(frames(definition.attack_ms)) * self.peak;
+        self.decay_step = step(frames(definition.decay_ms)) * (self.peak - self.sustain);
+        self.release_frames = frames(definition.release_ms);
+        self.release_step = step(self.release_frames) * self.sustain.max(f32::MIN_POSITIVE);
     }
 
     /// Move into the release stage.
+    ///
+    /// The step is worked out here rather than at the start, because a key let
+    /// go during the attack releases from wherever the level had got to, and
+    /// the release should still take the time it was given.
     pub fn release(&mut self) {
-        if self.stage != Stage::Idle {
-            self.stage = Stage::Release;
+        if self.stage == Stage::Idle {
+            return;
         }
+        self.stage = Stage::Release;
+        self.release_step = step(self.release_frames) * self.level.max(f32::MIN_POSITIVE);
     }
 
     /// Stop at once.
@@ -149,8 +177,8 @@ impl EnvelopeState {
             Stage::Idle => return 0.0,
             Stage::Attack => {
                 self.level += self.attack_step;
-                if self.level >= 1.0 {
-                    self.level = 1.0;
+                if self.level >= self.peak {
+                    self.level = self.peak;
                     self.stage = Stage::Decay;
                 }
             }
@@ -176,11 +204,7 @@ impl EnvelopeState {
 
     /// Output frames a full release would take.
     pub fn release_frames(&self) -> f64 {
-        if self.release_step <= 0.0 {
-            0.0
-        } else {
-            (1.0 / self.release_step) as f64
-        }
+        f64::from(self.release_frames)
     }
 }
 
@@ -446,6 +470,122 @@ mod tests {
             [LfoDefinition::default(); LFO_COUNT],
             &saempler_model::default_routes(),
         )
+    }
+
+    /// Frames a stage takes, measured by running the envelope.
+    fn frames_until(envelope: &mut EnvelopeState, done: impl Fn(f32) -> bool) -> usize {
+        for count in 1..200_000 {
+            if done(envelope.next(0.0)) {
+                return count;
+            }
+        }
+        panic!("the stage never finished");
+    }
+
+    #[test]
+    fn with_no_decay_the_attack_stops_at_the_sustain() {
+        // Otherwise the envelope spends one frame at full scale on its way
+        // down to the sustain, which is a click.
+        let mut envelope = EnvelopeState::default();
+        envelope.start(
+            EnvelopeDefinition {
+                attack_ms: 10.0,
+                decay_ms: 0.0,
+                sustain: 0.25,
+                release_ms: 50.0,
+            },
+            48_000.0,
+            1.0,
+        );
+
+        let mut highest = 0.0f32;
+        for _ in 0..4_800 {
+            highest = highest.max(envelope.next(0.0));
+        }
+
+        assert!(
+            (highest - 0.25).abs() < 1e-3,
+            "it overshot the sustain: {highest}"
+        );
+    }
+
+    #[test]
+    fn a_decay_takes_the_time_it_was_given() {
+        // The step used to cover the whole range rather than the distance to
+        // the sustain, so a decay to a high sustain finished early.
+        let mut envelope = EnvelopeState::default();
+        envelope.start(
+            EnvelopeDefinition {
+                attack_ms: 0.0,
+                decay_ms: 100.0,
+                sustain: 0.8,
+                release_ms: 10.0,
+            },
+            48_000.0,
+            1.0,
+        );
+
+        let frames = frames_until(&mut envelope, |level| level <= 0.8 + 1e-4);
+
+        // A hundred milliseconds at 48 kHz, give or take the attack frame.
+        assert!(
+            (4_750..=4_850).contains(&frames),
+            "the decay took {frames} frames"
+        );
+    }
+
+    #[test]
+    fn a_release_takes_the_time_it_was_given() {
+        let mut envelope = EnvelopeState::default();
+        envelope.start(
+            EnvelopeDefinition {
+                attack_ms: 0.0,
+                decay_ms: 0.0,
+                sustain: 0.5,
+                release_ms: 200.0,
+            },
+            48_000.0,
+            1.0,
+        );
+        for _ in 0..1_000 {
+            envelope.next(0.0);
+        }
+
+        envelope.release();
+        let frames = frames_until(&mut envelope, |level| level <= 0.0);
+
+        assert!(
+            (9_500..=9_700).contains(&frames),
+            "the release took {frames} frames"
+        );
+    }
+
+    #[test]
+    fn a_release_from_halfway_up_still_takes_its_time() {
+        // Let go during the attack, the release starts from wherever the
+        // level had got to and should still last as long as it says.
+        let mut envelope = EnvelopeState::default();
+        envelope.start(
+            EnvelopeDefinition {
+                attack_ms: 1_000.0,
+                decay_ms: 0.0,
+                sustain: 1.0,
+                release_ms: 100.0,
+            },
+            48_000.0,
+            1.0,
+        );
+        for _ in 0..24_000 {
+            envelope.next(0.0);
+        }
+
+        envelope.release();
+        let frames = frames_until(&mut envelope, |level| level <= 0.0);
+
+        assert!(
+            (4_700..=4_900).contains(&frames),
+            "the release took {frames} frames"
+        );
     }
 
     #[test]

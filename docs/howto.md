@@ -126,12 +126,17 @@ A pink line marks the frame the engine is playing.
 The pads:
 
 ```
-Slices auf Noten legen      lay every slice across the keyboard from C3
+lay out                     put every chop across the keyboard from C3
 click a pad                 select it and play it once
-right click a pad           take the cell off that note
-Kopie auf naechste Note     duplicate the selected cell one semitone up
-play that note              the cell sounds, polyphonically
+drag a pad onto another     the two swap keys
+drag a pad onto a gap       it moves there
+right click a pad           take the cell off that key
+duplicate                   copy the selected cell to the first free key
+play that key               the cell sounds, polyphonically
 ```
+
+The key a cell plays on is also a list on the PLAYBACK panel, for when the
+key you want is not on screen.
 
 The sample lives on the panel at the top, loading and slicing included, and
 stays there whatever else is open. Every chop carries a chip with the key that

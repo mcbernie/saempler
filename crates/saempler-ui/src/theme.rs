@@ -104,10 +104,12 @@ pub struct Theme {
 impl Theme {
     /// The product's dark theme.
     ///
-    /// The greys carry a little warmth rather than being neutral or blue, and
-    /// every surface has a lit top edge over a dark outline. That reads as a
-    /// panel with depth, the way a performance instrument should, while the
-    /// accent colours stay flat and modern.
+    /// Night city: the chassis is dark anodized metal lit from above, and the
+    /// light in the room is neon. The panels keep their gradients and bevels,
+    /// so the depth is still there, but nothing on them is bright by itself.
+    /// Everything that glows is something the instrument is doing - a lamp, a
+    /// value arc, a chop's colour - which is what makes the state readable
+    /// across a dark stage.
     pub const fn dark() -> Self {
         Self {
             spacing_sm: 4.0,
@@ -124,56 +126,65 @@ impl Theme {
             font_md: 13.0,
             font_lg: 18.0,
 
-            window_bg: Color32::from_rgb(0x14, 0x13, 0x11),
-            chassis_top: Color32::from_rgb(0xd7, 0xd6, 0xd2),
-            chassis_mid: Color32::from_rgb(0xb0, 0xaf, 0xab),
-            chassis_bottom: Color32::from_rgb(0x7e, 0x7d, 0x79),
-            chassis_foot: Color32::from_rgb(0x90, 0x8f, 0x8b),
-            chassis_edge: Color32::from_rgb(0xef, 0xee, 0xea),
-            chassis_shadow: Color32::from_rgb(0x38, 0x37, 0x35),
-            screw: Color32::from_rgb(0x6a, 0x69, 0x66),
-            screw_highlight: Color32::from_rgb(0xb3, 0xb2, 0xae),
-            title: Color32::from_rgb(0x1b, 0x19, 0x17),
-            label: Color32::from_rgb(0x3d, 0x3a, 0x35),
-            value: Color32::from_rgb(0x1a, 0x18, 0x16),
-            led_off: Color32::from_rgb(0x3a, 0x37, 0x33),
-            panel_bg: Color32::from_rgb(0x21, 0x1f, 0x1c),
-            panel_top: Color32::from_rgb(0x28, 0x26, 0x22),
-            control_bg: Color32::from_rgb(0x20, 0x1e, 0x1c),
-            control_top: Color32::from_rgb(0x3e, 0x3a, 0x35),
-            control_hover_bg: Color32::from_rgb(0x2a, 0x27, 0x24),
-            control_hover_top: Color32::from_rgb(0x4e, 0x49, 0x42),
-            control_pressed_bg: Color32::from_rgb(0x16, 0x15, 0x13),
-            control_selected_bg: Color32::from_rgb(0x12, 0x2b, 0x2d),
-            control_selected_top: Color32::from_rgb(0x1f, 0x46, 0x48),
-            control_highlight: Color32::from_rgb(0x66, 0x60, 0x57),
-            outline: Color32::from_rgb(0x0d, 0x0c, 0x0b),
+            window_bg: Color32::from_rgb(0x07, 0x08, 0x0e),
+            // Dark anodized metal. The gradient is what carries the shape, so
+            // the span from top to bottom stays wide even though none of it
+            // is bright.
+            chassis_top: Color32::from_rgb(0x2b, 0x30, 0x44),
+            chassis_mid: Color32::from_rgb(0x1e, 0x22, 0x33),
+            chassis_bottom: Color32::from_rgb(0x12, 0x15, 0x22),
+            chassis_foot: Color32::from_rgb(0x19, 0x1d, 0x2d),
+            chassis_edge: Color32::from_rgb(0x46, 0x4f, 0x6d),
+            chassis_shadow: Color32::from_rgb(0x05, 0x06, 0x0b),
+            screw: Color32::from_rgb(0x2a, 0x2f, 0x40),
+            screw_highlight: Color32::from_rgb(0x4a, 0x52, 0x6a),
+            // The legends are silkscreened on in a pale cyan rather than
+            // printed dark: on an unlit panel dark text is unreadable.
+            title: Color32::from_rgb(0xc8, 0xf4, 0xf0),
+            label: Color32::from_rgb(0x7f, 0x95, 0xb4),
+            value: Color32::from_rgb(0xe6, 0xfb, 0xff),
+            led_off: Color32::from_rgb(0x17, 0x1b, 0x28),
+            panel_bg: Color32::from_rgb(0x12, 0x15, 0x22),
+            panel_top: Color32::from_rgb(0x1c, 0x20, 0x30),
+            control_bg: Color32::from_rgb(0x0d, 0x10, 0x1c),
+            control_top: Color32::from_rgb(0x25, 0x2b, 0x3e),
+            control_hover_bg: Color32::from_rgb(0x15, 0x1a, 0x2a),
+            control_hover_top: Color32::from_rgb(0x32, 0x3a, 0x52),
+            control_pressed_bg: Color32::from_rgb(0x06, 0x08, 0x10),
+            // What carries the current value glows rather than merely
+            // changing shade: on a dark panel a shade is not enough.
+            control_selected_bg: Color32::from_rgb(0x07, 0x2c, 0x33),
+            control_selected_top: Color32::from_rgb(0x0d, 0x4b, 0x56),
+            control_highlight: Color32::from_rgb(0x3e, 0x48, 0x64),
+            outline: Color32::from_rgb(0x04, 0x05, 0x09),
 
-            text: Color32::from_rgb(0xe8, 0xe3, 0xd8),
-            text_dim: Color32::from_rgb(0x95, 0x8d, 0x80),
+            text: Color32::from_rgb(0xdd, 0xf2, 0xff),
+            text_dim: Color32::from_rgb(0x72, 0x87, 0xa6),
 
-            accent: Color32::from_rgb(0x3a, 0xd9, 0xc4),
-            armed: Color32::from_rgb(0xf5, 0xa5, 0x24),
-            active: Color32::from_rgb(0x63, 0xe2, 0x8a),
-            danger: Color32::from_rgb(0xf0, 0x5c, 0x4a),
+            accent: Color32::from_rgb(0x1a, 0xf0, 0xe6),
+            armed: Color32::from_rgb(0xff, 0xc4, 0x1f),
+            active: Color32::from_rgb(0x4d, 0xff, 0xb0),
+            danger: Color32::from_rgb(0xff, 0x2e, 0x7e),
 
-            waveform_bg: Color32::from_rgb(0x0f, 0x0e, 0x0d),
-            waveform: Color32::from_rgb(0x5e, 0xea, 0xd4),
-            waveform_axis: Color32::from_rgb(0x33, 0x30, 0x2b),
-            marker: Color32::from_rgb(0x6e, 0x67, 0x5c),
-            playhead: Color32::from_rgb(0xf5, 0xa5, 0x24),
+            waveform_bg: Color32::from_rgb(0x05, 0x07, 0x0f),
+            waveform: Color32::from_rgb(0x2d, 0xf7, 0xe8),
+            waveform_axis: Color32::from_rgb(0x15, 0x20, 0x33),
+            marker: Color32::from_rgb(0x44, 0x5a, 0x7a),
+            playhead: Color32::from_rgb(0xff, 0x2e, 0x7e),
             // Slice shading sits behind the trace, so it stays very low
             // contrast; the markers carry the actual division.
-            slice_fill: Color32::from_rgb(0x16, 0x15, 0x13),
-            slice_fill_alternate: Color32::from_rgb(0x1c, 0x1a, 0x18),
-            slice_selected_fill: Color32::from_rgb(0x1c, 0x2d, 0x2c),
+            slice_fill: Color32::from_rgb(0x08, 0x0b, 0x16),
+            slice_fill_alternate: Color32::from_rgb(0x0c, 0x10, 0x1e),
+            slice_selected_fill: Color32::from_rgb(0x08, 0x22, 0x2c),
+            // Neon signs: every one of these reads at a glance against the
+            // dark chassis, and no two of them are close enough to confuse.
             slice_palette: [
-                Color32::from_rgb(0x3a, 0xd9, 0xc4),
-                Color32::from_rgb(0xf4, 0x72, 0xb6),
-                Color32::from_rgb(0xf5, 0xa5, 0x24),
-                Color32::from_rgb(0x60, 0xa5, 0xfa),
-                Color32::from_rgb(0xa7, 0x8b, 0xfa),
-                Color32::from_rgb(0x63, 0xe2, 0x8a),
+                Color32::from_rgb(0x1a, 0xf0, 0xe6),
+                Color32::from_rgb(0xff, 0x3d, 0x9a),
+                Color32::from_rgb(0xff, 0xc4, 0x1f),
+                Color32::from_rgb(0x4d, 0x9f, 0xff),
+                Color32::from_rgb(0xc2, 0x6c, 0xff),
+                Color32::from_rgb(0x4d, 0xff, 0xb0),
             ],
         }
     }

@@ -343,6 +343,55 @@ impl Project {
         Some(id)
     }
 
+    /// Copy a cell onto the first free key at or above `from`.
+    ///
+    /// Free rather than the next one along: duplicating onto an occupied key
+    /// would quietly replace whatever was already performed there, and the
+    /// whole point of duplicating is to end up with two of something.
+    ///
+    /// Returns `None` when there is no free key left above `from`.
+    pub fn copy_cell_to_free_note(&mut self, id: CellId, from: u8) -> Option<CellId> {
+        let note = self.first_free_note(from)?;
+        self.copy_cell_to_note(id, note)
+    }
+
+    /// Move a cell to another key.
+    ///
+    /// Two cells swap keys rather than one destroying the other: a mapping is
+    /// work, and a drag that lands a pad on an occupied one should rearrange
+    /// the keyboard, not empty part of it.
+    ///
+    /// Returns whether anything moved.
+    pub fn move_cell_to_note(&mut self, id: CellId, note: u8) -> bool {
+        // A modifier key is not available for playing.
+        if self.modifier_for_note(note).is_some() {
+            return false;
+        }
+
+        let Some(from) = self.cell(id).map(|cell| cell.midi_note) else {
+            return false;
+        };
+        if from == note {
+            return false;
+        }
+
+        let occupant = self
+            .cells
+            .iter()
+            .find(|cell| cell.midi_note == note)
+            .map(|cell| cell.id);
+
+        for cell in &mut self.cells {
+            if cell.id == id {
+                cell.midi_note = note;
+            } else if Some(cell.id) == occupant {
+                cell.midi_note = from;
+            }
+        }
+        self.sort_cells();
+        true
+    }
+
     /// Copy a cell onto another note, settings and all.
     ///
     /// This is how one slice ends up performed several ways: duplicate the
@@ -1173,6 +1222,64 @@ mod tests {
         // Notes 120..=127 fit, the remaining slices stay unassigned.
         assert_eq!(project.cells().len(), 8);
         assert!(project.cells().iter().all(|cell| cell.midi_note <= 127));
+    }
+
+    #[test]
+    fn duplicating_lands_on_a_free_key_rather_than_over_a_used_one() {
+        let mut project = project_with_sample(4_000);
+        let slice = project.add_slice(0, 1_000);
+        let first = project.assign(72, slice).expect("the slice exists");
+        project.assign(73, slice).expect("the slice exists");
+        let before = project.cells().len();
+
+        let copy = project
+            .copy_cell_to_free_note(first, 73)
+            .expect("there is room above");
+
+        assert_eq!(project.cells().len(), before + 1, "it replaced a cell");
+        assert_eq!(
+            project.cell(copy).expect("the copy exists").midi_note,
+            74,
+            "it should skip the key that was taken"
+        );
+    }
+
+    #[test]
+    fn moving_a_cell_onto_a_free_key_takes_it_there() {
+        let mut project = project_with_sample(4_000);
+        let slice = project.add_slice(0, 1_000);
+        let id = project.assign(72, slice).expect("the slice exists");
+
+        assert!(project.move_cell_to_note(id, 80));
+
+        assert_eq!(project.cell(id).expect("it is still there").midi_note, 80);
+        assert!(project.cell_for_note(72).is_none());
+    }
+
+    #[test]
+    fn moving_a_cell_onto_a_used_key_swaps_the_two() {
+        let mut project = project_with_sample(4_000);
+        let slice = project.add_slice(0, 1_000);
+        let first = project.assign(72, slice).expect("the slice exists");
+        let second = project.assign(75, slice).expect("the slice exists");
+        let before = project.cells().len();
+
+        assert!(project.move_cell_to_note(first, 75));
+
+        assert_eq!(project.cells().len(), before, "a cell went missing");
+        assert_eq!(project.cell(first).expect("first").midi_note, 75);
+        assert_eq!(project.cell(second).expect("second").midi_note, 72);
+    }
+
+    #[test]
+    fn a_cell_will_not_move_onto_a_modifier_key() {
+        let mut project = project_with_sample(4_000);
+        let slice = project.add_slice(0, 1_000);
+        let id = project.assign(72, slice).expect("the slice exists");
+        project.add_modifier(40, Modifier::Reverse, ModifierMode::Hold);
+
+        assert!(!project.move_cell_to_note(id, 40));
+        assert_eq!(project.cell(id).expect("unmoved").midi_note, 72);
     }
 
     #[test]

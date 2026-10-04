@@ -52,6 +52,16 @@ pub fn performance_section(ui: &mut Ui, state: &ViewState<'_>) {
         let playheads: Vec<u64> = state.meters.playheads().collect();
         let mut edit: Option<PadEdit> = None;
 
+        let dragged: Option<saempler_model::CellId> =
+            ui.memory(|memory| memory.data.get_temp(dragged_id()));
+        let pointer = ui.ctx().pointer_interact_pos();
+        // The key a drag is over, from the frame before: the pads work it out
+        // as they are drawn, and the one being hovered has to glow on the same
+        // frame the pointer is over it.
+        let target: Option<u8> = dragged.and_then(|_| ui.memory(|m| m.data.get_temp(target_id())));
+        let mut hovered_note: Option<u8> = None;
+        let mut released = false;
+
         let (size, per_row) = grid(
             ui.available_width(),
             ui.available_height(),
@@ -88,8 +98,22 @@ pub fn performance_section(ui: &mut Ui, state: &ViewState<'_>) {
                             selected: project.project.cell_selection() == Some(cell.id),
                             sounding,
                             size,
+                            dragging: dragged == Some(cell.id),
+                            drop_target: target == Some(cell.midi_note) && dragged != Some(cell.id),
                         },
                     );
+
+                    if let Some(position) = pointer {
+                        if action.rect.contains(position) {
+                            hovered_note = Some(cell.midi_note);
+                        }
+                    }
+                    if action.drag_started {
+                        ui.memory_mut(|memory| memory.data.insert_temp(dragged_id(), cell.id));
+                    }
+                    if action.drag_released {
+                        released = true;
+                    }
 
                     if action.clear {
                         edit = Some(PadEdit::Clear(cell.midi_note));
@@ -100,7 +124,27 @@ pub fn performance_section(ui: &mut Ui, state: &ViewState<'_>) {
             });
         }
 
+        match hovered_note {
+            Some(note) => ui.memory_mut(|m| m.data.insert_temp(target_id(), note)),
+            None => ui.memory_mut(|m| m.data.remove::<u8>(target_id())),
+        }
+        if released {
+            if let (Some(id), Some(note)) = (dragged, hovered_note) {
+                edit = Some(PadEdit::Move(id, note));
+            }
+            ui.memory_mut(|memory| {
+                memory.data.remove::<saempler_model::CellId>(dragged_id());
+                memory.data.remove::<u8>(target_id());
+            });
+        }
+
         match edit {
+            Some(PadEdit::Move(id, note)) => {
+                if project.project.move_cell_to_note(id, note) {
+                    project.project.select_cell(Some(id));
+                    sync_cells(state, &project);
+                }
+            }
             Some(PadEdit::Clear(note)) => {
                 if project.project.clear_note(note) {
                     sync_cells(state, &project);
@@ -146,6 +190,19 @@ fn grid(width: f32, height: f32, count: usize) -> (f32, usize) {
 enum PadEdit {
     Trigger(saempler_model::CellId),
     Clear(u8),
+    /// A pad was dragged onto a key: move it there, swapping if that key is
+    /// taken. Dragging is how a mapping is rearranged.
+    Move(saempler_model::CellId, u8),
+}
+
+/// Memory key for the cell a drag is carrying.
+fn dragged_id() -> nih_plug_egui::egui::Id {
+    nih_plug_egui::egui::Id::new("pad-drag")
+}
+
+/// Memory key for the key a drag is currently over.
+fn target_id() -> nih_plug_egui::egui::Id {
+    nih_plug_egui::egui::Id::new("pad-drag-target")
 }
 
 /// Mapping controls above the pads.
@@ -198,11 +255,13 @@ fn copy_selected_to_next_note(state: &ViewState<'_>) {
     let Some(cell) = project.project.selected_cell().cloned() else {
         return;
     };
-    let Some(target) = cell.midi_note.checked_add(1).filter(|note| *note <= 127) else {
+    let Some(from) = cell.midi_note.checked_add(1) else {
         return;
     };
 
-    if let Some(copy) = project.project.copy_cell_to_note(cell.id, target) {
+    // The first free key above, not the next one along: duplicating onto a
+    // key that is already performed would quietly replace it.
+    if let Some(copy) = project.project.copy_cell_to_free_note(cell.id, from) {
         project.project.select_cell(Some(copy));
         sync_cells(state, &project);
     }

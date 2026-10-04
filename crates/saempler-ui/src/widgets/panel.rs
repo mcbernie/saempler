@@ -101,14 +101,14 @@ fn bevel(shapes: &mut Vec<Shape>, theme: &Theme, rect: Rect) {
             pos2(inner.min.x + f32::from(radius.nw), inner.min.y + 0.5),
             pos2(inner.max.x - f32::from(radius.ne), inner.min.y + 0.5),
         ],
-        Stroke::new(1.0, Color32::from_white_alpha(130)),
+        Stroke::new(1.0, Color32::from_white_alpha(42)),
     ));
     shapes.push(Shape::line_segment(
         [
             pos2(inner.min.x + f32::from(radius.sw), inner.max.y - 0.5),
             pos2(inner.max.x - f32::from(radius.se), inner.max.y - 0.5),
         ],
-        Stroke::new(1.0, Color32::from_black_alpha(70)),
+        Stroke::new(1.0, Color32::from_black_alpha(120)),
     ));
 
     shapes.push(Shape::Rect(RectShape::stroke(
@@ -166,11 +166,11 @@ pub fn panel_header(ui: &Ui, theme: &Theme, rect: Rect, title: &str, lit: Option
     let centre_y = rect.min.y + HEADER_HEIGHT * 0.5;
 
     lamp(painter, theme, pos2(rect.min.x + 8.0, centre_y), lit);
-    // Engraved and heavy: a light line under the letters as if cut into the
-    // metal, and the dark face drawn twice because the interface font has no
+    // Silkscreened and heavy: a dark line under the letters so they lift off
+    // the panel, and the face drawn twice because the interface font has no
     // bold weight of its own.
     for (offset, color) in [
-        (vec2(0.0, 1.0), Color32::from_white_alpha(120)),
+        (vec2(0.0, 1.0), Color32::from_black_alpha(160)),
         (vec2(0.0, 0.0), theme.title),
         (vec2(0.5, 0.0), theme.title),
     ] {
@@ -192,7 +192,7 @@ pub fn inset(painter: &Painter, theme: &Theme, rect: Rect, fill: Color32) {
     painter.rect_filled(
         rect.translate(vec2(0.0, 1.2)),
         theme.radius_sm,
-        theme.chassis_edge,
+        theme.chassis_edge.gamma_multiply(0.7),
     );
     painter.rect_filled(rect, theme.radius_sm, fill);
     painter.add(vertical_gradient(

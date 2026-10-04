@@ -14,12 +14,31 @@ pub const MIN_PAD_SIZE: f32 = 56.0;
 const THUMBNAIL_SHARE: f32 = 0.38;
 
 /// What the user did on a pad.
-#[derive(Debug, Default)]
+#[derive(Debug)]
 pub struct PadAction {
     /// The pad was clicked: select the cell and play it.
     pub trigger: bool,
     /// The pad was right clicked: take the cell off its note.
     pub clear: bool,
+    /// A drag began on this pad.
+    pub drag_started: bool,
+    /// A drag that began somewhere ended with the pointer released.
+    pub drag_released: bool,
+    /// Where the pad was drawn, so the caller can work out what a drag was
+    /// let go over.
+    pub rect: Rect,
+}
+
+impl Default for PadAction {
+    fn default() -> Self {
+        Self {
+            trigger: false,
+            clear: false,
+            drag_started: false,
+            drag_released: false,
+            rect: Rect::NOTHING,
+        }
+    }
 }
 
 /// Everything one pad shows.
@@ -35,6 +54,11 @@ pub struct PadView<'a> {
     /// Side length to draw at. The grid shrinks its pads rather than
     /// scrolling, so that every key stays visible however many are mapped.
     pub size: f32,
+    /// Whether this pad is the one being dragged to another key.
+    pub dragging: bool,
+    /// Whether a dragged pad is hovering over this one, which is where it
+    /// would land.
+    pub drop_target: bool,
 }
 
 /// Draw one performance pad.
@@ -50,6 +74,8 @@ pub fn performance_pad(ui: &mut Ui, theme: &Theme, view: &PadView<'_>) -> PadAct
         selected,
         sounding,
         size,
+        dragging,
+        drop_target,
     } = *view;
     let (rect, response) = ui.allocate_exact_size(vec2(size, size), Sense::click_and_drag());
 
@@ -127,9 +153,16 @@ pub fn performance_pad(ui: &mut Ui, theme: &Theme, view: &PadView<'_>) -> PadAct
     );
 
     // The pad that is up in the editor carries the glowing frame the mockup
-    // gives it, in its own colour rather than a shared one.
-    if selected || sounding {
-        let color = if sounding { theme.active } else { accent };
+    // gives it, in its own colour rather than a shared one. A pad being
+    // dragged, or the one it would land on, says so the same way.
+    if selected || sounding || dragging || drop_target {
+        let color = if drop_target {
+            theme.armed
+        } else if sounding {
+            theme.active
+        } else {
+            accent
+        };
         painter.rect_stroke(
             rect.expand(1.0),
             theme.radius_sm,
@@ -147,6 +180,9 @@ pub fn performance_pad(ui: &mut Ui, theme: &Theme, view: &PadView<'_>) -> PadAct
     PadAction {
         trigger: response.clicked(),
         clear: response.clicked_by(PointerButton::Secondary),
+        drag_started: response.drag_started(),
+        drag_released: response.drag_stopped(),
+        rect,
     }
 }
 

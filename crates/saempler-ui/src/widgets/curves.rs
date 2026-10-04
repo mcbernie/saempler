@@ -38,9 +38,18 @@ pub fn envelope_display(
     let release = sustain_end + span * (envelope.release_ms / total);
 
     let level_y = |level: f32| inner.max.y - level.clamp(0.0, 1.0) * inner.height();
+    // With no decay there is nothing for a peak to fall from, so the attack
+    // rises to the sustain and the shape has no spike in it. That is what the
+    // engine does too: a single frame at full scale on the way down is a
+    // click, not a stage.
+    let peak = if envelope.decay_ms > 0.0 {
+        1.0
+    } else {
+        envelope.sustain
+    };
     let points = vec![
         pos2(inner.min.x, inner.max.y),
-        pos2(attack, inner.min.y),
+        pos2(attack, level_y(peak)),
         pos2(decay, level_y(envelope.sustain)),
         pos2(sustain_end, level_y(envelope.sustain)),
         pos2(release.min(inner.max.x), inner.max.y),

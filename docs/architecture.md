@@ -333,6 +333,21 @@ An audition is held for two seconds and then released, so a loop, a repeat and
 a collapse can all be heard doing what they do from a click on a pad, and
 still end.
 
+## Envelope stages
+
+Each stage covers the distance it actually travels, so a stage takes the time
+it was given. Scaling every step by the full range instead made a decay to a
+high sustain finish early, and a release from a low level finish early too.
+
+With the decay at zero there is no stage for a peak to fall from, so the
+attack rises to the sustain level directly. Otherwise the envelope spends one
+frame at full scale on its way down, which is a click rather than a stage, and
+the drawn shape shows it as a spike that should not be there.
+
+The release step is worked out when the key comes up rather than at the start,
+because a key let go during the attack releases from wherever the level had
+got to and should still take the time it was given.
+
 ## Modulation
 
 A cell owns two envelopes, two LFOs and a list of routes. None of the sources
