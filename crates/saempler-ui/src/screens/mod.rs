@@ -1,5 +1,6 @@
 //! Composed screens of the interface.
 
+pub mod about;
 pub mod cell;
 pub mod effects;
 pub mod main;

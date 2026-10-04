@@ -1,0 +1,197 @@
+name: Release
+
+# Builds the plug-in for every platform and attaches the result to a release.
+#
+# Driven by tags rather than by pushes to a branch: a release is a decision,
+# not a side effect of merging. `workflow_dispatch` is there so the same build
+# can be exercised without cutting a tag.
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  check:
+    name: Checks
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - uses: Swatinem/rust-cache@v2
+      - name: System libraries
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libasound2-dev libgl-dev libjack-jackd2-dev libx11-xcb-dev \
+            libxcb1-dev libxcb-dri2-0-dev libxcb-icccm4-dev libxcursor-dev \
+            libxkbcommon-dev
+      - run: cargo fmt --all --check
+      - run: cargo clippy --workspace --all-targets --all-features -- -D warnings
+      - run: cargo test --workspace
+
+  build:
+    name: ${{ matrix.name }}
+    needs: check
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Windows
+            os: windows-latest
+            artifact: saempler-windows
+          # Both Mac architectures from one job: the bundler produces a
+          # universal binary, so an Intel owner and an Apple Silicon owner
+          # download the same file.
+          - name: macOS
+            os: macos-latest
+            artifact: saempler-macos
+            target: universal-apple-darwin
+          - name: Linux
+            os: ubuntu-latest
+            artifact: saempler-linux
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+
+      - name: System libraries
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install --no-install-recommends -y \
+            libasound2-dev libgl-dev libjack-jackd2-dev libx11-xcb-dev \
+            libxcb1-dev libxcb-dri2-0-dev libxcb-icccm4-dev libxcursor-dev \
+            libxkbcommon-dev
+
+      - name: Bundle VST3 and CLAP
+        run: cargo xtask bundle saempler-plugin --release ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
+
+      - name: Build the standalone
+        run: cargo build --release -p saempler-plugin --bin saempler ${{ matrix.target && format('--target {0}', matrix.target) || '' }}
+
+      - name: Collect
+        shell: bash
+        run: |
+          set -euo pipefail
+          out="dist/${{ matrix.artifact }}"
+          mkdir -p "$out"
+          cp -r target/bundled/* "$out/"
+          # The standalone lands in a target-specific folder when one is set.
+          bin="target/release"
+          if [ -n "${{ matrix.target }}" ]; then bin="target/${{ matrix.target }}/release"; fi
+          if [ -f "$bin/saempler.exe" ]; then cp "$bin/saempler.exe" "$out/"; fi
+          if [ -f "$bin/saempler" ]; then cp "$bin/saempler" "$out/"; fi
+          cp LICENSE LICENSING.md README.md "$out/"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}
+          if-no-files-found: error
+
+  installers:
+    name: Installers
+    needs: build
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            artifact: saempler-windows
+          - os: macos-latest
+            artifact: saempler-macos
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: dist/${{ matrix.artifact }}
+
+      - name: Version
+        id: version
+        shell: bash
+        # The tag wins when there is one, so a dispatched run still produces a
+        # named installer instead of failing.
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          if [ "$GITHUB_REF_TYPE" != "tag" ]; then
+            tag=$(grep -m1 '^version' Cargo.toml | cut -d'"' -f2)
+          fi
+          echo "version=$tag" >> "$GITHUB_OUTPUT"
+
+      - name: Windows installer
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          "/c/Program Files (x86)/Inno Setup 6/ISCC.exe" \
+            "/DAppVersion=${{ steps.version.outputs.version }}" \
+            "/DSourceDir=dist/${{ matrix.artifact }}" \
+            packaging/windows/saempler.iss
+
+      - name: macOS installer
+        if: runner.os == 'macOS'
+        run: packaging/macos/build-pkg.sh "${{ steps.version.outputs.version }}" "dist/${{ matrix.artifact }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer-${{ runner.os }}
+          path: dist/installer/*
+          if-no-files-found: error
+
+  release:
+    name: Release
+    needs: [build, installers]
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+
+      - name: Pack each platform
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p upload
+          for dir in dist/saempler-*; do
+            [ -d "$dir" ] || continue
+            name=$(basename "$dir")
+            (cd "$dir" && zip -qr "../../upload/${name}-${GITHUB_REF_NAME}.zip" .)
+          done
+          find dist -path 'dist/installer-*' -type f -exec cp {} upload/ \;
+          ls -la upload
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          files: upload/*
+          draft: true
+          generate_release_notes: true
+          body: |
+            Sämpler ${{ github.ref_name }}
+
+            **Installation**
+
+            - Windows: `Saempler-Setup-*.exe` ausführen, oder das ZIP entpacken
+              und die Ordner nach `C:\Program Files\Common Files\VST3` bzw.
+              `CLAP` kopieren.
+            - macOS: `Saempler-*.pkg` öffnen, oder das ZIP entpacken und die
+              Bundles nach `~/Library/Audio/Plug-Ins/VST3` bzw. `CLAP` legen.
+            - Linux: ZIP entpacken, Bundles nach `~/.vst3` bzw. `~/.clap`.
+
+            Die macOS-Pakete sind nicht notariell beglaubigt. Beim ersten Start
+            meldet sich Gatekeeper; der Weg führt über Systemeinstellungen →
+            Datenschutz & Sicherheit → „Trotzdem öffnen".
+
+            Lizenz: GPL-3.0-or-later, kommerzielle Lizenz auf Anfrage.

@@ -193,6 +193,7 @@ pub fn draw(ctx: &egui::Context, setter: &ParamSetter, state: &ViewState<'_>) ->
                     region(ui, output, |ui| footer_section(ui, setter, state));
 
                     crate::screens::effects::sends_window(ui, state);
+                    crate::screens::about::window(ui);
                 });
         });
 
@@ -216,6 +217,7 @@ fn header(ui: &mut Ui, state: &ViewState<'_>) {
     );
     inset(painter, &THEME, plate, THEME.waveform_bg);
     logo_mark(painter, pos2(plate.min.x + 16.0, plate.center().y));
+    let about_plate = plate;
     painter.text(
         pos2(plate.min.x + 32.0, plate.center().y - 4.0),
         Align2::LEFT_CENTER,
@@ -272,10 +274,14 @@ fn header(ui: &mut Ui, state: &ViewState<'_>) {
         FontId::proportional(THEME.font_sm),
         THEME.title,
     );
+
+    if crate::screens::about::name_plate_clicked(ui, about_plate) {
+        crate::screens::about::request(ui);
+    }
 }
 
 /// The little waveform glyph on the name plate.
-fn logo_mark(painter: &egui::Painter, centre: egui::Pos2) {
+pub(crate) fn logo_mark(painter: &egui::Painter, centre: egui::Pos2) {
     for (offset, height) in [(-6.0, 5.0), (-2.0, 9.0), (2.0, 7.0), (6.0, 4.0)] {
         painter.line_segment(
             [

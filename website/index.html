@@ -1,0 +1,234 @@
+<!doctype html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sämpler — Slice &amp; Remix Instrument</title>
+<meta name="description" content="Sämpler zerschneidet ein Sample in Slices und macht jede Taste zu einer eigenen Spielweise. VST3, CLAP und standalone. Open Source.">
+
+<meta property="og:title" content="Sämpler — Slice &amp; Remix Instrument">
+<meta property="og:description" content="Ein Sample. Zwanzig Slices. Jede Taste eine eigene Spielweise.">
+<meta property="og:type" content="website">
+<meta property="og:url" content="https://mcbernie.github.io/saempler/">
+<meta name="theme-color" content="#07080e">
+
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<a class="skip" href="#was">Zum Inhalt springen</a>
+
+<header class="masthead">
+  <a class="plate" href="#top" aria-label="Sämpler, Startseite">
+    <svg class="mark" viewBox="0 0 24 16" aria-hidden="true">
+      <rect x="2"  y="6"  width="2" height="5"  rx="1"/>
+      <rect x="7"  y="3"  width="2" height="11" rx="1"/>
+      <rect x="12" y="5"  width="2" height="7"  rx="1"/>
+      <rect x="17" y="7"  width="2" height="3"  rx="1"/>
+    </svg>
+    <span class="plate-text">
+      <strong>SÄMPLER</strong>
+      <small>SLICE &amp; REMIX INSTRUMENT</small>
+    </span>
+  </a>
+  <nav>
+    <a href="#was">Was es tut</a>
+    <a href="#funktionen">Funktionen</a>
+    <a href="#laden">Laden</a>
+    <a href="https://github.com/mcbernie/saempler">Quellcode</a>
+  </nav>
+</header>
+
+<main id="top">
+
+<section class="hero">
+  <p class="eyebrow">VST3 · CLAP · Standalone — Windows, macOS, Linux</p>
+  <h1>Ein Sample.<br>Zwanzig Slices.<br><em>Jede Taste eine eigene Spielweise.</em></h1>
+  <p class="lead">
+    Sämpler zerschneidet dein Sample und legt die Teile auf die Tastatur. Das
+    Besondere steckt darin, was danach passiert: dasselbe Stück Audio kann auf
+    fünf Tasten liegen und auf jeder anders klingen — rückwärts, halbtempo,
+    stotternd, gefiltert. Dazu eine Hand voll Modifier-Tasten, die das Ganze im
+    Spiel verbiegen.
+  </p>
+  <div class="cta">
+    <a class="button primary" href="#laden">Herunterladen</a>
+    <a class="button" href="https://github.com/mcbernie/saempler">Auf GitHub ansehen</a>
+  </div>
+  <p class="note">Open Source unter GPL-3. Kostenlos, ohne Konto, ohne Telemetrie.</p>
+</section>
+
+<section class="rack" aria-label="Die Kette, nach der das Instrument gebaut ist">
+  <ol class="chain">
+    <li><span class="step">Sample</span><span class="arrow" aria-hidden="true">↓</span></li>
+    <li><span class="step">Slice</span><span class="arrow" aria-hidden="true">↓</span></li>
+    <li><span class="step accent">Performance Cell</span><span class="arrow" aria-hidden="true">↓</span></li>
+    <li><span class="step">Transforms</span><span class="arrow" aria-hidden="true">↓</span></li>
+    <li><span class="step">Effekte</span></li>
+  </ol>
+  <p class="chain-note">
+    Eine Cell verweist auf einen Slice, sie kopiert ihn nicht. Zehn Cells auf
+    einem Slice kosten kein zusätzliches Byte Audio — nur zehn Spielweisen.
+  </p>
+</section>
+
+<section id="was" class="split">
+  <div>
+    <h2>Gebaut zum Spielen, nicht zum Einstellen</h2>
+    <p>
+      Die meisten Sampler wollen, dass du ein Instrument baust und es dann
+      spielst. Sämpler dreht das um: die Modifier-Tasten liegen unter der
+      linken Hand und ändern, was die rechte gerade auslöst. Reverse, Stutter,
+      Repeat, Half-Time und Brake — gehalten, getoggelt oder als One-Shot für
+      genau den nächsten Anschlag.
+    </p>
+    <p>
+      Vier weitere Tasten werfen alles in Delay, Reverb, Phaser oder Flanger,
+      und zwar in eine zweite, härter eingestellte Fassung desselben Effekts.
+      Loslassen bringt den Send zurück, ohne dass sich eine Einstellung ändert.
+    </p>
+  </div>
+  <div class="keys" aria-hidden="true">
+    <div class="key mod">Reverse<span>C2</span></div>
+    <div class="key mod">Stutter<span>D2</span></div>
+    <div class="key mod">Repeat<span>E2</span></div>
+    <div class="key mod">Half-Time<span>F2</span></div>
+    <div class="key mod">Brake<span>G2</span></div>
+    <div class="key pad lit">S1<span>C3</span></div>
+    <div class="key pad">S2<span>C#3</span></div>
+    <div class="key pad">S3<span>D3</span></div>
+    <div class="key pad">S4<span>D#3</span></div>
+    <div class="key pad">S5<span>E3</span></div>
+  </div>
+</section>
+
+<section id="funktionen">
+  <h2>Was drin ist</h2>
+  <div class="cards">
+
+    <article>
+      <h3>Slicen</h3>
+      <p>
+        Gleichmäßig in 4, 8, 16 oder 20 Teile, oder von Hand per Doppelklick
+        in die Wellenform. Marker lassen sich ziehen, Grenzen zusammenführen.
+        Optional landen Chops nur auf weißen Tasten, damit ein Lauf unter der
+        Hand liegt.
+      </p>
+    </article>
+
+    <article>
+      <h3>Fünf Spielarten</h3>
+      <p>
+        Gate, One-Shot, Loop, Repeat und Collapse — letzteres faltet den Chop
+        mit jedem Durchlauf enger zusammen. Dazu Release-Trigger: der Loop
+        beginnt erst, wenn du die Taste loslässt.
+      </p>
+    </article>
+
+    <article>
+      <h3>Modulation</h3>
+      <p>
+        Zwei Hüllkurven, zwei LFOs, eine Matrix mit acht Wegen. Ziele sind
+        Lautstärke, Panorama, Pitch, Rate, Loop-Länge, Filter-Cutoff, Resonanz
+        und Drive. LFOs laufen frei oder im Tempo des Hosts.
+      </p>
+    </article>
+
+    <article>
+      <h3>Effekte</h3>
+      <p>
+        Pro Cell ein Filter (Tief-, Hoch-, Band-, Notch) und eine Sättigung in
+        drei Kurven. Geteilt dahinter: Delay mit Tempo-Sync, Reverb, Phaser und
+        Flanger, jeder mit eigenem Rückweg-Pegel.
+      </p>
+    </article>
+
+    <article>
+      <h3>Automation</h3>
+      <p>
+        Zwanzig feste Bänke, eine pro Slice, mit Gain, Pitch, Speed, Cutoff und
+        Reverb-Anteil — dazu die vier Send-Rückwege. Alle Werte sind Versatz,
+        nicht Ersatz: eine unberührte Spur ändert nichts.
+      </p>
+    </article>
+
+    <article>
+      <h3>Echtzeitsicher</h3>
+      <p>
+        Kein Mutex, keine Allokation und kein Dateizugriff im Audio-Callback.
+        Stimmen sind vorab belegt, Nachrichten laufen über wartefreie
+        Warteschlangen. Geprüft mit aktiven Allokationszusicherungen.
+      </p>
+    </article>
+
+  </div>
+</section>
+
+<section class="quote">
+  <blockquote>
+    <p>
+      Das Ziel ist nicht der größte Sampler. Das Ziel ist der kürzeste Weg von
+      „ich habe hier ein Sample" zu „ich spiele damit".
+    </p>
+  </blockquote>
+</section>
+
+<section id="laden">
+  <h2>Laden</h2>
+  <p class="lead narrow">
+    Fertige Installer für Windows und macOS sowie Archive für alle drei
+    Systeme liegen bei den Releases.
+  </p>
+  <div class="cta">
+    <a class="button primary" href="https://github.com/mcbernie/saempler/releases/latest">Aktuelle Version</a>
+    <a class="button" href="https://github.com/mcbernie/saempler#readme">Selbst bauen</a>
+  </div>
+
+  <div class="install">
+    <div>
+      <h3>Windows</h3>
+      <p><code>Saempler-Setup-*.exe</code> ausführen. Oder das ZIP entpacken und
+      die Bundles nach <code>C:\Program Files\Common Files\VST3</code> bzw.
+      <code>CLAP</code> kopieren.</p>
+    </div>
+    <div>
+      <h3>macOS</h3>
+      <p><code>Saempler-*.pkg</code> öffnen. Das Paket ist noch nicht beglaubigt,
+      deshalb meldet sich Gatekeeper: Systemeinstellungen → Datenschutz &amp;
+      Sicherheit → „Trotzdem öffnen".</p>
+    </div>
+    <div>
+      <h3>Linux</h3>
+      <p>ZIP entpacken, Bundles nach <code>~/.vst3</code> bzw.
+      <code>~/.clap</code> legen. Die eigenständige Anwendung läuft direkt.</p>
+    </div>
+  </div>
+</section>
+
+<section class="support">
+  <h2>Unterstützen</h2>
+  <p class="lead narrow">
+    Sämpler ist kostenlos und bleibt es. Wenn es dir etwas wert ist, hilft eine
+    Spende dabei, dass daran weitergearbeitet wird.
+  </p>
+  <a class="button sponsor" href="https://github.com/sponsors/mcbernie">♥&nbsp;&nbsp;Entwicklung unterstützen</a>
+</section>
+
+</main>
+
+<footer>
+  <p>
+    <strong>Sämpler</strong> — Slice &amp; Remix Instrument.
+    Quellcode unter <a href="https://github.com/mcbernie/saempler/blob/main/LICENSE">GPL-3.0</a>,
+    <a href="https://github.com/mcbernie/saempler/blob/main/LICENSING.md">kommerzielle Lizenz</a>
+    auf Anfrage.
+  </p>
+  <p class="small">
+    VST3 ist eine eingetragene Marke der Steinberg Media Technologies GmbH.
+    CLAP ist ein offener Standard von Bitwig und u-he.
+  </p>
+</footer>
+
+</body>
+</html>
