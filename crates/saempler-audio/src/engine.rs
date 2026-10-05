@@ -35,9 +35,16 @@ const SEND_COUNT: usize = 4;
 /// How long an audition is held before the key is let go for it, in seconds.
 ///
 /// An audition has no key to release, so a looping cell would sound until
-/// something else stopped it. Holding it for a couple of seconds lets a loop,
-/// a repeat and a collapse be heard doing what they do, and then ends.
+/// something else stopped it. A cell that plays and ends is held this long.
 const PREVIEW_SECONDS: f32 = 2.0;
+/// Passes of its slice a looping audition is held for.
+///
+/// Two seconds flat cut a long slice off halfway through its second pass,
+/// which sounded like the repeat itself was broken. Two whole passes let the
+/// loop be heard coming round once.
+const PREVIEW_PASSES: f32 = 2.0;
+/// Longest a looping audition is held, in seconds, however long its slice.
+const MAX_PREVIEW_SECONDS: f32 = 10.0;
 
 /// The realtime engine.
 ///
@@ -257,7 +264,7 @@ impl Engine {
                     self.trigger(PREVIEW_NOTE, 1.0, spec, spec);
                     // A release trigger would never fire without this, and a
                     // loop would never end.
-                    self.preview_left = (PREVIEW_SECONDS * self.sample_rate) as u64;
+                    self.preview_left = preview_frames(&spec, self.sample_rate);
                 }
                 EngineCommand::SetModifierSettings(settings) => {
                     self.modifiers.set_settings(settings);
@@ -503,6 +510,8 @@ impl Engine {
     }
 
     /// Count down the audition and let go of its key when the time is up.
+    ///
+    /// The length is set by [`preview_frames`] when the audition starts.
     fn advance_preview(&mut self, frames: u64) {
         if self.preview_left == 0 {
             return;
@@ -646,6 +655,20 @@ impl Engine {
         self.publish_playheads();
         self.publish_modulation();
     }
+}
+
+/// How long an audition of `spec` is held, in frames.
+///
+/// A cell that plays and ends gets [`PREVIEW_SECONDS`]. A looping one gets
+/// [`PREVIEW_PASSES`] passes of its slice at its own rate, within
+/// [`MAX_PREVIEW_SECONDS`], so the second time round is heard whole.
+fn preview_frames(spec: &CellSpec, sample_rate: f32) -> u64 {
+    let least = PREVIEW_SECONDS * sample_rate;
+    if !spec.mode.loops() {
+        return least as u64;
+    }
+    let pass = spec.bounds.len_frames() as f32 / spec.rate.max(f32::MIN_POSITIVE);
+    (pass * PREVIEW_PASSES).clamp(least, MAX_PREVIEW_SECONDS * sample_rate) as u64
 }
 
 #[cfg(test)]
@@ -1493,6 +1516,42 @@ mod tests {
             h.engine.active_voices(),
             0,
             "an audition has no key to let go of, so it has to stop by itself"
+        );
+    }
+
+    #[test]
+    fn a_looping_audition_is_held_for_two_whole_passes() {
+        let mut h = harness();
+        load(&mut h, (SAMPLE_RATE * 4.0) as usize);
+        let slice = (SAMPLE_RATE * 3.0) as u64;
+
+        h.commands
+            .push(EngineCommand::Preview(CellSpec {
+                mode: saempler_model::PlaybackMode::Repeat,
+                cycle_whole_notes: 0.0,
+                ..spec(0, slice)
+            }))
+            .expect("the queue has capacity");
+        h.engine.apply_commands();
+
+        // Past the old two second limit and well into the second pass.
+        render(&mut h.engine, (SAMPLE_RATE * 5.5) as usize);
+        assert_eq!(h.engine.active_voices(), 1, "the second pass was cut off");
+
+        render(&mut h.engine, (SAMPLE_RATE * 6.0) as usize);
+        assert_eq!(h.engine.active_voices(), 0, "a looping audition has to end");
+    }
+
+    #[test]
+    fn an_audition_that_plays_and_ends_keeps_the_short_hold() {
+        let spec = CellSpec {
+            mode: saempler_model::PlaybackMode::Gate,
+            ..spec(0, (SAMPLE_RATE * 8.0) as u64)
+        };
+
+        assert_eq!(
+            preview_frames(&spec, SAMPLE_RATE),
+            (PREVIEW_SECONDS * SAMPLE_RATE) as u64
         );
     }
 

@@ -72,6 +72,9 @@ pub struct Voice {
     /// the mode is not looping, either because it never does or because a
     /// release trigger has not fired yet. A collapse shrinks this per pass.
     mode_loop: u64,
+    /// A collapse is playing its slice through once before it starts to fold
+    /// in on the end. Its loop is set up but not yet in force.
+    collapse_waiting: bool,
     /// Factor the loop length destination applies, carried over from the
     /// previous frame because the loop is wrapped before this frame's
     /// modulation has been evaluated.
@@ -110,6 +113,7 @@ impl Default for Voice {
             reverse: false,
             loop_low: 0,
             mode_loop: 0,
+            collapse_waiting: false,
             loop_scale: 1.0,
             sample_rate: 48_000.0,
             tempo: 120.0,
@@ -239,6 +243,7 @@ impl Voice {
         };
         self.loop_low = self.position.max(0.0) as u64;
         self.mode_loop = 0;
+        self.collapse_waiting = false;
 
         // A new note starts with a clean filter: whatever the last note left
         // in it would ring through the first frames of this one.
@@ -350,16 +355,26 @@ impl Voice {
             return;
         }
 
-        // A zero cycle means the pass is the whole slice: repeat and collapse
-        // then start from everything the cell holds, and collapse folds it
-        // inwards from there rather than from a sliver at the front.
+        // A zero cycle means the pass is the whole slice. A repeat then
+        // replays everything the cell holds; a collapse, which has already
+        // played it once by the time it loops, starts one fold in.
+        let slice = self.spec.bounds.len_frames() as f64;
         let length = if self.spec.mode.uses_division() && self.spec.cycle_whole_notes > 0.0 {
             self.cycle_frames()
+        } else if self.spec.mode == PlaybackMode::Collapse {
+            slice * self.spec.collapse as f64
         } else {
-            self.spec.bounds.len_frames() as f64
+            slice
         };
 
         self.mode_loop = length.max(MIN_LOOP_FRAMES) as u64;
+
+        // A collapse plays its slice through first and folds in on the end
+        // once it gets there; see `wrap_loop`.
+        if self.spec.mode == PlaybackMode::Collapse {
+            self.collapse_waiting = true;
+            return;
+        }
         self.anchor_loop();
     }
 
@@ -591,6 +606,31 @@ impl Voice {
     /// Returns whether this voice is looping at all, which decides whether the
     /// slice edge is something it can ever reach.
     fn wrap_loop(&mut self) -> bool {
+        // A collapse on its first pass plays on to the edge of the slice and
+        // takes its loop from there: the end, playing forwards, or the start,
+        // playing backwards. A modifier loop pressed meanwhile still wins.
+        if self.collapse_waiting && usable_loop(self.spec) == 0 {
+            let start = self.spec.bounds.start_frame as f64;
+            let end = self.spec.bounds.end_frame as f64;
+            let reached = if self.reverse {
+                self.position <= start
+            } else {
+                self.position >= end
+            };
+            if reached {
+                self.collapse_waiting = false;
+                let length = self.raw_loop().min(end - start);
+                if self.reverse {
+                    self.loop_low = self.spec.bounds.start_frame;
+                    self.position = start + length - 1.0;
+                } else {
+                    self.loop_low = (end - length).max(start) as u64;
+                    self.position = self.loop_low as f64;
+                }
+            }
+            return true;
+        }
+
         let length = self.loop_length();
         if length <= 0.0 {
             return false;
@@ -614,11 +654,14 @@ impl Voice {
             if usable_loop(self.spec) == 0 && self.spec.mode == PlaybackMode::Collapse {
                 let next = self.mode_loop as f64 * self.spec.collapse as f64;
                 self.mode_loop = next.max(MIN_LOOP_FRAMES) as u64;
-                // Backwards the region keeps its upper end, so the collapse is
-                // heard at the point the loop was taken from either way.
+                // The region keeps the edge it was taken from - the end of the
+                // slice forwards, its start backwards - so the fold closes in
+                // on the very end of what was played.
                 if self.reverse {
-                    self.loop_low = (high - self.raw_loop()).max(0.0) as u64;
-                    self.position = high - 1.0;
+                    self.position = low + self.raw_loop() - 1.0;
+                } else {
+                    self.loop_low = (high - self.raw_loop()).max(low) as u64;
+                    self.position = self.loop_low as f64;
                 }
             }
         }
@@ -1285,35 +1328,26 @@ mod tests {
         let mut voice = Voice::default();
         start(&mut voice, spec);
 
-        let mut passes = Vec::new();
-        let mut lowest = u64::MAX;
-        let mut previous = voice.position();
-        for _ in 0..40_000 {
-            voice.next_frame(&buffer, &idle());
-            let position = voice.position();
-            if position > previous {
-                passes.push(previous);
-                lowest = u64::MAX;
-            }
-            lowest = lowest.min(position);
-            previous = position;
-        }
+        let passes = passes(&mut voice, &buffer, 160_000, true);
+        let spans: Vec<u64> = passes.iter().map(|(low, high)| high - low).collect();
 
-        // Backwards the region keeps its upper end, so a shrinking loop shows
-        // up as a lower bound climbing towards it and then holding at the
-        // floor.
+        // Backwards the slice is played through from its end, and the fold
+        // then closes in on its start: every loop begins at the first frame.
         assert!(passes.len() >= 3, "expected several passes: {passes:?}");
-        for pair in passes.windows(2) {
+        assert!(passes[0].0 <= 1 && passes[0].1 >= 99_998, "{passes:?}");
+        for (low, _) in &passes[1..] {
+            assert!(*low <= 1, "a loop left the start: {passes:?}");
+        }
+        for pair in spans[1..].windows(2) {
             assert!(
-                pair[1] >= pair[0],
-                "the region grew instead of shrinking: {passes:?}"
+                pair[1] <= pair[0],
+                "the region grew instead of shrinking: {spans:?}"
             );
         }
-        let last = *passes.last().expect("the list was checked above");
-        assert!(passes[0] < last, "the loop never shortened: {passes:?}");
+        let last = *spans.last().expect("the list was checked above");
         assert!(
-            (100_000.0 - last as f64) <= MIN_LOOP_FRAMES + 1.0,
-            "it never reached the floor: {passes:?}"
+            last as f64 <= MIN_LOOP_FRAMES + 1.0,
+            "it never reached the floor: {spans:?}"
         );
     }
 
@@ -1379,41 +1413,36 @@ mod tests {
         let mut voice = Voice::default();
         start(&mut voice, spec);
 
-        let mut passes = Vec::new();
-        let mut highest = 0;
-        let mut previous = 0;
-        for _ in 0..40_000 {
-            voice.next_frame(&buffer, &idle());
-            let position = voice.position();
-            if position < previous {
-                passes.push(highest);
-                highest = 0;
-            }
-            highest = highest.max(position);
-            previous = position;
-        }
+        let passes = passes(&mut voice, &buffer, 160_000, false);
+        let spans: Vec<u64> = passes.iter().map(|(low, high)| high - low).collect();
 
         assert!(passes.len() >= 4, "expected several passes: {passes:?}");
-        // Each pass is shorter than the one before until the floor is reached,
+        // The first pass is the whole slice; every loop after it ends where
+        // the slice does.
+        assert!(passes[0].0 <= 1 && passes[0].1 >= 99_998, "{passes:?}");
+        for (_, high) in &passes[1..] {
+            assert!(*high >= 99_990, "a loop left the end: {passes:?}");
+        }
+        // Each loop is shorter than the one before until the floor is reached,
         // where the collapse holds rather than shrinking to nothing.
-        for pair in passes.windows(2) {
+        for pair in spans[1..].windows(2) {
             assert!(
                 pair[1] < pair[0] || pair[1] as f64 <= MIN_LOOP_FRAMES,
-                "a pass grew: {passes:?}"
+                "a pass grew: {spans:?}"
             );
         }
         assert!(
-            (passes[1] as f64 - passes[0] as f64 * 0.5).abs() < 2.0,
-            "a factor of a half should halve the pass: {passes:?}"
+            (spans[2] as f64 - spans[1] as f64 * 0.5).abs() < 2.0,
+            "a factor of a half should halve the pass: {spans:?}"
         );
     }
 
     #[test]
-    fn a_collapse_starts_from_the_whole_slice() {
+    fn a_collapse_plays_the_whole_slice_before_it_folds() {
         use saempler_model::PlaybackMode;
 
-        // The complaint this fixes: a collapse that begins as a note value
-        // never plays the rest of the chop, so most of the cell is silent.
+        // What a collapse is expected to do: the chop once as recorded, then
+        // its end over and over, a little shorter each time.
         let buffer = dc_buffer(20_000);
         let mut voice = Voice::default();
         start(
@@ -1421,16 +1450,86 @@ mod tests {
             CellSpec {
                 mode: PlaybackMode::Collapse,
                 cycle_whole_notes: 0.0,
+                collapse: 0.75,
                 ..spec(0, 16_000)
             },
         );
-        voice.next_frame(&buffer, &idle());
 
-        assert_eq!(
-            voice.loop_length() as u64,
-            16_000,
-            "the first pass has to be the whole slice"
+        let passes = passes(&mut voice, &buffer, 40_000, false);
+
+        assert!(passes.len() >= 2, "expected several passes: {passes:?}");
+        assert!(
+            passes[0].0 <= 1 && passes[0].1 >= 15_998,
+            "the first pass has to be the whole slice: {passes:?}"
         );
+        let (low, high) = passes[1];
+        assert!(
+            high >= 15_990,
+            "the fold has to end with the slice: {passes:?}"
+        );
+        assert!(
+            ((high - low) as f64 - 12_000.0).abs() < 4.0,
+            "the first fold is the slice times the factor: {passes:?}"
+        );
+    }
+
+    /// The span each pass of a looping voice covered, low and high frame.
+    ///
+    /// A pass ends where the playhead jumps against its direction of travel.
+    fn passes(
+        voice: &mut Voice,
+        buffer: &SampleBuffer,
+        frames: usize,
+        reverse: bool,
+    ) -> Vec<(u64, u64)> {
+        let mut passes = Vec::new();
+        let mut low = u64::MAX;
+        let mut high = 0;
+        let mut previous = voice.position();
+        for _ in 0..frames {
+            voice.next_frame(buffer, &idle());
+            let position = voice.position();
+            let wrapped = if reverse {
+                position > previous
+            } else {
+                position < previous
+            };
+            if wrapped {
+                passes.push((low, high));
+                low = u64::MAX;
+                high = 0;
+            }
+            low = low.min(position);
+            high = high.max(position);
+            previous = position;
+        }
+        passes
+    }
+
+    #[test]
+    fn a_whole_slice_repeat_replays_all_of_it_every_time() {
+        use saempler_model::PlaybackMode;
+
+        let buffer = dc_buffer(20_000);
+        let mut voice = Voice::default();
+        start(
+            &mut voice,
+            CellSpec {
+                mode: PlaybackMode::Repeat,
+                cycle_whole_notes: 0.0,
+                ..spec(0, 16_000)
+            },
+        );
+
+        let passes = passes(&mut voice, &buffer, 60_000, false);
+
+        assert!(passes.len() >= 3, "expected several passes: {passes:?}");
+        for (low, high) in passes {
+            assert!(
+                low <= 1 && high >= 15_998,
+                "a pass fell short: {low}..{high}"
+            );
+        }
     }
 
     #[test]

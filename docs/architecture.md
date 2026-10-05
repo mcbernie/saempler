@@ -272,6 +272,12 @@ because reading past the slice edge would mix the neighbouring chop into the
 tail. A collapse has a floor as well: without one it would shrink until the
 read position no longer moves.
 
+A collapse plays its slice through once before it loops at all. At the edge
+it takes its loop from there - the end of the slice playing forwards, the start
+playing backwards - and every pass keeps that edge while the other end closes
+in. The first fold is the chosen note value, or the slice times the collapse
+factor when the pass is the whole slice.
+
 A release trigger turns the key coming up into the start of the effect rather
 than the end of the note. The loop then runs for as long as the release stage
 of whatever is routed to volume.
@@ -382,9 +388,10 @@ modulated shows a second arc running out from where it is set. None of it is
 recomputed in the interface: a second copy of the modulation would be a second
 place for it to be wrong.
 
-An audition is held for two seconds and then released, so a loop, a repeat and
-a collapse can all be heard doing what they do from a click on a pad, and
-still end.
+An audition is held for two seconds and then released; a looping cell is held
+for two passes of its slice instead, at most ten seconds. A loop, a repeat and
+a collapse can then all be heard coming round from a click on a pad, and still
+end.
 
 ## Envelope stages
 

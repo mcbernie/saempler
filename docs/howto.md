@@ -165,7 +165,7 @@ Gate        plays while the key is held
 One Shot    plays the slice to its end, whatever the key does
 Loop        repeats the whole slice
 Repeat      repeats the chosen note value, locked to the host tempo
-Collapse    like repeat, with the loop shrinking on every pass
+Collapse    plays the slice once, then loops its end, shorter every pass
 ```
 
 Release Trigger starts the loop when the key comes up rather than when it goes

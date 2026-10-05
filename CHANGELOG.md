@@ -30,6 +30,8 @@ Alle nennenswerten Änderungen an Sämpler. Das Format folgt lose
   Beschreibung es immer schon sagte.
 - Höchstens zwanzig Slices je Projekt, damit jeder einen Automationsplatz hat.
 - Modifier beginnen auf C2 statt auf C1.
+- Collapse spielt den Slice erst einmal ganz und faltet dann sein Ende
+  zusammen, statt vom Anfang her zu schrumpfen.
 
 ### Behoben
 
@@ -40,6 +42,8 @@ Alle nennenswerten Änderungen an Sämpler. Das Format folgt lose
 - Eine kopierte Cell ließ beim Spielen auch das Original aufleuchten.
 - Die Send-Einstellungen erreichten die Engine nach dem Laden eines Projekts
   nie.
+- Das Vorhören per Pad-Klick schnitt Loop-Modi nach zwei Sekunden ab, sodass
+  der zweite Durchlauf eines langen Slices nur zur Hälfte zu hören war.
 
 ## [0.1.0]
 
