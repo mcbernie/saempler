@@ -1,13 +1,18 @@
 # Website
 
-Statische Werbeseite für Sämpler. Keine Abhängigkeiten, kein Build-Schritt —
-drei Dateien, die jeder Webserver ausliefern kann.
+Statische Werbeseite für Sämpler. Keine Abhängigkeiten, kein Build-Schritt,
+nur Dateien, die jeder Webserver ausliefern kann.
 
 ```
-index.html   Inhalt
-style.css    Gestaltung, Farben aus crates/saempler-ui/src/theme.rs
-favicon.svg  Logo
+index.html          Inhalt
+style.css           Gestaltung, Farben aus Theme::ivory in crates/saempler-ui/src/theme.rs
+favicon.svg         Logo
+screenshot-*.jpg    Bildschirmfotos, einfach und als @2x für hochauflösende Displays
 ```
+
+Die Bildschirmfotos zeigen das Standalone-Fenster in seiner Startgröße
+(1240 × 1060) ohne Titelleiste. JPEG statt PNG, weil die Körnung der
+Frontplatten PNGs auf über ein Megabyte aufbläht.
 
 ## Ansehen
 

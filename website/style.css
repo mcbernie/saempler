@@ -1,23 +1,27 @@
 /* Sämpler — Werbeseite.
  *
- * Die Farben sind dieselben wie im Plugin (crates/saempler-ui/src/theme.rs),
- * damit die Seite und das Instrument wie dasselbe Produkt aussehen. Wer die
- * eine ändert, sollte die andere mitnehmen. */
+ * Die Farben sind dieselben wie im Plugin (crates/saempler-ui/src/theme.rs,
+ * Theme::ivory), damit die Seite und das Instrument wie dasselbe Produkt
+ * aussehen. Wer die eine ändert, sollte die andere mitnehmen. */
 
 :root {
-  --bg:            #07080e;
-  --chassis-top:   #2b3044;
-  --chassis-bottom:#12151a;
-  --inset:         #0a0c14;
-  --title:         #c8f4f0;
-  --accent:        #1af0e6;
-  --armed:         #ffc41f;
-  --active:        #4dffb0;
-  --danger:        #ff2e7e;
-  --text:          #c3cad8;
-  --dim:           #6b7589;
+  --rack:        #d6d0c4;  /* zwischen den Platten */
+  --plate:       #e8e4da;  /* Frontplatte */
+  --plate-light: #f5f1e8;  /* Lichtkante */
+  --groove:      #c8c2b6;  /* Trennlinien, Einfassungen */
+  --ink:         #303633;  /* Beschriftung */
+  --ink-dim:     #6b706c;
+  --key:         #292d2c;  /* dunkle Tasten */
+  --key-top:     #3c413f;
+  --display:     #202d2a;
+  --trace:       #9bc9b6;
+  --teal:        #3d9188;
+  --teal-light:  #4fb8a8;
+  --coral:       #c97763;
+  --mustard:     #c6a04d;
+  --blue:        #638fa5;
 
-  --radius: 10px;
+  --radius: 9px;
   --gutter: 16px;
   --measure: 62ch;
 
@@ -35,203 +39,250 @@ html { scroll-behavior: smooth; }
 
 body {
   margin: 0;
-  background: var(--bg);
-  color: var(--text);
+  background: var(--rack);
+  color: var(--ink);
   font-family: var(--sans);
   font-size: 17px;
-  line-height: 1.65;
+  line-height: 1.6;
   -webkit-font-smoothing: antialiased;
 }
-
-/* Ein ruhiges Raster im Hintergrund, wie die Rasterlinien einer Wellenform. */
-body::before {
-  content: "";
-  position: fixed;
-  inset: 0;
-  pointer-events: none;
-  z-index: 0;
-  background-image:
-    linear-gradient(rgba(26, 240, 230, .035) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(26, 240, 230, .035) 1px, transparent 1px);
-  background-size: 48px 48px;
-  mask-image: radial-gradient(ellipse 90% 60% at 50% 0%, #000 20%, transparent 75%);
-}
-
-main, header, footer { position: relative; z-index: 1; }
 
 .skip {
   position: absolute;
   left: -9999px;
-  background: var(--accent);
-  color: #04131a;
+  background: var(--key);
+  color: var(--plate);
   padding: 10px 16px;
   border-radius: var(--radius);
 }
-.skip:focus { left: var(--gutter); top: var(--gutter); }
+.skip:focus { left: var(--gutter); top: var(--gutter); z-index: 20; }
 
-a { color: var(--accent); text-decoration-color: rgba(26, 240, 230, .35); }
-a:hover { text-decoration-color: var(--accent); }
+a { color: #2e746c; text-decoration-color: rgba(46, 116, 108, .4); }
+a:hover { text-decoration-color: currentColor; }
 
 code {
   font-family: var(--mono);
-  font-size: .88em;
-  background: var(--inset);
-  border: 1px solid rgba(255, 255, 255, .06);
-  border-radius: 5px;
+  font-size: .86em;
+  background: var(--display);
+  color: var(--trace);
+  border-radius: 4px;
   padding: .12em .4em;
-  color: var(--title);
   overflow-wrap: anywhere;
+}
+
+/* --- Platten ------------------------------------------------------------- *
+ * Jeder Abschnitt ist eine Frontplatte wie im Plugin: Elfenbein, eine helle
+ * Kante oben links, ein kurzer Schatten nach rechts unten und eine Schraube
+ * in der Ecke. */
+
+.plate {
+  position: relative;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, .25), rgba(255, 255, 255, 0) 30%),
+    var(--plate);
+  border: 1px solid var(--groove);
+  border-radius: var(--radius);
+  box-shadow:
+    inset 1px 1px 0 var(--plate-light),
+    inset -1px -1px 0 rgba(0, 0, 0, .06),
+    1px 3px 8px rgba(0, 0, 0, .14);
+}
+.plate.screwed::before,
+.plate.screwed::after {
+  content: "";
+  position: absolute;
+  top: 14px;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background:
+    linear-gradient(135deg, transparent 42%, #3b3f3d 42% 58%, transparent 58%),
+    radial-gradient(circle at 35% 30%, #f3f0ea, #9c968b 70%, #6c675f);
+  box-shadow: 0 1px 1px rgba(0, 0, 0, .35);
+}
+.plate.screwed::before { left: 14px; }
+.plate.screwed::after { right: 14px; }
+
+/* Eingravierte Beschriftung wie auf dem Gerät. */
+.legend {
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: .1em;
+  text-transform: uppercase;
+  color: var(--ink);
 }
 
 /* --- Kopfzeile ----------------------------------------------------------- */
 
 .masthead {
+  position: sticky;
+  top: 0;
+  z-index: 10;
   display: flex;
   flex-wrap: wrap;
   align-items: center;
   justify-content: space-between;
-  gap: 14px;
-  padding: 12px var(--gutter);
-  background: linear-gradient(180deg, var(--chassis-top), var(--chassis-bottom));
-  border-bottom: 1px solid rgba(0, 0, 0, .7);
-  box-shadow: 0 1px 0 rgba(255, 255, 255, .05) inset;
-  position: sticky;
-  top: 0;
-  z-index: 10;
-  backdrop-filter: blur(6px);
+  gap: 12px;
+  width: min(1048px, calc(100% - 2 * var(--gutter)));
+  margin: 10px auto 12px;
+  padding: 10px 40px;
 }
+.masthead.screwed::before,
+.masthead.screwed::after { top: calc(50% - 5.5px); }
 
-.plate {
+.brand {
   display: flex;
-  align-items: center;
-  gap: 10px;
-  padding: 7px 14px;
-  background: var(--inset);
-  border-radius: 7px;
-  border: 1px solid rgba(0, 0, 0, .8);
-  box-shadow: 0 1px 0 rgba(255, 255, 255, .06);
+  align-items: baseline;
+  gap: 14px;
   text-decoration: none;
+  color: var(--ink);
 }
-.mark { width: 24px; height: 16px; fill: var(--accent); flex: none; }
-.plate-text { display: flex; flex-direction: column; line-height: 1.1; }
-.plate-text strong {
-  color: var(--accent);
-  font-size: 18px;
-  letter-spacing: .06em;
+.brand strong {
+  font-size: 26px;
+  font-weight: 700;
+  letter-spacing: .02em;
+  text-shadow: 0 1px 0 var(--plate-light);
 }
-.plate-text small {
-  color: var(--dim);
-  font-size: 8px;
-  letter-spacing: .18em;
+.brand small {
+  font-size: 11px;
+  letter-spacing: .14em;
+  color: var(--ink-dim);
 }
 
-.masthead nav { display: flex; flex-wrap: wrap; gap: 4px; }
+.masthead nav { display: flex; flex-wrap: wrap; gap: 2px; }
 .masthead nav a {
-  color: var(--text);
+  color: var(--ink);
   text-decoration: none;
   font-size: 14px;
-  padding: 7px 12px;
-  border-radius: 7px;
+  padding: 6px 11px;
+  border-radius: 6px;
 }
-.masthead nav a:hover { background: rgba(26, 240, 230, .1); color: var(--accent); }
+.masthead nav a:hover { background: rgba(48, 54, 51, .08); }
 
 /* --- Abschnitte ---------------------------------------------------------- */
 
-main { max-width: 1060px; margin: 0 auto; padding: 0 var(--gutter); }
-
-section { padding: 72px 0; }
-section + section { border-top: 1px solid rgba(255, 255, 255, .05); }
-
-h1, h2, h3 { color: var(--title); line-height: 1.15; margin: 0 0 .6em; }
-h1 { font-size: clamp(2.1rem, 6.5vw, 3.9rem); letter-spacing: -.02em; }
-h1 em {
-  font-style: normal;
-  color: var(--accent);
-  text-shadow: 0 0 28px rgba(26, 240, 230, .4);
+main {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 0 var(--gutter);
+  display: grid;
+  gap: 12px;
 }
-h2 { font-size: clamp(1.5rem, 3.6vw, 2.1rem); }
-h3 { font-size: 1.07rem; letter-spacing: .01em; }
+main > section, main > aside { margin: 0; }
 
-p { margin: 0 0 1.1em; max-width: var(--measure); }
+section.plate { padding: 52px 44px; }
+@media (max-width: 640px) { section.plate { padding: 44px 22px; } }
+
+h1, h2, h3 { color: var(--ink); line-height: 1.15; margin: 0 0 .6em; }
+h1 { font-size: clamp(2.1rem, 6vw, 3.6rem); letter-spacing: -.01em; }
+h1 em { font-style: normal; color: var(--teal); }
+h2 { font-size: clamp(1.45rem, 3.4vw, 2rem); }
+h3 { font-size: 1.02rem; }
+
+p { margin: 0 0 1em; max-width: var(--measure); }
 
 .eyebrow {
   font-family: var(--mono);
   font-size: 12px;
-  letter-spacing: .16em;
+  letter-spacing: .14em;
   text-transform: uppercase;
-  color: var(--dim);
+  color: var(--ink-dim);
 }
-.lead { font-size: 1.07rem; color: var(--text); }
+.lead { font-size: 1.07rem; }
 .lead.narrow { max-width: 56ch; }
-.note { color: var(--dim); font-size: .92rem; }
+.note { color: var(--ink-dim); font-size: .92rem; }
 
-.hero { padding-top: 84px; }
 
-/* --- Knöpfe -------------------------------------------------------------- */
+/* Ein kleines Display wie im Plugin, mit der Tempoanzeige. */
+.readout {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 14px;
+  margin-bottom: 26px;
+  padding: 8px 14px;
+  background: var(--display);
+  border-radius: 6px;
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, .5), 0 1px 0 var(--plate-light);
+  font-family: var(--mono);
+  font-size: 13px;
+  color: #8e9993;
+}
+.readout b { color: var(--teal-light); font-weight: 600; font-size: 17px; }
 
-.cta { display: flex; flex-wrap: wrap; gap: 12px; margin: 26px 0 18px; }
+/* --- Tasten -------------------------------------------------------------- *
+ * Die Knöpfe sind die dunklen Tasten aus dem Plugin: eine Kappe in einer
+ * schwarzen Einfassung. Gedrückt sinken sie ein. */
+
+.cta { display: flex; flex-wrap: wrap; gap: 12px; margin: 24px 0 16px; }
 
 .button {
   display: inline-block;
-  padding: 13px 24px;
-  border-radius: 9px;
+  padding: 11px 22px;
+  border-radius: 7px;
   text-decoration: none;
   font-weight: 600;
   font-size: 15px;
-  color: var(--title);
-  background: linear-gradient(180deg, #232a3d, #161a26);
-  border: 1px solid rgba(255, 255, 255, .09);
-  box-shadow: 0 1px 0 rgba(255, 255, 255, .07) inset, 0 2px 10px rgba(0, 0, 0, .5);
-  transition: transform .12s ease, box-shadow .12s ease;
+  color: var(--plate);
+  background: linear-gradient(180deg, var(--key-top), var(--key));
+  border: 2px solid #151716;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, .12),
+    0 2px 3px rgba(0, 0, 0, .3);
+  transition: transform .08s ease, box-shadow .08s ease;
 }
-.button:hover { transform: translateY(-1px); box-shadow: 0 4px 16px rgba(0, 0, 0, .55); }
-.button:active { transform: translateY(0); }
+.button:hover { background: linear-gradient(180deg, #474c4a, #303533); }
+.button:active {
+  transform: translateY(1px);
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, .5);
+}
 
+/* Die gewählte Taste: türkiser Rand um die Kappe, wie im Plugin. */
 .button.primary {
-  background: linear-gradient(180deg, #1af0e6, #0fbdb4);
-  color: #04131a;
-  border-color: rgba(26, 240, 230, .6);
-  box-shadow: 0 0 26px rgba(26, 240, 230, .32);
+  box-shadow:
+    inset 0 0 0 1.5px var(--teal-light),
+    inset 0 0 8px rgba(79, 184, 168, .35),
+    0 2px 3px rgba(0, 0, 0, .3);
 }
 .button.sponsor {
-  background: linear-gradient(180deg, #ff5c9a, #d41f63);
+  background: linear-gradient(180deg, #d88a76, var(--coral));
+  border-color: #6e3a2d;
   color: #fff;
-  border-color: rgba(255, 46, 126, .6);
-  box-shadow: 0 0 26px rgba(255, 46, 126, .3);
 }
 
-/* --- Kette --------------------------------------------------------------- */
+/* --- Signalweg ----------------------------------------------------------- *
+ * Kleine Elfenbein-Tasten in einem dunklen Tablett, wie der Teiler im
+ * Source-Panel. */
 
 .rack { text-align: center; }
+.rack p { margin-left: auto; margin-right: auto; }
 .chain {
   list-style: none;
-  margin: 0 0 20px;
-  padding: 0;
-  display: flex;
+  margin: 0 auto 20px;
+  padding: 5px;
+  display: inline-flex;
   flex-wrap: wrap;
-  align-items: center;
   justify-content: center;
-  gap: 4px;
+  gap: 5px;
+  background: #1b1e1d;
+  border-radius: 8px;
+  box-shadow: inset 0 2px 4px rgba(0, 0, 0, .6), 0 1px 0 var(--plate-light);
 }
-.chain li { display: flex; align-items: center; gap: 4px; }
 .step {
   display: inline-block;
-  font-family: var(--mono);
   font-size: 13px;
-  padding: 9px 15px;
-  border-radius: 7px;
-  background: var(--inset);
-  border: 1px solid rgba(255, 255, 255, .07);
-  color: var(--text);
+  font-weight: 600;
+  padding: 8px 14px;
+  border-radius: 5px;
+  color: var(--ink);
+  background: linear-gradient(180deg, #fbf8f1, #ddd7cb);
+  box-shadow: inset 0 -2px 0 rgba(0, 0, 0, .12);
   white-space: nowrap;
 }
 .step.accent {
-  color: var(--accent);
-  border-color: rgba(26, 240, 230, .45);
-  box-shadow: 0 0 18px rgba(26, 240, 230, .18);
+  color: #fff;
+  background: linear-gradient(180deg, #4aa59b, var(--teal));
 }
-.arrow { color: var(--dim); transform: rotate(-90deg); }
-.chain-note { margin: 0 auto; color: var(--dim); font-size: .94rem; }
+.chain-note { margin: 0 auto; color: var(--ink-dim); font-size: .94rem; }
 
 /* --- Hinweisband --------------------------------------------------------- */
 
@@ -240,15 +291,12 @@ p { margin: 0 0 1.1em; max-width: var(--measure); }
   flex-wrap: wrap;
   align-items: center;
   gap: 18px;
-  margin: 0 0 8px;
-  padding: 20px 22px;
-  border-radius: var(--radius);
-  background: linear-gradient(180deg, rgba(255, 196, 31, .09), rgba(255, 196, 31, .03));
-  border: 1px solid rgba(255, 196, 31, .3);
+  padding: 20px 44px;
+  border-color: var(--mustard);
 }
-.banner p { margin: 0; flex: 1 1 24ch; max-width: var(--measure); font-size: .97rem; }
-.banner strong { color: var(--armed); }
+.banner p { margin: 0; flex: 1 1 24ch; font-size: .97rem; }
 .banner .button { flex: none; }
+@media (max-width: 640px) { .banner { padding: 20px 22px; } }
 
 /* --- Bilder -------------------------------------------------------------- */
 
@@ -258,99 +306,115 @@ figure img {
   display: block;
   width: 100%;
   height: auto;
-  border-radius: var(--radius);
-  border: 1px solid rgba(255, 255, 255, .09);
-  background: var(--inset);
-  box-shadow: 0 10px 40px rgba(0, 0, 0, .6);
+  border-radius: 8px;
+  background: var(--rack);
+  box-shadow: 0 1px 0 var(--plate-light), 0 6px 22px rgba(0, 0, 0, .22);
 }
 
 figcaption {
   margin-top: 10px;
-  color: var(--dim);
+  color: var(--ink-dim);
   font-size: .9rem;
   max-width: var(--measure);
 }
 
 /* The detail shots are small side by side, so they open on click. */
 figure a { display: block; text-decoration: none; }
-figure a img { transition: border-color .12s ease; }
-figure a:hover img { border-color: rgba(26, 240, 230, .5); }
+figure a img { transition: box-shadow .12s ease; }
+figure a:hover img { box-shadow: 0 0 0 2px var(--teal-light), 0 6px 22px rgba(0, 0, 0, .22); }
 
 .shots { display: grid; grid-template-columns: 1fr; gap: 22px; }
 @media (min-width: 860px) { .shots { grid-template-columns: repeat(2, 1fr); } }
 
-/* --- Zweispalter --------------------------------------------------------- */
+/* --- Zweispalter mit Tasten ---------------------------------------------- */
 
-.split { display: grid; grid-template-columns: 1fr; gap: 36px; align-items: start; }
-@media (min-width: 860px) { .split { grid-template-columns: 1.15fr .85fr; gap: 54px; } }
+.split { display: grid; grid-template-columns: 1fr; gap: 36px; align-items: center; }
+@media (min-width: 860px) { .split { grid-template-columns: 1.1fr .9fr; gap: 48px; } }
 
-.keys { display: grid; grid-template-columns: repeat(5, 1fr); gap: 7px; }
+.keys { display: grid; grid-template-columns: repeat(5, 1fr); gap: 8px; }
+
+/* Modifier: dunkle Taste mit LED. */
 .key {
-  background: var(--inset);
-  border: 1px solid rgba(255, 255, 255, .07);
-  border-radius: 7px;
-  padding: 11px 5px;
+  position: relative;
+  border-radius: 6px;
+  padding: 22px 4px 9px;
   text-align: center;
-  font-size: 10.5px;
+  font-size: 11px;
+  font-weight: 600;
   line-height: 1.3;
-  color: var(--text);
   min-width: 0;
   overflow-wrap: anywhere;
 }
-.key span { display: block; color: var(--dim); font-family: var(--mono); font-size: 9px; }
-.key.mod { border-color: rgba(255, 196, 31, .3); color: var(--armed); }
-.key.pad.lit {
-  border-color: rgba(77, 255, 176, .55);
-  color: var(--active);
-  box-shadow: 0 0 16px rgba(77, 255, 176, .25);
+.key span { display: block; font-family: var(--mono); font-size: 9.5px; font-weight: 400; }
+.key.mod {
+  color: var(--plate);
+  background: linear-gradient(180deg, var(--key-top), var(--key));
+  border: 2px solid #151716;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .1), 0 2px 3px rgba(0, 0, 0, .3);
+}
+.key.mod span { color: #8e9993; }
+.key.mod::before {
+  content: "";
+  position: absolute;
+  top: 8px;
+  left: 50%;
+  width: 8px;
+  height: 8px;
+  margin-left: -4px;
+  border-radius: 50%;
+  background: radial-gradient(circle at 35% 30%, #6c716e, #1c1f1e);
+}
+.key.mod.on::before {
+  background: radial-gradient(circle at 35% 30%, #d8fff3, #5dd6a4 60%, #2e8f6c);
+  box-shadow: 0 0 8px rgba(93, 214, 164, .8);
 }
 
-/* --- Karten -------------------------------------------------------------- */
+/* Pad: farbige Kappe in schwarzem Gummirahmen, in der Farbe des Slices. */
+.key.pad {
+  color: var(--ink);
+  background: var(--pad, var(--teal));
+  border: 3px solid #1d1f1f;
+  box-shadow: inset 1px 1px 0 rgba(255, 255, 255, .3), 0 2px 3px rgba(0, 0, 0, .3);
+  padding-top: 12px;
+}
+.key.pad span { color: rgba(48, 54, 51, .75); }
+.key.pad.lit { box-shadow: inset 0 0 0 2px var(--teal-light), 0 2px 3px rgba(0, 0, 0, .3); }
+.pad.s1 { --pad: var(--teal); }
+.pad.s2 { --pad: var(--coral); }
+.pad.s3 { --pad: var(--mustard); }
+.pad.s4 { --pad: var(--blue); }
+.pad.s5 { --pad: #8d7ba6; }
 
-.cards { display: grid; grid-template-columns: 1fr; gap: 16px; }
+/* --- Karten -------------------------------------------------------------- *
+ * Gravierte Felder auf der Platte, wie die Effekt-Karten im Plugin. */
+
+.cards { display: grid; grid-template-columns: 1fr; gap: 14px; }
 @media (min-width: 640px) { .cards { grid-template-columns: repeat(2, 1fr); } }
 @media (min-width: 960px) { .cards { grid-template-columns: repeat(3, 1fr); } }
 
 .cards article {
-  background: linear-gradient(180deg, rgba(43, 48, 68, .5), rgba(18, 21, 26, .5));
-  border: 1px solid rgba(255, 255, 255, .07);
-  border-radius: var(--radius);
-  padding: 22px;
+  border-radius: 8px;
+  padding: 20px;
+  border: 1px solid rgba(140, 133, 120, .55);
+  box-shadow: 1px 1px 0 var(--plate-light);
 }
-.cards article h3 { color: var(--accent); }
-.cards article p { margin: 0; font-size: .96rem; color: var(--text); }
-
-/* --- Zitat --------------------------------------------------------------- */
-
-.quote { text-align: center; }
-.quote blockquote { margin: 0; }
-.quote p {
-  margin: 0 auto;
-  max-width: 44ch;
-  font-size: clamp(1.15rem, 2.6vw, 1.5rem);
-  line-height: 1.5;
-  color: var(--title);
-}
+.cards article h3 { margin-bottom: .5em; }
+.cards article p { margin: 0; font-size: .95rem; }
 
 /* --- Installation -------------------------------------------------------- */
 
-.install { display: grid; grid-template-columns: 1fr; gap: 16px; margin-top: 32px; }
+.install { display: grid; grid-template-columns: 1fr; gap: 14px; margin-top: 30px; }
 @media (min-width: 760px) { .install { grid-template-columns: repeat(3, 1fr); } }
 .install > div {
-  background: var(--inset);
-  border: 1px solid rgba(255, 255, 255, .06);
-  border-radius: var(--radius);
+  border-radius: 8px;
   padding: 18px;
+  border: 1px solid rgba(140, 133, 120, .55);
+  box-shadow: 1px 1px 0 var(--plate-light);
 }
-.install h3 { color: var(--accent); margin-bottom: .4em; }
 .install p { margin: 0; font-size: .92rem; }
 
-.release { color: var(--dim); font-size: .95rem; margin-bottom: 0; }
-.release strong {
-  font-family: var(--mono);
-  color: var(--accent);
-  font-weight: 600;
-}
+.release { color: var(--ink-dim); font-size: .95rem; margin-bottom: 0; }
+.release strong { font-family: var(--mono); color: var(--teal); font-weight: 600; }
 
 .support { text-align: center; }
 .support .lead { margin-left: auto; margin-right: auto; }
@@ -358,11 +422,10 @@ figure a:hover img { border-color: rgba(26, 240, 230, .5); }
 /* --- Fußzeile ------------------------------------------------------------ */
 
 footer {
-  border-top: 1px solid rgba(255, 255, 255, .06);
-  padding: 34px var(--gutter);
+  padding: 30px var(--gutter) 40px;
   text-align: center;
-  color: var(--dim);
+  color: var(--ink-dim);
   font-size: .9rem;
 }
 footer p { margin: 0 auto .5em; max-width: var(--measure); }
-footer .small { font-size: .82rem; opacity: .75; }
+footer .small { font-size: .82rem; }

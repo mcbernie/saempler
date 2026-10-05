@@ -4,13 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sämpler — Slice &amp; Remix Instrument</title>
-<meta name="description" content="Sämpler zerschneidet ein Sample in Slices und macht jede Taste zu einer eigenen Spielweise. VST3, CLAP und standalone. Open Source.">
+<meta name="description" content="Sämpler schneidet ein Sample in Slices und legt sie auf die Tastatur, jede Taste mit eigenen Einstellungen. VST3, CLAP und Standalone, Open Source.">
 
 <meta property="og:title" content="Sämpler — Slice &amp; Remix Instrument">
-<meta property="og:description" content="Ein Sample. Zwanzig Slices. Jede Taste eine eigene Spielweise.">
+<meta property="og:description" content="Sample laden, in Slices schneiden, auf der Tastatur spielen. Jede Taste mit eigenen Einstellungen.">
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://mcbernie.github.io/saempler/">
-<meta name="theme-color" content="#07080e">
+<meta property="og:image" content="https://mcbernie.github.io/saempler/screenshot-main.jpg">
+<meta name="theme-color" content="#e8e4da">
 
 <link rel="icon" href="favicon.svg" type="image/svg+xml">
 <link rel="stylesheet" href="style.css">
@@ -19,21 +20,13 @@
 
 <a class="skip" href="#was">Zum Inhalt springen</a>
 
-<header class="masthead">
-  <a class="plate" href="#top" aria-label="Sämpler, Startseite">
-    <svg class="mark" viewBox="0 0 24 16" aria-hidden="true">
-      <rect x="2"  y="6"  width="2" height="5"  rx="1"/>
-      <rect x="7"  y="3"  width="2" height="11" rx="1"/>
-      <rect x="12" y="5"  width="2" height="7"  rx="1"/>
-      <rect x="17" y="7"  width="2" height="3"  rx="1"/>
-    </svg>
-    <span class="plate-text">
-      <strong>SÄMPLER</strong>
-      <small>SLICE &amp; REMIX INSTRUMENT</small>
-    </span>
+<header class="masthead plate screwed">
+  <a class="brand" href="#top" aria-label="Sämpler, Startseite">
+    <strong>SÄMPLER</strong>
+    <small>SLICE &amp; REMIX INSTRUMENT</small>
   </a>
   <nav>
-    <a href="#was">Was es tut</a>
+    <a href="#was">Spielen</a>
     <a href="#ansehen">Ansehen</a>
     <a href="#funktionen">Funktionen</a>
     <a href="#download">Download</a>
@@ -43,198 +36,189 @@
 
 <main id="top">
 
-<section class="hero">
-  <p class="eyebrow">VST3 · CLAP · Standalone — Windows, macOS, Linux</p>
-  <h1>Ein Sample.<br>Zwanzig Slices.<br><em>Jede Taste eine eigene Spielweise.</em></h1>
+<section class="hero plate screwed">
+  <p class="eyebrow">VST3 · CLAP · Standalone für Windows, macOS und Linux</p>
+  <h1>Schneiden, verteilen,<br><em>spielen.</em></h1>
   <p class="lead">
-    Sämpler zerschneidet dein Sample und legt die Teile auf die Tastatur. Das
-    Besondere steckt darin, was danach passiert: dasselbe Stück Audio kann auf
-    fünf Tasten liegen und auf jeder anders klingen — rückwärts, halbtempo,
-    stotternd, gefiltert. Dazu eine Hand voll Modifier-Tasten, die das Ganze im
-    Spiel verbiegen.
+    Sämpler zerlegt ein Sample in bis zu zwanzig Slices und legt sie auf die
+    Tastatur. Jede Taste hat ihre eigenen Einstellungen. Derselbe Slice kann
+    auf C3 ganz normal laufen, auf D3 rückwärts und auf E3 als Loop, der mit
+    jedem Durchgang kürzer wird. Mit fünf Modifier-Tasten greifst du beim
+    Spielen ein.
   </p>
   <div class="cta">
     <a class="button primary" href="#download">Herunterladen</a>
-    <a class="button" href="https://github.com/mcbernie/saempler">Auf GitHub ansehen</a>
+    <a class="button" href="https://github.com/mcbernie/saempler">Auf GitHub</a>
   </div>
-  <p class="note">Open Source unter GPL-3. Kostenlos, ohne Konto, ohne Telemetrie.</p>
+  <p class="note">Open Source unter GPL-3. Kostenlos, ohne Konto und ohne Telemetrie.</p>
 </section>
 
-<aside class="banner" role="note">
+<aside class="banner plate" role="note">
   <p>
-    <strong>Das Design steht noch nicht fest.</strong>
-    Sämpler ist in Arbeit, und wie es aussieht und sich bedienen lässt, ist
-    ausdrücklich noch offen. Wenn dir etwas im Weg steht, etwas fehlt oder
-    etwas schlicht hässlich ist: sag es. Genau dafür ist jetzt der richtige
-    Zeitpunkt.
+    <strong>Noch in Arbeit.</strong>
+    Aussehen und Bedienung ändern sich noch. Wenn dich etwas stört oder dir
+    etwas fehlt, schreib ein Issue. Jetzt lässt sich das noch leicht ändern.
   </p>
-  <a class="button" href="https://github.com/mcbernie/saempler/issues/new">Rückmeldung geben</a>
+  <a class="button" href="https://github.com/mcbernie/saempler/issues/new">Feedback geben</a>
 </aside>
 
-<section class="rack" aria-label="Die Kette, nach der das Instrument gebaut ist">
+<section class="rack plate screwed" aria-label="Wie ein Ton entsteht">
+  <p class="legend">Signalweg</p>
   <ol class="chain">
-    <li><span class="step">Sample</span><span class="arrow" aria-hidden="true">↓</span></li>
-    <li><span class="step">Slice</span><span class="arrow" aria-hidden="true">↓</span></li>
-    <li><span class="step accent">Performance Cell</span><span class="arrow" aria-hidden="true">↓</span></li>
-    <li><span class="step">Transforms</span><span class="arrow" aria-hidden="true">↓</span></li>
+    <li><span class="step">Sample</span></li>
+    <li><span class="step">Slice</span></li>
+    <li><span class="step accent">Cell</span></li>
+    <li><span class="step">Modifier</span></li>
     <li><span class="step">Effekte</span></li>
   </ol>
   <p class="chain-note">
-    Eine Cell verweist auf einen Slice, sie kopiert ihn nicht. Zehn Cells auf
-    einem Slice kosten kein zusätzliches Byte Audio — nur zehn Spielweisen.
+    Eine Cell zeigt nur auf einen Slice. Zehn Cells auf demselben Slice
+    brauchen deshalb nicht mehr Speicher als eine.
   </p>
 </section>
 
-<section id="was" class="split">
+<section id="was" class="split plate screwed">
   <div>
-    <h2>Gebaut zum Spielen, nicht zum Einstellen</h2>
+    <h2>Links Modifier, rechts Slices</h2>
     <p>
-      Die meisten Sampler wollen, dass du ein Instrument baust und es dann
-      spielst. Sämpler dreht das um: die Modifier-Tasten liegen unter der
-      linken Hand und ändern, was die rechte gerade auslöst. Reverse, Stutter,
-      Repeat, Half-Time und Brake — gehalten, getoggelt oder als One-Shot für
-      genau den nächsten Anschlag.
+      Die Modifier liegen ab C2 auf eigenen Tasten: Reverse, Stutter, Repeat,
+      Half-Time und Brake. Jeder lässt sich halten, umschalten oder für den
+      nächsten Anschlag vormerken. Was die rechte Hand gerade spielt, ändert
+      sich sofort.
     </p>
     <p>
-      Vier weitere Tasten werfen alles in Delay, Reverb, Phaser oder Flanger,
-      und zwar in eine zweite, härter eingestellte Fassung desselben Effekts.
-      Loslassen bringt den Send zurück, ohne dass sich eine Einstellung ändert.
+      Vier weitere Tasten schicken alles in Delay, Reverb, Phaser oder
+      Flanger. Von jedem Effekt gibt es dafür eine zweite, kräftigere
+      Einstellung. Taste loslassen, und es klingt wieder wie vorher.
     </p>
   </div>
   <div class="keys" aria-hidden="true">
-    <div class="key mod">Reverse<span>C2</span></div>
+    <div class="key mod on">Reverse<span>C2</span></div>
     <div class="key mod">Stutter<span>D2</span></div>
     <div class="key mod">Repeat<span>E2</span></div>
     <div class="key mod">Half-Time<span>F2</span></div>
     <div class="key mod">Brake<span>G2</span></div>
-    <div class="key pad lit">S1<span>C3</span></div>
-    <div class="key pad">S2<span>C#3</span></div>
-    <div class="key pad">S3<span>D3</span></div>
-    <div class="key pad">S4<span>D#3</span></div>
-    <div class="key pad">S5<span>E3</span></div>
+    <div class="key pad s1 lit">S1<span>C3</span></div>
+    <div class="key pad s2">S2<span>C#3</span></div>
+    <div class="key pad s3">S3<span>D3</span></div>
+    <div class="key pad s4">S4<span>D#3</span></div>
+    <div class="key pad s5">S5<span>E3</span></div>
   </div>
 </section>
 
-<section id="ansehen">
+<section id="ansehen" class="plate screwed">
   <h2>Ansehen</h2>
   <p class="lead">
-    Alles auf einer Fläche, ohne Reiter: links die Chops auf der Tastatur,
-    rechts die gewählte Cell mit Wiedergabe, Modulation und Effekten.
+    Alles auf einer Seite: oben das Sample, links die Pads, rechts die
+    Einstellungen der Cell, die du gerade bearbeitest.
   </p>
 
   <figure>
-    <img src="screenshot-main.png" width="1240" height="1010" loading="lazy" decoding="async"
-         alt="Die Oberfläche von Sämpler: oben die Wellenform mit sechzehn Slice-Markern,
-              links sechzehn Pads mit je einem kleinen Wellenbild, rechts die Felder
-              Playback, Modulation und Effects, unten die Modifier-Tasten.">
-    <figcaption>Ein Sample, in sechzehn Slices geschnitten und auf die Tastatur gelegt.</figcaption>
+    <img src="screenshot-main.jpg" srcset="screenshot-main.jpg 1x, screenshot-main@2x.jpg 2x"
+         width="1240" height="1060" loading="lazy" decoding="async"
+         alt="Die Oberfläche von Sämpler: oben die Wellenform mit sechzehn Slices,
+              links sechzehn farbige Pads, rechts Playback, Modulation und Effects,
+              unten die Modifier-Tasten und der Ausgang.">
+    <figcaption>Ein Sample in sechzehn Slices, auf die Tastatur gelegt.</figcaption>
   </figure>
 
   <div class="shots">
     <figure>
-      <a href="screenshot-sends.png">
-        <img src="screenshot-sends.png" width="1240" height="1010" loading="lazy" decoding="async"
-           alt="Das Fenster der Send-Effekte mit den Umschaltern Normal und Getrieben
-                sowie Reglern für Delay, Reverb, Phaser und Flanger.">
+      <a href="screenshot-sends@2x.jpg">
+        <img src="screenshot-sends.jpg" srcset="screenshot-sends.jpg 1x, screenshot-sends@2x.jpg 2x"
+             width="480" height="560" loading="lazy" decoding="async"
+             alt="Das Fenster der Send-Effekte mit den Tasten Normal und Getrieben
+                  sowie Reglern für Delay, Reverb, Phaser und Flanger.">
       </a>
       <figcaption>
-        Jeder Send zweimal eingestellt: wie er normal klingt und wie er klingt,
-        solange eine Modifier-Taste gehalten wird.
+        Jeder Send hat zwei Einstellungen: eine für normal und eine für die
+        Zeit, in der eine Effekt-Taste gedrückt ist.
       </figcaption>
     </figure>
     <figure>
-      <a href="screenshot-modifiers.png">
-        <img src="screenshot-modifiers.png" width="1240" height="1010" loading="lazy" decoding="async"
-           alt="Das Fenster der Modifier-Tasten: fünf Zeilen mit Modifier, Note und Modus,
-                darunter die Einstellungen für Stutter, Repeat, Brake und Half-Time.">
+      <a href="screenshot-modifiers@2x.jpg">
+        <img src="screenshot-modifiers.jpg" srcset="screenshot-modifiers.jpg 1x, screenshot-modifiers@2x.jpg 2x"
+             width="480" height="560" loading="lazy" decoding="async"
+             alt="Das Fenster der Modifier-Tasten: fünf Zeilen mit Modifier, Note und Modus,
+                  darunter die Längen für Stutter, Repeat und Brake und die Half-Time-Rate.">
       </a>
       <figcaption>
-        Welche Taste was tut, in welchem Modus — und wie hart jede Geste
-        zupackt.
+        Welche Taste welchen Modifier auslöst, wie sie reagiert und wie lang
+        Stutter, Repeat und Brake dauern.
       </figcaption>
     </figure>
   </div>
 </section>
 
-<section id="funktionen">
-  <h2>Was drin ist</h2>
+<section id="funktionen" class="plate screwed">
+  <h2>Funktionen</h2>
   <div class="cards">
 
     <article>
       <h3>Slicen</h3>
       <p>
-        Gleichmäßig in 4, 8, 16 oder 20 Teile, oder von Hand per Doppelklick
-        in die Wellenform. Marker lassen sich ziehen, Grenzen zusammenführen.
-        Optional landen Chops nur auf weißen Tasten, damit ein Lauf unter der
-        Hand liegt.
+        In 4, 8, 16 oder 20 gleiche Teile oder von Hand per Doppelklick in die
+        Wellenform. Marker lassen sich verschieben und wieder entfernen. Auf
+        Wunsch landen die Slices nur auf weißen Tasten.
       </p>
     </article>
 
     <article>
       <h3>Fünf Spielarten</h3>
       <p>
-        Gate, One-Shot, Loop, Repeat und Collapse — letzteres faltet den Chop
-        mit jedem Durchlauf enger zusammen. Dazu Release-Trigger: der Loop
-        beginnt erst, wenn du die Taste loslässt.
+        Gate, One-Shot, Loop, Repeat und Collapse. Collapse spielt den Slice
+        einmal durch und wiederholt dann sein Ende, jedes Mal etwas kürzer.
+        Mit Release-Trigger beginnt der Loop erst beim Loslassen.
       </p>
     </article>
 
     <article>
       <h3>Modulation</h3>
       <p>
-        Zwei Hüllkurven, zwei LFOs, eine Matrix mit acht Wegen. Ziele sind
-        Lautstärke, Panorama, Pitch, Rate, Loop-Länge, Filter-Cutoff, Resonanz
-        und Drive. LFOs laufen frei oder im Tempo des Hosts.
+        Zwei Hüllkurven, zwei LFOs mit sechs Wellenformen und eine Matrix mit
+        acht Routen. Ziele sind Lautstärke, Panorama, Pitch, Rate, Loop-Länge,
+        Cutoff, Resonanz und Drive. Die LFOs laufen frei oder im Host-Tempo.
       </p>
     </article>
 
     <article>
       <h3>Effekte</h3>
       <p>
-        Pro Cell ein Filter (Tief-, Hoch-, Band-, Notch) und eine Sättigung in
-        drei Kurven. Geteilt dahinter: Delay mit Tempo-Sync, Reverb, Phaser und
-        Flanger, jeder mit eigenem Rückweg-Pegel.
+        Jede Cell hat ein eigenes Filter (Tiefpass, Hochpass, Bandpass, Notch)
+        und eine Sättigung mit drei Kennlinien. Delay mit Tempo-Sync, Reverb,
+        Phaser und Flanger teilen sich alle Cells.
       </p>
     </article>
 
     <article>
       <h3>Automation</h3>
       <p>
-        Zwanzig feste Bänke, eine pro Slice, mit Gain, Pitch, Speed, Cutoff und
-        Reverb-Anteil — dazu die vier Send-Rückwege. Alle Werte sind Versatz,
-        nicht Ersatz: eine unberührte Spur ändert nichts.
+        Zwanzig feste Bänke, eine pro Slice, mit Gain, Pitch, Speed, Cutoff
+        und Reverb-Anteil. Dazu kommen die vier Send-Pegel. Die Werte wirken
+        relativ zur Einstellung der Cell, eine leere Spur ändert also nichts.
       </p>
     </article>
 
     <article>
-      <h3>Echtzeitsicher</h3>
+      <h3>Echtzeitfest</h3>
       <p>
-        Kein Mutex, keine Allokation und kein Dateizugriff im Audio-Callback.
-        Stimmen sind vorab belegt, Nachrichten laufen über wartefreie
-        Warteschlangen. Geprüft mit aktiven Allokationszusicherungen.
+        Im Audio-Thread wird nichts gesperrt, nichts allokiert und keine Datei
+        gelesen. Stimmen sind vorab angelegt, Befehle laufen über lockfreie
+        Queues. Die Tests laufen mit eingeschalteter Allokationsprüfung.
       </p>
     </article>
 
   </div>
 </section>
 
-<section class="quote">
-  <blockquote>
-    <p>
-      Das Ziel ist nicht der größte Sampler. Das Ziel ist der kürzeste Weg von
-      „ich habe hier ein Sample" zu „ich spiele damit".
-    </p>
-  </blockquote>
-</section>
-
-<section id="download">
+<section id="download" class="plate screwed">
   <h2>Download</h2>
   <p class="lead narrow">
-    Fertige Installer für Windows und macOS sowie Archive für alle drei
-    Systeme liegen bei den Releases.
+    Installer für Windows und macOS sowie ZIP-Archive für alle drei Systeme
+    gibt es auf der Release-Seite.
   </p>
   <p class="release">
-    Aktuelle Fassung:
+    Aktuelle Version:
     <!-- Beim Veroeffentlichen durch den Pages-Workflow ersetzt; siehe
          .github/workflows/pages.yml. Der Wert hier ist der Stand im Quellbaum
          und das, was eine oertliche Vorschau zeigt. -->
@@ -254,23 +238,23 @@
     </div>
     <div>
       <h3>macOS</h3>
-      <p><code>Saempler-*.pkg</code> öffnen. Das Paket ist noch nicht beglaubigt,
-      deshalb meldet sich Gatekeeper: Systemeinstellungen → Datenschutz &amp;
-      Sicherheit → „Trotzdem öffnen".</p>
+      <p><code>Saempler-*.pkg</code> öffnen. Das Paket ist noch nicht notarisiert,
+      deshalb meldet sich Gatekeeper. Unter Systemeinstellungen, Datenschutz &amp;
+      Sicherheit auf „Trotzdem öffnen" klicken.</p>
     </div>
     <div>
       <h3>Linux</h3>
-      <p>ZIP entpacken, Bundles nach <code>~/.vst3</code> bzw.
-      <code>~/.clap</code> legen. Die eigenständige Anwendung läuft direkt.</p>
+      <p>ZIP entpacken und die Bundles nach <code>~/.vst3</code> bzw.
+      <code>~/.clap</code> legen. Die Standalone-Version startet direkt.</p>
     </div>
   </div>
 </section>
 
-<section class="support">
+<section class="support plate screwed">
   <h2>Unterstützen</h2>
   <p class="lead narrow">
-    Sämpler ist kostenlos und bleibt es. Wenn es dir etwas wert ist, hilft eine
-    Spende dabei, dass daran weitergearbeitet wird.
+    Sämpler ist kostenlos und bleibt es. Wer die Arbeit daran unterstützen
+    möchte, kann das über GitHub Sponsors tun.
   </p>
   <a class="button sponsor" href="https://github.com/sponsors/mcbernie">♥&nbsp;&nbsp;Entwicklung unterstützen</a>
 </section>
@@ -279,7 +263,7 @@
 
 <footer>
   <p>
-    <strong>Sämpler</strong> — Slice &amp; Remix Instrument.
+    <strong>Sämpler</strong>, Slice &amp; Remix Instrument.
     Quellcode unter <a href="https://github.com/mcbernie/saempler/blob/main/LICENSE">GPL-3.0</a>,
     <a href="https://github.com/mcbernie/saempler/blob/main/LICENSING.md">kommerzielle Lizenz</a>
     auf Anfrage.

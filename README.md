@@ -37,7 +37,7 @@ themselves.
 
 ![The Sämpler interface: a waveform cut into sixteen slices, the chops laid out
 as pads on the left, and the selected cell with its playback, modulation and
-effect settings on the right.](website/screenshot-main.png)
+effect settings on the right.](website/screenshot-main.jpg)
 
 ## Status
 
