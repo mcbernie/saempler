@@ -6,16 +6,26 @@ use saempler_model::{
 };
 
 use crate::screens::main::{
-    band, hint, hint_light, placeholder, region, section, ViewState, THEME,
+    band, hint, placeholder, plate_window, region, row, section, ViewState, THEME,
 };
 use crate::screens::performance::sync_cells;
+use crate::widgets::dial::captioned_size;
 use crate::widgets::{
-    dropdown, envelope_display, icon_button, lfo_display, toggle, value_knob, value_slider, Icon,
-    KnobSpec, SliderSpec, Taper, Unit,
+    divider, dropdown, envelope_display, icon_button, labelled_dropdown, lfo_display,
+    rotary_selector, toggle, toggle_switch, value_knob, value_knob_beside, value_slider, Icon,
+    KnobSpec, Placement, SliderSpec, Taper, Unit,
 };
 
-/// Diameter of the playback and envelope knobs.
-const KNOB_DIAMETER: f32 = 36.0;
+/// Diameter of the playback knobs.
+const KNOB_DIAMETER: f32 = 44.0;
+/// Diameter of the knobs in the modulation strip, captioned beside.
+const MOD_KNOB: f32 = 44.0;
+/// Diameter of the LFO waveform selector.
+const SELECTOR_DIAMETER: f32 = 44.0;
+/// Height of one row of the modulation strip.
+const MOD_ROW: f32 = 50.0;
+/// Height of the playback row: a captioned knob is the tallest thing on it.
+const PLAYBACK_ROW: f32 = 72.0;
 /// Width of the amount bar in a matrix row.
 const ROUTE_AMOUNT: f32 = 150.0;
 /// Width of the source and destination selectors in a matrix row.
@@ -24,13 +34,20 @@ const WHOLE_SLICE: &str = "Ganzer Slice";
 
 const ROUTE_SELECTOR: f32 = 112.0;
 /// Size of a drawn envelope or LFO curve, which sits beside its controls.
-const CURVE_SIZE: (f32, f32) = (150.0, 58.0);
+const CURVE_SIZE: (f32, f32) = (150.0, 48.0);
+/// Diameter of the source selector in a matrix row.
+const SOURCE_SELECTOR: f32 = 40.0;
+/// Height of a matrix row, which the source selector sets.
+const MATRIX_ROW: f32 = 42.0;
 /// Width of the arrow column between a route's source and destination.
 const ARROW_WIDTH: f32 = 20.0;
-/// Height of the playback panel. The modulation panel takes what is left.
-const PLAYBACK_HEIGHT: f32 = 112.0;
+/// Height of the playback panel while the cell simply gates. The modulation
+/// panel takes what is left.
+const PLAYBACK_HEIGHT: f32 = 124.0;
+/// What the second playback row adds, for the modes that have settings.
+const MODE_ROW: f32 = 32.0;
 /// Height of the effects panel at the foot of the editor column.
-const EFFECTS_HEIGHT: f32 = 186.0;
+const EFFECTS_HEIGHT: f32 = 208.0;
 /// Keys a cell may be put on.
 ///
 /// Six octaves around where chops are usually mapped. The whole keyboard
@@ -48,10 +65,10 @@ pub fn cell_section(ui: &mut Ui, state: &ViewState<'_>) {
     };
     let Some(mut cell) = project.project.selected_cell().cloned() else {
         section(ui, "SLICE / SOUND", None, |ui| {
-            placeholder(ui, "Kein Pad gewählt");
-            hint(
+            placeholder(
                 ui,
-                "Auf der Seite PERFORM ein Pad anklicken, um es hier zu bearbeiten",
+                "Kein Pad gewählt",
+                "Ein Pad unter PERFORMANCE anklicken, um es hier zu bearbeiten",
             );
         });
         return;
@@ -64,7 +81,12 @@ pub fn cell_section(ui: &mut Ui, state: &ViewState<'_>) {
     // rectangle it was handed, so two stacked panels each need one of their
     // own rather than both claiming the whole column.
     let full = ui.available_rect_before_wrap();
-    let playback = band(full, full.min.y, PLAYBACK_HEIGHT);
+    let playback_height = if cell.playback.mode == PlaybackMode::Gate {
+        PLAYBACK_HEIGHT
+    } else {
+        PLAYBACK_HEIGHT + MODE_ROW
+    };
+    let playback = band(full, full.min.y, playback_height);
     let effects = band(full, full.max.y - EFFECTS_HEIGHT, EFFECTS_HEIGHT);
     let modulation = nih_plug_egui::egui::Rect::from_min_max(
         pos2(full.min.x, playback.max.y + THEME.spacing_md),
@@ -149,8 +171,7 @@ impl PagerView {
 /// The mockup's `< 4/12 >` row. Stepping goes by key order, which is the order
 /// the pads sit in, so the arrows walk the grid.
 fn pager(ui: &mut Ui, view: PagerView) -> isize {
-    // This row sits on the dark bezel between panels, not on a panel, so its
-    // text is the light one.
+    // Printed on the plate beside the title.
     let light = |ui: &mut Ui, text: &str| {
         let width = text.chars().count() as f32 * THEME.font_sm * 0.62 + 4.0;
         let (rect, _) = ui.allocate_exact_size(vec2(width, THEME.font_sm * 1.7), Sense::hover());
@@ -159,7 +180,7 @@ fn pager(ui: &mut Ui, view: PagerView) -> isize {
             Align2::LEFT_CENTER,
             text,
             FontId::proportional(THEME.font_sm),
-            THEME.text_dim,
+            THEME.value,
         );
     };
 
@@ -268,25 +289,28 @@ fn playback_section(
         live.lamp(true),
         |ui| stepped = pager(ui, view),
         |ui| {
-            ui.horizontal(|ui| {
+            row(ui, PLAYBACK_ROW, |ui| {
                 // Which key plays this cell. Dragging a pad does the same
                 // thing and is quicker, but it is invisible until tried.
                 let names: Vec<String> = CELL_NOTES.map(note_name).collect();
                 let labels: Vec<&str> = names.iter().map(String::as_str).collect();
                 let selected = usize::from(cell.midi_note.saturating_sub(CELL_NOTES.start));
-                if let Some(index) = dropdown(ui, &THEME, "cell-note", &labels, selected, 64.0) {
+                if let Some(index) =
+                    labelled_dropdown(ui, &THEME, "Note", "cell-note", &labels, selected, 64.0)
+                {
                     let target = CELL_NOTES.start + index as u8;
                     if target != cell.midi_note {
                         moved = Some(target);
                     }
                 }
 
-                if toggle(ui, &THEME, "Reverse", cell.playback.reverse) {
+                divider(ui, &THEME, PLAYBACK_ROW);
+                if toggle_switch(ui, &THEME, "Reverse", cell.playback.reverse) {
                     cell.playback.reverse = !cell.playback.reverse;
                     changed = true;
                 }
-
                 ui.add_space(THEME.spacing_md);
+
                 changed |= value_knob(
                     ui,
                     &THEME,
@@ -338,16 +362,23 @@ fn playback_section(
                     &mut cell.playback.gain,
                 );
 
-                ui.add_space(THEME.spacing_md);
+                divider(ui, &THEME, PLAYBACK_ROW);
                 let labels: Vec<&str> = PlaybackMode::ALL.iter().map(|mode| mode.label()).collect();
                 let selected = PlaybackMode::ALL
                     .iter()
                     .position(|mode| *mode == cell.playback.mode)
                     .unwrap_or(0);
-                // A list rather than a segment row: five segments were the
-                // one thing wider than the column.
-                if let Some(index) = dropdown(ui, &THEME, "playback-mode", &labels, selected, 104.0)
-                {
+                // A detented selector, like the LFO's waveform: five modes,
+                // and the head says which one at a glance.
+                if let Some(index) = rotary_selector(
+                    ui,
+                    &THEME,
+                    "Modus",
+                    &labels,
+                    selected,
+                    KNOB_DIAMETER,
+                    Placement::Below,
+                ) {
                     cell.playback.mode = PlaybackMode::ALL[index];
                     changed = true;
                 }
@@ -460,7 +491,9 @@ fn mode_hint(mode: PlaybackMode, release_trigger: bool) -> &'static str {
         (PlaybackMode::OneShot, _) => "spielt den Slice zu Ende, Taste egal",
         (PlaybackMode::Loop, false) => "wiederholt den ganzen Slice",
         (PlaybackMode::Repeat, false) => "wiederholt die gewählte Notenlänge",
-        (PlaybackMode::Collapse, false) => "Loop wird mit jedem Durchlauf kürzer",
+        (PlaybackMode::Collapse, false) => {
+            "spielt einmal durch, dann wird das Ende mit jedem Durchlauf kürzer"
+        }
         (_, true) => "Loop startet erst beim Loslassen und läuft im Release aus",
     }
 }
@@ -489,18 +522,18 @@ fn modulation_section(ui: &mut Ui, cell: &mut PerformanceCell, live: Live) -> bo
         |ui| {
             ui.spacing_mut().item_spacing.y = THEME.spacing_sm;
             for (index, name) in ["ENV A", "ENV B"].into_iter().enumerate() {
-                ui.horizontal(|ui| {
+                row(ui, MOD_ROW, |ui| {
                     let level = live.sounding.then_some(live.envelopes[index]);
                     envelope_display(ui, &THEME, name, cell.envelopes[index], level, CURVE_SIZE);
-                    ui.add_space(THEME.spacing_sm);
+                    ui.add_space(THEME.spacing_md);
                     changed |= envelope_controls(ui, &mut cell.envelopes[index]);
                 });
             }
             for (index, name) in ["LFO 1", "LFO 2"].into_iter().enumerate() {
-                ui.horizontal(|ui| {
+                row(ui, MOD_ROW, |ui| {
                     let value = live.sounding.then_some(live.lfos[index]);
                     lfo_display(ui, &THEME, name, cell.lfos[index].shape, value, CURVE_SIZE);
-                    ui.add_space(THEME.spacing_sm);
+                    ui.add_space(THEME.spacing_md);
                     changed |= lfo_controls(ui, index, &mut cell.lfos[index]);
                 });
             }
@@ -556,24 +589,24 @@ fn envelope_controls(ui: &mut Ui, envelope: &mut EnvelopeDefinition) -> bool {
         default,
         taper: Taper::Skewed,
         unit: Unit::Milliseconds,
-        diameter: KNOB_DIAMETER,
+        diameter: MOD_KNOB,
         modulated: None,
     };
     let mut changed = false;
 
-    changed |= value_knob(
+    changed |= value_knob_beside(
         ui,
         &THEME,
         stage("Attack", default.attack_ms),
         &mut envelope.attack_ms,
     );
-    changed |= value_knob(
+    changed |= value_knob_beside(
         ui,
         &THEME,
         stage("Decay", default.decay_ms),
         &mut envelope.decay_ms,
     );
-    changed |= value_knob(
+    changed |= value_knob_beside(
         ui,
         &THEME,
         KnobSpec {
@@ -582,12 +615,12 @@ fn envelope_controls(ui: &mut Ui, envelope: &mut EnvelopeDefinition) -> bool {
             default: default.sustain,
             taper: Taper::Linear,
             unit: Unit::Plain,
-            diameter: KNOB_DIAMETER,
+            diameter: MOD_KNOB,
             modulated: None,
         },
         &mut envelope.sustain,
     );
-    changed |= value_knob(
+    changed |= value_knob_beside(
         ui,
         &THEME,
         stage("Release", default.release_ms),
@@ -601,24 +634,36 @@ fn envelope_controls(ui: &mut Ui, envelope: &mut EnvelopeDefinition) -> bool {
 fn lfo_controls(ui: &mut Ui, index: usize, lfo: &mut LfoDefinition) -> bool {
     let mut changed = false;
 
+    // The waveform on a detented selector, as on a hardware LFO: the shape is
+    // one of a handful, and the head says which at a glance.
     let shapes: Vec<&str> = LfoShape::ALL.iter().map(|shape| shape.label()).collect();
     let selected = LfoShape::ALL
         .iter()
         .position(|shape| *shape == lfo.shape)
         .unwrap_or(0);
-    if let Some(shape) = dropdown(ui, &THEME, ("shape", index), &shapes, selected, 86.0) {
+    if let Some(shape) = rotary_selector(
+        ui,
+        &THEME,
+        "Wave",
+        &shapes,
+        selected,
+        SELECTOR_DIAMETER,
+        Placement::Beside,
+    ) {
         lfo.shape = LfoShape::ALL[shape];
         changed = true;
     }
 
-    if toggle(ui, &THEME, "Sync", lfo.sync) {
+    divider(ui, &THEME, MOD_ROW);
+    if toggle_switch(ui, &THEME, "Sync", lfo.sync) {
         lfo.sync = !lfo.sync;
         changed = true;
     }
-    if toggle(ui, &THEME, "Retrig", lfo.retrigger) {
+    if toggle_switch(ui, &THEME, "Retrig", lfo.retrigger) {
         lfo.retrigger = !lfo.retrigger;
         changed = true;
     }
+    divider(ui, &THEME, MOD_ROW);
 
     // The rate is given either in hertz or as a note value, never both, so
     // the two controls share the last place in the line.
@@ -631,13 +676,20 @@ fn lfo_controls(ui: &mut Ui, index: usize, lfo: &mut LfoDefinition) -> bool {
             .iter()
             .position(|division| *division == lfo.division)
             .unwrap_or(0);
-        if let Some(chosen) = dropdown(ui, &THEME, ("division", index), &divisions, selected, 80.0)
-        {
+        if let Some(chosen) = labelled_dropdown(
+            ui,
+            &THEME,
+            "Rate",
+            ("division", index),
+            &divisions,
+            selected,
+            80.0,
+        ) {
             lfo.division = Division::ALL[chosen];
             changed = true;
         }
     } else {
-        changed |= value_knob(
+        changed |= value_knob_beside(
             ui,
             &THEME,
             KnobSpec {
@@ -646,7 +698,7 @@ fn lfo_controls(ui: &mut Ui, index: usize, lfo: &mut LfoDefinition) -> bool {
                 default: LfoDefinition::default().rate_hz,
                 taper: Taper::Logarithmic,
                 unit: Unit::Hertz,
-                diameter: KNOB_DIAMETER,
+                diameter: MOD_KNOB,
                 modulated: None,
             },
             &mut lfo.rate_hz,
@@ -674,32 +726,40 @@ fn matrix_window(ui: &mut Ui, cell: &mut PerformanceCell) -> bool {
         .map(|destination| destination.label())
         .collect();
 
-    egui::Window::new("Mod-Matrix")
-        .id(egui::Id::new("mod-matrix"))
-        .open(&mut open)
-        .collapsible(false)
-        .resizable(false)
-        .default_pos(pos2(420.0, 300.0))
-        .show(ui.ctx(), |ui| {
+    plate_window(
+        egui::Window::new("Mod-Matrix")
+            .id(egui::Id::new("mod-matrix"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_pos(pos2(420.0, 300.0)),
+        ui.ctx(),
+        |ui| {
             ui.spacing_mut().item_spacing = vec2(THEME.spacing_sm, THEME.spacing_sm);
+            // Wide enough for the sentence at the end of each row, which a
+            // window sized to its first frame would otherwise cut off.
+            ui.set_min_width(ROUTE_SELECTOR * 2.0 + ARROW_WIDTH + ROUTE_AMOUNT + 260.0);
             matrix_headings(ui);
 
             let mut remove: Option<usize> = None;
             for index in 0..cell.routes.len() {
-                ui.horizontal(|ui| {
+                row(ui, MATRIX_ROW, |ui| {
                     let route = &mut cell.routes[index];
 
+                    // The source on a detented selector, as on the LFOs: a
+                    // handful of fixed choices, readable at a glance.
                     let selected = ModSource::ALL
                         .iter()
                         .position(|source| *source == route.source)
                         .unwrap_or(0);
-                    if let Some(next) = dropdown(
+                    if let Some(next) = rotary_selector(
                         ui,
                         &THEME,
-                        ("source", index),
+                        "Quelle",
                         &sources,
                         selected,
-                        ROUTE_SELECTOR,
+                        SOURCE_SELECTOR,
+                        Placement::Beside,
                     ) {
                         route.source = ModSource::ALL[next];
                         changed = true;
@@ -741,7 +801,7 @@ fn matrix_window(ui: &mut Ui, cell: &mut PerformanceCell) -> bool {
                         remove = Some(index);
                     }
 
-                    hint_light(ui, route_summary(*route));
+                    hint(ui, route_summary(*route));
                 });
             }
 
@@ -758,7 +818,7 @@ fn matrix_window(ui: &mut Ui, cell: &mut PerformanceCell) -> bool {
                     cell.add_route(ModulationRoute::default());
                     changed = true;
                 }
-                hint_light(
+                hint(
                     ui,
                     &format!("{} von {MAX_ROUTES} Routen belegt", cell.routes.len()),
                 );
@@ -768,12 +828,13 @@ fn matrix_window(ui: &mut Ui, cell: &mut PerformanceCell) -> bool {
             // cell is then silent, which is worth saying rather than letting
             // the user hunt for a voice that never sounds.
             if !cell.routes.is_empty() && !cell.has_amplitude() {
-                hint_light(
+                hint(
                     ui,
                     "Keine Route auf Volume — diese Zelle bleibt stumm. ENV A auf Volume stellt sie wieder her.",
                 );
             }
-        });
+        },
+    );
 
     ui.memory_mut(|memory| memory.data.insert_temp(matrix_open_id(), open));
     changed
@@ -783,7 +844,10 @@ fn matrix_window(ui: &mut Ui, cell: &mut PerformanceCell) -> bool {
 fn matrix_headings(ui: &mut Ui) {
     ui.horizontal(|ui| {
         for (width, caption) in [
-            (ROUTE_SELECTOR, "QUELLE"),
+            (
+                captioned_size(&THEME, SOURCE_SELECTOR, Placement::Beside).x,
+                "",
+            ),
             (ARROW_WIDTH, ""),
             (ROUTE_SELECTOR, "ZIEL"),
             (ROUTE_AMOUNT, "BETRAG"),
@@ -798,7 +862,7 @@ fn matrix_headings(ui: &mut Ui) {
                 Align2::LEFT_CENTER,
                 caption,
                 FontId::proportional(THEME.font_sm),
-                THEME.text_dim,
+                THEME.label,
             );
         }
     });
@@ -820,7 +884,7 @@ fn arrow(ui: &mut Ui) {
             pos2(centre.x - half, centre.y),
             pos2(centre.x + half, centre.y),
         ],
-        Stroke::new(THEME.stroke_thin, THEME.text_dim),
+        Stroke::new(THEME.stroke_thin, THEME.label),
     );
     painter.add(PathShape::convex_polygon(
         vec![
@@ -828,7 +892,7 @@ fn arrow(ui: &mut Ui) {
             pos2(centre.x + half, centre.y),
             pos2(centre.x + half - 4.0, centre.y + 3.0),
         ],
-        THEME.text_dim,
+        THEME.label,
         Stroke::NONE,
     ));
 }

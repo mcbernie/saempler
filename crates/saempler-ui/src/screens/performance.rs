@@ -1,4 +1,4 @@
-use nih_plug_egui::egui::Ui;
+use nih_plug_egui::egui::{ScrollArea, Ui};
 use saempler_audio::EngineCommand;
 use saempler_core::cell_spec;
 use saempler_model::ProjectFile;
@@ -34,6 +34,7 @@ pub fn sync_cells(state: &ViewState<'_>, project: &ProjectFile) {
 pub fn performance_section(ui: &mut Ui, state: &ViewState<'_>) {
     let sounding = state.meters.any_playhead().then_some(THEME.active);
     section(ui, "PERFORMANCE", sounding, |ui| {
+        ui.add_space(THEME.spacing_sm);
         toolbar(ui, state);
         ui.add_space(THEME.spacing_sm);
 
@@ -45,7 +46,12 @@ pub fn performance_section(ui: &mut Ui, state: &ViewState<'_>) {
         };
 
         if project.project.cells().is_empty() {
-            placeholder(ui, "Noch keine Noten belegt");
+            let detail = if project.project.sample.is_some() {
+                "Mit der Tastatur-Taste oben die Slices auf Noten legen"
+            } else {
+                "Erst ein Sample laden, dann die Slices auf Noten legen"
+            };
+            placeholder(ui, "Noch keine Noten belegt", detail);
             return;
         }
 
@@ -62,65 +68,77 @@ pub fn performance_section(ui: &mut Ui, state: &ViewState<'_>) {
         let mut hovered_note: Option<u8> = None;
         let mut released = false;
 
-        let (size, per_row) = grid(
+        let (size, per_row, fits) = grid(
             ui.available_width(),
             ui.available_height(),
             project.project.cells().len(),
         );
 
-        for row in project.project.cells().chunks(per_row) {
-            ui.horizontal(|ui| {
-                for cell in row {
-                    let slice = project.project.slice(cell.slice).copied();
-                    let index = slice
-                        .and_then(|slice| {
-                            project
-                                .project
-                                .slices()
-                                .iter()
-                                .position(|candidate| candidate.id == slice.id)
-                        })
-                        .unwrap_or(0);
-                    // By note rather than by position: a copied cell plays the
-                    // same slice, so a pad that lit for anything inside its
-                    // region lit for its twin as well.
-                    let sounding = sounding_notes.contains(&cell.midi_note);
+        let mut rows = |ui: &mut Ui| {
+            for row in project.project.cells().chunks(per_row) {
+                ui.horizontal(|ui| {
+                    for cell in row {
+                        let slice = project.project.slice(cell.slice).copied();
+                        let index = slice
+                            .and_then(|slice| {
+                                project
+                                    .project
+                                    .slices()
+                                    .iter()
+                                    .position(|candidate| candidate.id == slice.id)
+                            })
+                            .unwrap_or(0);
+                        // By note rather than by position: a copied cell plays the
+                        // same slice, so a pad that lit for anything inside its
+                        // region lit for its twin as well.
+                        let sounding = sounding_notes.contains(&cell.midi_note);
 
-                    let action = performance_pad(
-                        ui,
-                        &THEME,
-                        &PadView {
-                            cell,
-                            slice: slice.as_ref(),
-                            slice_index: index,
-                            peaks: &sample.peaks,
-                            selected: project.project.cell_selection() == Some(cell.id),
-                            sounding,
-                            size,
-                            dragging: dragged == Some(cell.id),
-                            drop_target: target == Some(cell.midi_note) && dragged != Some(cell.id),
-                        },
-                    );
+                        let action = performance_pad(
+                            ui,
+                            &THEME,
+                            &PadView {
+                                cell,
+                                slice: slice.as_ref(),
+                                slice_index: index,
+                                peaks: &sample.peaks,
+                                selected: project.project.cell_selection() == Some(cell.id),
+                                sounding,
+                                size,
+                                dragging: dragged == Some(cell.id),
+                                drop_target: target == Some(cell.midi_note)
+                                    && dragged != Some(cell.id),
+                            },
+                        );
 
-                    if let Some(position) = pointer {
-                        if action.rect.contains(position) {
-                            hovered_note = Some(cell.midi_note);
+                        if let Some(position) = pointer {
+                            if action.rect.contains(position) {
+                                hovered_note = Some(cell.midi_note);
+                            }
+                        }
+                        if action.drag_started {
+                            ui.memory_mut(|memory| memory.data.insert_temp(dragged_id(), cell.id));
+                        }
+                        if action.drag_released {
+                            released = true;
+                        }
+
+                        if action.clear {
+                            edit = Some(PadEdit::Clear(cell.midi_note));
+                        } else if action.trigger {
+                            edit = Some(PadEdit::Trigger(cell.id));
                         }
                     }
-                    if action.drag_started {
-                        ui.memory_mut(|memory| memory.data.insert_temp(dragged_id(), cell.id));
-                    }
-                    if action.drag_released {
-                        released = true;
-                    }
-
-                    if action.clear {
-                        edit = Some(PadEdit::Clear(cell.midi_note));
-                    } else if action.trigger {
-                        edit = Some(PadEdit::Trigger(cell.id));
-                    }
-                }
-            });
+                });
+            }
+        };
+        // Pads that would have to shrink past the point where their display
+        // still says anything scroll instead.
+        if fits {
+            rows(ui);
+        } else {
+            ScrollArea::vertical()
+                .auto_shrink([false, false])
+                .show(ui, |ui| rows(ui));
         }
 
         match hovered_note {
@@ -167,19 +185,21 @@ pub fn performance_section(ui: &mut Ui, state: &ViewState<'_>) {
     });
 }
 
-/// Pad size and row length that fit `count` pads into the given area.
+/// Pad size and row length for `count` pads in the given area, and whether
+/// they fit without scrolling.
 ///
-/// The grid shrinks its pads rather than scrolling: a key that is mapped but
-/// out of sight is worse than a small one, and scrolling inside a panel was
-/// what made the window look broken in the first place.
-fn grid(width: f32, height: f32, count: usize) -> (f32, usize) {
-    let gap = THEME.spacing_sm;
+/// The grid shrinks its pads first: a key that is mapped but out of sight is
+/// worse than a small one. Only once a pad is too small to read does it give
+/// up and let the grid scroll.
+fn grid(width: f32, height: f32, count: usize) -> (f32, usize, bool) {
+    let gap = THEME.spacing_md;
     let mut size = PAD_SIZE;
     loop {
         let per_row = (((width + gap) / (size + gap)).floor() as usize).max(1);
         let rows = count.div_ceil(per_row);
-        if rows as f32 * (size + gap) <= height || size <= MIN_PAD_SIZE {
-            return (size, per_row);
+        let fits = rows as f32 * (size + gap) <= height;
+        if fits || size <= MIN_PAD_SIZE {
+            return (size, per_row, fits);
         }
         size -= 2.0;
     }

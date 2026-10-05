@@ -133,46 +133,47 @@ fn toolbar(ui: &mut Ui, state: &ViewState<'_>) -> bool {
         .map(|sample| sample.loading)
         .unwrap_or(false);
 
-    ui.horizontal(|ui| {
-        let tooltip = if loading {
-            "Wird geladen …"
-        } else {
-            "Sample laden"
-        };
-        if icon_button(ui, &THEME, Icon::Open, tooltip) && !loading {
-            import_requested = true;
-        }
+    // Laid out straight into the header row, which is already left to right
+    // and centred. A nested `horizontal` would start at the default interact
+    // height and grow downwards from there, pushing the panel past its band.
+    let tooltip = if loading {
+        "Wird geladen …"
+    } else {
+        "Sample laden"
+    };
+    if icon_button(ui, &THEME, Icon::Open, tooltip) && !loading {
+        import_requested = true;
+    }
 
-        ui.add_space(THEME.spacing_md);
+    ui.add_space(THEME.spacing_md);
 
-        let has_sample = state
-            .project
-            .lock()
-            .map(|project| project.project.sample.is_some())
-            .unwrap_or(false);
-        if !has_sample {
-            return;
-        }
+    let has_sample = state
+        .project
+        .lock()
+        .map(|project| project.project.sample.is_some())
+        .unwrap_or(false);
+    if !has_sample {
+        return import_requested;
+    }
 
-        let labels: Vec<String> = EVEN_DIVISIONS
-            .iter()
-            .map(|count| format!("{count}"))
-            .collect();
-        let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
+    let labels: Vec<String> = EVEN_DIVISIONS
+        .iter()
+        .map(|count| format!("{count}"))
+        .collect();
+    let refs: Vec<&str> = labels.iter().map(String::as_str).collect();
 
-        // No division is "current", so the selector is drawn without one.
-        if let Some(index) = segmented(ui, &THEME, &refs, usize::MAX) {
-            divide_evenly(state, EVEN_DIVISIONS[index]);
-        }
+    // No division is "current", so the selector is drawn without one.
+    if let Some(index) = segmented(ui, &THEME, &refs, usize::MAX) {
+        divide_evenly(state, EVEN_DIVISIONS[index]);
+    }
 
-        ui.add_space(THEME.spacing_md);
-        if icon_button(ui, &THEME, Icon::Trash, "Gewählten Slice löschen") {
-            remove_selected(state);
-        }
-        if icon_button(ui, &THEME, Icon::Stop, "Alle Noten sofort beenden") {
-            state.send(EngineCommand::AllNotesOff);
-        }
-    });
+    ui.add_space(THEME.spacing_md);
+    if icon_button(ui, &THEME, Icon::Trash, "Gewählten Slice löschen") {
+        remove_selected(state);
+    }
+    if icon_button(ui, &THEME, Icon::Stop, "Alle Noten sofort beenden") {
+        state.send(EngineCommand::AllNotesOff);
+    }
 
     import_requested
 }

@@ -5,9 +5,10 @@ use saempler_model::{
     MIN_HALF_TIME_RATE,
 };
 
-use crate::screens::main::{hint_light, section_with, ViewState, THEME};
+use crate::screens::main::{heading, plate_window, section_with, ViewState, THEME};
+use crate::widgets::surface::{control_surface, SurfaceState};
 use crate::widgets::{
-    button, dropdown, icon_button, inset, lamp, value_knob, Icon, KnobSpec, Taper, Unit,
+    button, dropdown, icon_button, lamp, value_knob, Icon, KnobSpec, Taper, Unit,
 };
 
 /// Keys a modifier may be put on.
@@ -57,7 +58,7 @@ fn settings_row(ui: &mut Ui, settings: &mut ModifierSettings) -> bool {
             ("Brake", &mut settings.brake_division),
         ] {
             ui.vertical(|ui| {
-                hint_light(ui, label);
+                heading(ui, label);
                 let labels: Vec<&str> = Division::ALL.iter().map(|d| d.label()).collect();
                 let selected = Division::ALL
                     .iter()
@@ -72,7 +73,7 @@ fn settings_row(ui: &mut Ui, settings: &mut ModifierSettings) -> bool {
         }
 
         ui.vertical(|ui| {
-            hint_light(ui, "Half-Time");
+            heading(ui, "Half-Time");
             changed |= value_knob(
                 ui,
                 &THEME,
@@ -160,13 +161,12 @@ pub fn modifier_section(ui: &mut Ui, state: &ViewState<'_>) {
                 if total == 0 {
                     let (rect, _) =
                         ui.allocate_exact_size(vec2(CARD_WIDTH * 2.0, CARD_HEIGHT), Sense::hover());
-                    inset(ui.painter(), &THEME, rect, THEME.waveform_bg);
                     ui.painter().text(
                         rect.center(),
                         Align2::CENTER_CENTER,
                         "Keine Modifier belegt",
                         FontId::proportional(THEME.font_sm),
-                        THEME.text_dim,
+                        THEME.title.gamma_multiply(0.6),
                     );
                 }
             });
@@ -185,7 +185,13 @@ pub fn modifier_section(ui: &mut Ui, state: &ViewState<'_>) {
 /// One key's display card: lamp, what it does, which key, how it responds.
 fn card(ui: &mut Ui, note: u8, modifier: Modifier, mode: ModifierMode, engaged: bool) {
     let rect = Rect::from_min_size(ui.cursor().min, vec2(CARD_WIDTH, CARD_HEIGHT));
-    inset(ui.painter(), &THEME, rect, THEME.control_pressed_bg);
+    // A dark key on the plate, sunk in while its modifier is engaged.
+    let surface = if engaged {
+        SurfaceState::Pressed
+    } else {
+        SurfaceState::Rest
+    };
+    control_surface(ui, &THEME, rect, surface);
     ui.advance_cursor_after_rect(rect);
 
     let painter = ui.painter();
@@ -216,13 +222,15 @@ fn editor_window(ui: &Ui, state: &ViewState<'_>, engaged: u32) -> bool {
     let mut open = true;
     let mut edit: Option<Edit> = None;
 
-    egui::Window::new("Modifier-Tasten")
-        .id(Id::new("modifier-editor"))
-        .open(&mut open)
-        .collapsible(false)
-        .resizable(false)
-        .default_pos(pos2(360.0, 420.0))
-        .show(ui.ctx(), |ui| {
+    plate_window(
+        egui::Window::new("Modifier-Tasten")
+            .id(Id::new("modifier-editor"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_pos(pos2(360.0, 420.0)),
+        ui.ctx(),
+        |ui| {
             ui.spacing_mut().item_spacing = vec2(THEME.spacing_sm, THEME.spacing_sm);
 
             let Ok(project) = state.project.lock() else {
@@ -300,12 +308,13 @@ fn editor_window(ui: &Ui, state: &ViewState<'_>, engaged: u32) -> bool {
             });
 
             ui.add_space(THEME.spacing_md);
-            hint_light(ui, "WIE HART SIE ZUPACKEN");
+            heading(ui, "WIE HART SIE ZUPACKEN");
             let mut settings = project.project.modifier_settings();
             if settings_row(ui, &mut settings) {
                 edit = Some(Edit::Settings(settings));
             }
-        });
+        },
+    );
 
     if let Some(edit) = edit {
         if let Ok(mut project) = state.project.lock() {

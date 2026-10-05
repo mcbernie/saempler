@@ -24,6 +24,13 @@ Alle nennenswerten Änderungen an Sämpler. Das Format folgt lose
 
 ### Geändert
 
+- Neues Erscheinungsbild: helle Eurorack-Frontplatten statt dunkler Paneele.
+  Platten, Regler, Kippschalter, Drehschalter, Tasten und Pads sind
+  Texturen aus Renderings, Werte und Anzeigen werden darüber gezeichnet.
+- Wellenform des LFOs, Playback-Modus, Mod-Quelle, Filtertyp und
+  Drive-Kurve werden mit Drehschaltern gewählt.
+- Lange Auswahllisten scrollen und öffnen beim aktuellen Wert.
+- Das Fenster startet mit 1240 × 1060 und ist mindestens 1050 hoch.
 - Repeat und Collapse umfassen standardmäßig den ganzen Slice. Der Notenwert
   steht weiter zur Wahl.
 - Der Brake hält über einen Beat statt über eine ganze Note an, wie seine

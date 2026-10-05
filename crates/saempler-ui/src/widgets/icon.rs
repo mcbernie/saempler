@@ -4,9 +4,9 @@ use crate::theme::Theme;
 use crate::widgets::surface::{control_surface, label_color, SurfaceState};
 
 /// Side length of an icon button.
-const BUTTON_SIZE: f32 = 30.0;
+const BUTTON_SIZE: f32 = 24.0;
 /// Side length of the glyph inside it.
-const GLYPH_SIZE: f32 = 15.0;
+const GLYPH_SIZE: f32 = 12.0;
 
 /// The marks drawn on the icon buttons.
 ///

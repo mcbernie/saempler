@@ -1,17 +1,22 @@
-use nih_plug_egui::egui::{pos2, vec2, Align2, FontId, PointerButton, Rect, Sense, Stroke, Ui};
+use nih_plug_egui::egui::{
+    pos2, vec2, Align2, Color32, FontId, PointerButton, Rect, Sense, Stroke, StrokeKind, Ui,
+};
 use saempler_core::PeakCache;
 use saempler_model::{note_name, PerformanceCell, Slice};
 
 use crate::theme::Theme;
-use crate::widgets::surface::{control_surface, SurfaceState};
+use crate::widgets::texture::{self, PAD_BEZEL_CORNER, PAD_CAP_CORNER};
 use crate::widgets::waveform::slice_color;
 
 /// Size a pad is drawn at when there is room for it.
-pub const PAD_SIZE: f32 = 100.0;
-/// Smallest a pad may shrink to before the grid gives up on fitting.
-pub const MIN_PAD_SIZE: f32 = 56.0;
-/// Share of a pad's height taken by its waveform thumbnail.
-const THUMBNAIL_SHARE: f32 = 0.38;
+pub const PAD_SIZE: f32 = 104.0;
+/// Smallest a pad may shrink to; below this the grid scrolls instead.
+pub const MIN_PAD_SIZE: f32 = 68.0;
+/// Width of the rubber bezel around the cap.
+const CAP_INSET: f32 = 5.0;
+/// Face value of the cap texture, which the slice colour is lifted by so the
+/// face comes out in exactly that colour.
+const CAP_FACE: f32 = 200.0 / 255.0;
 
 /// What the user did on a pad.
 #[derive(Debug)]
@@ -78,102 +83,129 @@ pub fn performance_pad(ui: &mut Ui, theme: &Theme, view: &PadView<'_>) -> PadAct
         drop_target,
     } = *view;
     let (rect, response) = ui.allocate_exact_size(vec2(size, size), Sense::click_and_drag());
-
-    let state = if selected {
-        SurfaceState::Selected
-    } else if response.is_pointer_button_down_on() {
-        SurfaceState::Pressed
-    } else if response.hovered() {
-        SurfaceState::Hover
-    } else {
-        SurfaceState::Rest
-    };
-    control_surface(ui, theme, rect, state);
-
+    let pressed = response.is_pointer_button_down_on();
     let accent = slice_color(theme, slice_index);
     let painter = ui.painter();
+    let textures = texture::textures(ui.ctx());
 
-    // The key on a chip in the slice's colour, as on the waveform above: the
-    // colour is what ties a pad to its chop.
+    // The rubber bezel, with a short shadow on the plate below it.
+    painter.rect_filled(
+        rect.translate(vec2(0.8, 1.5)),
+        theme.radius_md,
+        Color32::from_black_alpha(60),
+    );
+    painter.add(texture::nine_slice(
+        &textures.pad_bezel,
+        rect,
+        PAD_BEZEL_CORNER,
+        Color32::WHITE,
+    ));
+
+    // The cap in the chop's colour. Pressed, it sinks into the bezel: a
+    // point lower and a shade darker, the light no longer reaching its top.
+    let cap = if pressed {
+        rect.shrink(CAP_INSET).translate(vec2(0.0, 1.0))
+    } else {
+        rect.shrink(CAP_INSET)
+    };
+    let tint = if pressed {
+        lift(accent).gamma_multiply(0.82)
+    } else if response.hovered() {
+        lift(accent.lerp_to_gamma(Color32::WHITE, 0.08))
+    } else {
+        lift(accent)
+    };
+    let tint = Color32::from_rgb(tint.r(), tint.g(), tint.b());
+    painter.add(texture::nine_slice(
+        &textures.pad_cap,
+        cap,
+        PAD_CAP_CORNER,
+        tint,
+    ));
+    painter.add(texture::grain(
+        &textures.pad_grain,
+        cap.shrink(3.0),
+        Color32::WHITE.gamma_multiply(0.4),
+    ));
+
+    let ink = theme.title;
+    let pad = (size * 0.06).clamp(4.0, 8.0);
+
+    // The key on a chip a shade deeper than the cap, as on the waveform
+    // above: the colour is what ties a pad to its chop.
+    let name = note_name(cell.midi_note);
     let chip = Rect::from_min_size(
-        pos2(rect.min.x + 5.0, rect.min.y + 5.0),
+        pos2(cap.min.x + pad, cap.min.y + pad),
         vec2(
-            note_name(cell.midi_note).chars().count() as f32 * theme.font_sm * 0.68
-                + theme.spacing_sm * 2.5,
+            name.chars().count() as f32 * theme.font_sm * 0.68 + theme.spacing_sm * 2.5,
             theme.font_sm + 6.0,
         ),
     );
-    painter.rect_filled(chip, theme.radius_sm, accent);
+    painter.rect_filled(
+        chip,
+        theme.radius_sm,
+        accent.lerp_to_gamma(Color32::BLACK, 0.25),
+    );
     painter.text(
         chip.center(),
         Align2::CENTER_CENTER,
-        note_name(cell.midi_note),
+        name,
         FontId::proportional(theme.font_sm),
-        theme.title,
+        theme.chassis_top,
     );
     // Its lamp: lit while the chop sounds.
     crate::widgets::panel::lamp(
         painter,
         theme,
-        pos2(rect.max.x - 11.0, rect.min.y + 11.0),
-        sounding.then_some(accent),
+        pos2(cap.max.x - pad - 5.0, chip.center().y),
+        sounding.then_some(theme.active),
     );
 
-    if let Some(slice) = slice {
-        let thumb = Rect::from_min_size(
-            pos2(
-                rect.min.x + theme.spacing_sm + 1.0,
-                rect.min.y + theme.font_sm + 13.0,
-            ),
-            vec2(
-                rect.width() - theme.spacing_sm * 2.0 - 2.0,
-                rect.height() * THUMBNAIL_SHARE,
-            ),
-        );
-        painter.rect_filled(thumb.expand(2.0), theme.radius_sm, theme.waveform_bg);
-        draw_thumbnail(ui, theme, thumb, peaks, slice, accent);
+    // The chop's shape on a small display set into the cap.
+    let footer = theme.font_sm + pad;
+    let display = Rect::from_min_max(
+        pos2(cap.min.x + pad, chip.max.y + pad * 0.75),
+        pos2(cap.max.x - pad, cap.max.y - footer - pad * 0.5),
+    );
+    if display.height() > 8.0 {
+        crate::widgets::panel::inset(painter, theme, display, theme.waveform_bg);
+        if let Some(slice) = slice {
+            draw_thumbnail(ui, display.shrink(2.0), peaks, slice, theme.waveform);
+        }
     }
 
-    // Below the thumbnail: the chop's number on the left, and the badges that
-    // say how this cell differs from plain playback on the right.
+    // Below it: the chop's number on the left, and the badges that say how
+    // this cell differs from plain playback on the right.
     let painter = ui.painter();
     painter.text(
-        pos2(rect.min.x + theme.spacing_md, rect.max.y - theme.spacing_md),
+        pos2(cap.min.x + pad, cap.max.y - pad * 0.6),
         Align2::LEFT_BOTTOM,
         format!("S{}", slice_index + 1),
         FontId::proportional(theme.font_sm),
-        accent,
+        ink,
     );
     painter.text(
-        pos2(rect.max.x - theme.spacing_md, rect.max.y - theme.spacing_md),
+        pos2(cap.max.x - pad, cap.max.y - pad * 0.6),
         Align2::RIGHT_BOTTOM,
         badges(cell),
         FontId::proportional(theme.font_sm),
-        theme.text_dim,
+        ink.gamma_multiply(0.75),
     );
 
-    // The pad that is up in the editor carries the glowing frame the mockup
-    // gives it, in its own colour rather than a shared one. A pad being
-    // dragged, or the one it would land on, says so the same way.
-    if selected || sounding || dragging || drop_target {
+    // The pad that is up in the editor has its bezel lit along the inside,
+    // like an engaged key; so do the one being dragged and the one it would
+    // land on. On the bezel itself, so it costs no room around the pad.
+    if selected || dragging || drop_target {
         let color = if drop_target {
             theme.armed
-        } else if sounding {
-            theme.active
         } else {
-            accent
+            theme.accent
         };
         painter.rect_stroke(
-            rect.expand(1.0),
-            theme.radius_sm,
-            Stroke::new(1.0_f32, color.gamma_multiply(0.35)),
-            nih_plug_egui::egui::StrokeKind::Outside,
-        );
-        painter.rect_stroke(
-            rect,
-            theme.radius_sm,
+            rect.shrink(1.0),
+            theme.radius_md,
             Stroke::new(theme.stroke_thick, color),
-            nih_plug_egui::egui::StrokeKind::Inside,
+            StrokeKind::Inside,
         );
     }
 
@@ -184,6 +216,15 @@ pub fn performance_pad(ui: &mut Ui, theme: &Theme, view: &PadView<'_>) -> PadAct
         drag_released: response.drag_stopped(),
         rect,
     }
+}
+
+/// The tint that turns the grey cap texture into `color`.
+///
+/// The texture's face sits below white so its lit edges have room above it;
+/// the tint is raised by the same factor to land the face on the colour.
+fn lift(color: Color32) -> Color32 {
+    let up = |channel: u8| (f32::from(channel) / CAP_FACE).round().min(255.0) as u8;
+    Color32::from_rgb(up(color.r()), up(color.g()), up(color.b()))
 }
 
 /// A short description of everything the cell changes.
@@ -208,16 +249,8 @@ fn badges(cell: &PerformanceCell) -> String {
 }
 
 /// Draw the slice's shape, scaled to the pad.
-fn draw_thumbnail(
-    ui: &Ui,
-    theme: &Theme,
-    rect: Rect,
-    peaks: &PeakCache,
-    slice: &Slice,
-    color: nih_plug_egui::egui::Color32,
-) {
+fn draw_thumbnail(ui: &Ui, rect: Rect, peaks: &PeakCache, slice: &Slice, color: Color32) {
     let painter = ui.painter();
-    painter.rect_filled(rect, theme.radius_sm, theme.waveform_bg);
 
     let frames = slice.len_frames();
     if frames == 0 || rect.width() < 1.0 {
@@ -260,6 +293,24 @@ mod tests {
             slice: SliceId(0),
             playback,
             ..PerformanceCell::placeholder()
+        }
+    }
+
+    #[test]
+    fn the_cap_tint_lands_the_face_on_the_slice_colour() {
+        let color = Color32::from_rgb(0x3d, 0x91, 0x88);
+
+        let tint = lift(color);
+
+        // Multiplied by the face value of the texture, the tint gives back
+        // the colour itself, to within rounding.
+        for (tinted, wanted) in [
+            (tint.r(), color.r()),
+            (tint.g(), color.g()),
+            (tint.b(), color.b()),
+        ] {
+            let face = (f32::from(tinted) * CAP_FACE).round() as i32;
+            assert!((face - i32::from(wanted)).abs() <= 1, "{tinted} -> {face}");
         }
     }
 

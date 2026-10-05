@@ -1,7 +1,9 @@
-use nih_plug_egui::egui::{vec2, Align2, FontId, Pos2, Sense, Ui};
+use nih_plug_egui::egui::{Sense, Ui};
 
 use crate::theme::Theme;
-use crate::widgets::dial::{dial, DialState};
+use crate::widgets::dial::{
+    caption_at, captioned_size, dial, dial_rect, name_width, DialState, Placement,
+};
 
 /// Value change per dragged pixel, as a fraction of the control's range.
 const DRAG_SENSITIVITY: f32 = 0.005;
@@ -70,6 +72,22 @@ pub struct KnobSpec<'a> {
 ///
 /// Returns true when the value changed this frame.
 pub fn value_knob(ui: &mut Ui, theme: &Theme, spec: KnobSpec<'_>, value: &mut f32) -> bool {
+    knob_at(ui, theme, spec, value, Placement::Below)
+}
+
+/// A [`value_knob`] with its name and reading beside it rather than under
+/// it, for rows that have width to spare and no height.
+pub fn value_knob_beside(ui: &mut Ui, theme: &Theme, spec: KnobSpec<'_>, value: &mut f32) -> bool {
+    knob_at(ui, theme, spec, value, Placement::Beside)
+}
+
+fn knob_at(
+    ui: &mut Ui,
+    theme: &Theme,
+    spec: KnobSpec<'_>,
+    value: &mut f32,
+    placement: Placement,
+) -> bool {
     let KnobSpec {
         label,
         range,
@@ -80,13 +98,12 @@ pub fn value_knob(ui: &mut Ui, theme: &Theme, spec: KnobSpec<'_>, value: &mut f3
         modulated,
     } = spec;
 
-    let label_height = theme.font_sm * 2.4;
-    let (rect, response) = ui.allocate_exact_size(
-        vec2(diameter.max(theme.font_sm * 5.0), diameter + label_height),
-        Sense::click_and_drag(),
-    );
-
-    let dial_rect = rect.with_max_y(rect.min.y + diameter);
+    let mut size = captioned_size(theme, diameter, placement);
+    if placement == Placement::Below {
+        size.x = size.x.max(name_width(ui, theme, label));
+    }
+    let (rect, response) = ui.allocate_exact_size(size, Sense::click_and_drag());
+    let dial_rect = dial_rect(rect, diameter, placement);
     let centre = dial_rect.center();
     let radius = diameter * 0.5 - theme.stroke_thick;
     let mut changed = false;
@@ -121,23 +138,17 @@ pub fn value_knob(ui: &mut Ui, theme: &Theme, spec: KnobSpec<'_>, value: &mut f3
             modulated: modulated.map(|value| to_normalized(value, range, taper)),
             hovered: response.hovered(),
             dragged: response.dragged(),
+            bipolar: range.0 < 0.0 && range.1 > 0.0,
         },
     );
 
-    let painter = ui.painter();
-    painter.text(
-        Pos2::new(centre.x, dial_rect.max.y + theme.spacing_sm * 0.5),
-        Align2::CENTER_TOP,
+    caption_at(
+        ui.painter(),
+        theme,
+        dial_rect,
+        placement,
         label,
-        FontId::proportional(theme.font_sm),
-        theme.label,
-    );
-    painter.text(
-        Pos2::new(centre.x, dial_rect.max.y + theme.font_sm + theme.spacing_sm),
-        Align2::CENTER_TOP,
-        format_value(*value, unit),
-        FontId::proportional(theme.font_sm),
-        theme.value,
+        &format_value(*value, unit),
     );
 
     changed

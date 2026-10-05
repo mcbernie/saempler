@@ -1,15 +1,24 @@
 use nih_plug_egui::egui::{
-    epaint::{Mesh, RectShape, Vertex, WHITE_UV},
-    pos2, vec2, Align2, Color32, CornerRadius, FontId, Painter, Pos2, Rect, Shape, Stroke,
-    StrokeKind, Ui,
+    epaint::{Mesh, Vertex, WHITE_UV},
+    pos2, vec2, Align2, Color32, CornerRadius, FontId, Painter, Pos2, Rect, Sense, Shadow, Shape,
+    Stroke, StrokeKind, Ui, Vec2,
 };
 
 use crate::theme::Theme;
+use crate::widgets::texture::{self, Textures, PANEL_CORNER};
 
 /// Radius of an indicator lamp.
 const LED_RADIUS: f32 = 4.0;
 /// Space a panel legend occupies above the panel's contents.
 pub const HEADER_HEIGHT: f32 = 22.0;
+/// Size of a panel title.
+const TITLE_SIZE: f32 = 15.0;
+/// Radius of a screw head.
+const SCREW_RADIUS: f32 = 6.0;
+/// Corner radius of the plate in the panel texture, in points.
+const PANEL_RADIUS: u8 = 8;
+/// Width of the milled edge around a plate, which the grain stays inside.
+const PANEL_EDGE: f32 = 7.0;
 
 /// A vertical gradient as a strip of quads.
 ///
@@ -44,144 +53,134 @@ pub fn vertical_gradient(rect: Rect, stops: &[(f32, Color32)]) -> Shape {
     Shape::Mesh(mesh.into())
 }
 
-/// A panel milled from brushed metal, with a screw in every corner.
+/// An ivory front plate, cut from the design render.
 ///
 /// Returned as a shape rather than painted, because a panel sits behind
 /// contents whose height is only known once they have been laid out: the
 /// caller reserves an index before the contents and fills it in afterwards.
-pub fn metal_panel(theme: &Theme, rect: Rect) -> Shape {
-    let mut shapes = Vec::with_capacity(16);
-
-    // The shadow the panel casts on what is behind it.
-    shapes.push(Shape::Rect(RectShape::filled(
-        rect.translate(vec2(0.0, 2.0)).expand(0.5),
-        theme.radius_md,
-        Color32::from_black_alpha(130),
-    )));
-
-    // The light comes from above: brightest just under the top edge, falling
-    // off across the face, with a little bounce caught at the bottom.
-    shapes.push(clipped_gradient(
-        theme,
-        rect,
-        &[
-            (0.0, theme.chassis_top),
-            (0.16, theme.chassis_mid),
-            (0.88, theme.chassis_bottom),
-            (1.0, theme.chassis_foot),
-        ],
-    ));
-
-    bevel(&mut shapes, theme, rect);
-
-    Shape::Vec(shapes)
-}
-
-/// A gradient that keeps the panel's rounded corners.
-///
-/// The mesh itself is square, so it is drawn first and the corners are then
-/// cut back by painting the surround over them. Clipping a mesh to a rounded
-/// rectangle is not something egui offers, and four small arcs are cheaper
-/// than building the rounded shape by hand.
-fn clipped_gradient(theme: &Theme, rect: Rect, stops: &[(f32, Color32)]) -> Shape {
+pub fn metal_panel(textures: &Textures, rect: Rect) -> Shape {
     Shape::Vec(vec![
-        Shape::Rect(RectShape::filled(rect, theme.radius_md, theme.chassis_mid)),
-        vertical_gradient(rect.shrink(f32::from(theme.radius_md.nw) * 0.5), stops),
+        // A short, soft contact shadow, thrown down and to the right by a
+        // light in the top left.
+        Shadow {
+            offset: [1, 2],
+            blur: 6,
+            spread: 0,
+            color: Color32::from_black_alpha(46),
+        }
+        .as_shape(rect, CornerRadius::same(PANEL_RADIUS))
+        .into(),
+        texture::nine_slice(&textures.panel, rect, PANEL_CORNER, Color32::WHITE),
+        // The grain stops short of the milled edge, which has its own.
+        texture::grain(
+            &textures.panel_grain,
+            rect.shrink(PANEL_EDGE),
+            Color32::WHITE.gamma_multiply(0.7),
+        ),
     ])
 }
 
-/// The lit and shaded edges that give a plate its thickness.
-fn bevel(shapes: &mut Vec<Shape>, theme: &Theme, rect: Rect) {
-    let inner = rect.shrink(1.0);
-    let radius = theme.radius_md;
-
-    // A light hairline inside the top edge and a dark one inside the bottom.
-    shapes.push(Shape::line_segment(
-        [
-            pos2(inner.min.x + f32::from(radius.nw), inner.min.y + 0.5),
-            pos2(inner.max.x - f32::from(radius.ne), inner.min.y + 0.5),
-        ],
-        Stroke::new(1.0_f32, Color32::from_white_alpha(42)),
+/// A screw holding a plate down.
+pub fn screw(painter: &Painter, textures: &Textures, centre: Pos2) {
+    // Its own little contact shadow; the texture is cut tight to the head.
+    painter.circle_filled(
+        centre + vec2(0.6, 1.0),
+        SCREW_RADIUS + 0.6,
+        Color32::from_black_alpha(50),
+    );
+    painter.add(texture::image(
+        &textures.screw,
+        Rect::from_center_size(centre, vec2(SCREW_RADIUS, SCREW_RADIUS) * 2.0),
+        Color32::WHITE,
     ));
-    shapes.push(Shape::line_segment(
-        [
-            pos2(inner.min.x + f32::from(radius.sw), inner.max.y - 0.5),
-            pos2(inner.max.x - f32::from(radius.se), inner.max.y - 0.5),
-        ],
-        Stroke::new(1.0_f32, Color32::from_black_alpha(120)),
-    ));
-
-    shapes.push(Shape::Rect(RectShape::stroke(
-        rect,
-        radius,
-        Stroke::new(1.0_f32, theme.chassis_shadow),
-        StrokeKind::Inside,
-    )));
 }
 
 /// Draw an indicator lamp.
 ///
-/// `color` is `None` when the lamp is dark. A lit lamp gets three rings of
-/// glow: a flat dot reads as a printed mark rather than as a light.
+/// `color` is `None` when the lamp is dark. Both states are the glass from
+/// the render; a lit one is tinted to its colour and throws a little glow
+/// onto the plate, because a flat dot reads as a printed mark, not a light.
 pub fn lamp(painter: &Painter, theme: &Theme, centre: Pos2, color: Option<Color32>) {
-    // The bezel it is set into.
-    painter.circle_filled(
-        centre + vec2(0.0, 0.5),
-        LED_RADIUS + 2.4,
-        theme.chassis_edge,
-    );
-    painter.circle_filled(centre, LED_RADIUS + 2.0, theme.chassis_shadow);
-
+    let _ = theme;
+    let textures = texture::textures(painter.ctx());
+    let rect = Rect::from_center_size(centre, Vec2::splat((LED_RADIUS + 1.5) * 2.0));
     match color {
         Some(color) => {
-            for (radius, alpha) in [(4.0, 0.10), (2.6, 0.16), (1.5, 0.28)] {
+            for (radius, alpha) in [(5.0, 0.08), (3.4, 0.14), (2.0, 0.24)] {
                 painter.circle_filled(centre, LED_RADIUS + radius, color.gamma_multiply(alpha));
             }
-            painter.circle_filled(centre, LED_RADIUS, color);
-            painter.circle_filled(
-                centre,
-                LED_RADIUS * 0.72,
-                color.lerp_to_gamma(Color32::WHITE, 0.45),
-            );
-            painter.circle_filled(
-                centre - vec2(0.9, 1.1),
-                LED_RADIUS * 0.3,
-                Color32::from_white_alpha(190),
-            );
+            painter.add(texture::image(&textures.led_on, rect, color));
         }
         None => {
-            painter.circle_filled(centre, LED_RADIUS, theme.led_off);
-            painter.circle_filled(
-                centre - vec2(0.8, 1.0),
-                LED_RADIUS * 0.34,
-                Color32::from_white_alpha(28),
-            );
+            painter.add(texture::image(&textures.led_off, rect, Color32::WHITE));
         }
     }
 }
 
-/// The legend printed along the top of a panel, with its lamp.
-pub fn panel_header(ui: &Ui, theme: &Theme, rect: Rect, title: &str, lit: Option<Color32>) {
+/// The legend printed along the top of a panel: a screw and the title. Returns where the title ends, so the caller can place controls
+/// and the rule beside it.
+pub fn panel_header(ui: &Ui, theme: &Theme, rect: Rect, title: &str) -> f32 {
     let painter = ui.painter();
-    let centre_y = rect.min.y + HEADER_HEIGHT * 0.5;
+    let centre_y = rect.center().y;
+    let textures = texture::textures(ui.ctx());
 
-    lamp(painter, theme, pos2(rect.min.x + 8.0, centre_y), lit);
-    // Silkscreened and heavy: a dark line under the letters so they lift off
-    // the panel, and the face drawn twice because the interface font has no
-    // bold weight of its own.
+    screw(
+        painter,
+        &textures,
+        pos2(rect.min.x + SCREW_RADIUS, centre_y),
+    );
+    screw(
+        painter,
+        &textures,
+        pos2(rect.max.x - SCREW_RADIUS, centre_y),
+    );
+
+    // Printed heavy: the interface font has no bold weight of its own, so
+    // the face is drawn twice, half a point apart, over a light line that
+    // sets it into the plate.
+    let font = FontId::proportional(TITLE_SIZE);
+    let anchor = pos2(rect.min.x + SCREW_RADIUS * 2.0 + 10.0, centre_y);
+    let mut end = anchor.x;
     for (offset, color) in [
-        (vec2(0.0, 1.0), Color32::from_black_alpha(160)),
+        (vec2(0.0, 1.0), theme.chassis_top),
         (vec2(0.0, 0.0), theme.title),
         (vec2(0.5, 0.0), theme.title),
     ] {
-        painter.text(
-            pos2(rect.min.x + 22.0, centre_y) + offset,
+        let drawn = painter.text(
+            anchor + offset,
             Align2::LEFT_CENTER,
             title,
-            FontId::proportional(theme.font_md),
+            font.clone(),
             color,
         );
+        end = end.max(drawn.max.x);
     }
+    end
+}
+
+/// The engraved rule a panel title runs into, from `from` to the panel's
+/// lamp at the right end of the header.
+///
+/// The lamp takes the place of a second screw: an unlit lamp and a screw
+/// side by side read as two screws.
+pub fn header_rule(painter: &Painter, theme: &Theme, rect: Rect, from: f32, lit: Option<Color32>) {
+    let centre_y = rect.center().y;
+    let lamp_x = rect.max.x - SCREW_RADIUS;
+    lamp(painter, theme, pos2(lamp_x, centre_y), lit);
+
+    let to = lamp_x - LED_RADIUS - 10.0;
+    if to - from < 12.0 {
+        return;
+    }
+    let y = centre_y.round() + 0.5;
+    painter.line_segment(
+        [pos2(from, y), pos2(to, y)],
+        Stroke::new(1.0_f32, theme.chassis_shadow.gamma_multiply(0.55)),
+    );
+    painter.line_segment(
+        [pos2(from, y + 1.0), pos2(to, y + 1.0)],
+        Stroke::new(1.0_f32, theme.chassis_top),
+    );
 }
 
 /// Cut a recessed area into the metal, the way a display or a pad bay sits in
@@ -205,7 +204,57 @@ pub fn inset(painter: &Painter, theme: &Theme, rect: Rect, fill: Color32) {
     painter.rect_stroke(
         rect,
         theme.radius_sm,
-        Stroke::new(theme.stroke_thin, theme.chassis_shadow),
+        Stroke::new(theme.stroke_thin, Color32::from_black_alpha(150)),
+        StrokeKind::Inside,
+    );
+}
+
+/// A legend printed on the plate: capitals, heavy, in the label colour.
+///
+/// The interface font has no bold weight, so the text is drawn twice, half a
+/// point apart.
+pub fn legend(painter: &Painter, theme: &Theme, at: Pos2, align: Align2, text: &str) -> Rect {
+    let text = text.to_uppercase();
+    let font = FontId::proportional(theme.font_sm);
+    let mut drawn = painter.text(at, align, &text, font.clone(), theme.label);
+    drawn = drawn.union(painter.text(at + vec2(0.4, 0.0), align, &text, font, theme.label));
+    drawn
+}
+
+/// A groove milled down the plate between two groups of controls.
+pub fn divider(ui: &mut Ui, theme: &Theme, height: f32) {
+    let (rect, _) = ui.allocate_exact_size(vec2(theme.spacing_md * 2.0, height), Sense::hover());
+    let x = rect.center().x.round() + 0.5;
+    let painter = ui.painter();
+    painter.line_segment(
+        [pos2(x, rect.min.y + 4.0), pos2(x, rect.max.y - 4.0)],
+        Stroke::new(1.0_f32, theme.chassis_shadow.gamma_multiply(0.55)),
+    );
+    painter.line_segment(
+        [
+            pos2(x + 1.0, rect.min.y + 4.0),
+            pos2(x + 1.0, rect.max.y - 4.0),
+        ],
+        Stroke::new(1.0_f32, theme.chassis_top),
+    );
+}
+
+/// An area set off on a plate by a groove milled around it, for a group of
+/// controls that belong together.
+///
+/// Light falls from the top left, so the groove's far wall catches it: a
+/// light line just below and right of a dark one.
+pub fn engraved(painter: &Painter, theme: &Theme, rect: Rect) {
+    painter.rect_stroke(
+        rect.translate(vec2(0.8, 1.0)),
+        theme.radius_md,
+        Stroke::new(1.0_f32, theme.chassis_top),
+        StrokeKind::Inside,
+    );
+    painter.rect_stroke(
+        rect,
+        theme.radius_md,
+        Stroke::new(1.0_f32, theme.chassis_shadow.gamma_multiply(0.6)),
         StrokeKind::Inside,
     );
 }

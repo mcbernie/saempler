@@ -15,10 +15,11 @@ use crate::screens::performance::performance_section;
 use crate::screens::source::source_section;
 use crate::theme::Theme;
 use crate::widgets::{
-    inset, knob, metal_panel, panel_header, readout, stereo_meter, ViewRange, HEADER_HEIGHT,
+    header_rule, inset, knob, legend, metal_panel, panel_header, readout, screw, stereo_meter,
+    textures, ViewRange, HEADER_HEIGHT,
 };
 
-pub(crate) const THEME: Theme = Theme::dark();
+pub(crate) const THEME: Theme = Theme::ivory();
 
 const KNOB_DIAMETER: f32 = 48.0;
 const METER_WIDTH: f32 = 130.0;
@@ -36,14 +37,16 @@ const PERFORM_SHARE: f32 = 0.42;
 /// fixed height and the two columns fill what is left, so a window any smaller
 /// could only clip a panel. Dragging the window bigger hands the extra height
 /// to the pads and the editor, which both grow with their column.
-pub const MIN_EDITOR_SIZE: (f32, f32) = (1_180.0, 1_000.0);
+pub const MIN_EDITOR_SIZE: (f32, f32) = (1_180.0, 1_050.0);
 
 /// Height of the masthead strip.
 const MASTHEAD_HEIGHT: f32 = 42.0;
 /// Height of the source panel, waveform and toolbar together.
-const SOURCE_HEIGHT: f32 = 172.0;
+const SOURCE_HEIGHT: f32 = 178.0;
 /// Height of the footer row holding the modifiers and the output strip.
-const FOOTER_HEIGHT: f32 = 118.0;
+const FOOTER_HEIGHT: f32 = 138.0;
+/// Room between the top edge of a plate and its header row.
+const PANEL_TOP: f32 = 10.0;
 /// Smallest the two middle columns may become.
 const MIN_BODY_HEIGHT: f32 = 510.0;
 
@@ -118,22 +121,64 @@ pub(crate) fn preview_spec(start_frame: u64, end_frame: u64) -> CellSpec {
 
 /// Apply the product theme to egui's own surfaces.
 pub fn apply_style(ctx: &egui::Context, theme: &Theme) {
-    let mut visuals = egui::Visuals::dark();
+    let mut visuals = egui::Visuals::light();
     visuals.panel_fill = theme.window_bg;
     visuals.extreme_bg_color = theme.control_pressed_bg;
-    // Popups are the one surface egui draws the frame for; give it the panel
-    // colour and the accent border the rest of the interface uses.
-    visuals.window_fill = theme.panel_bg;
-    visuals.window_stroke = egui::Stroke::new(theme.stroke_thin, theme.accent);
-    visuals.popup_shadow = egui::epaint::Shadow {
-        offset: [0, 4],
-        blur: 12,
+    // Windows and open lists are plates like the panels: ivory, a fine
+    // engraved edge and a short soft shadow. The editor windows draw the
+    // textured plate themselves (see `plate_window`); this is the fallback
+    // and what the lists open on.
+    visuals.window_fill = theme.chassis_mid;
+    visuals.window_stroke = egui::Stroke::new(theme.stroke_thin, theme.chassis_shadow);
+    visuals.window_corner_radius = theme.radius_md;
+    visuals.window_highlight_topmost = false;
+    let shadow = egui::epaint::Shadow {
+        offset: [2, 5],
+        blur: 16,
         spread: 0,
-        color: egui::Color32::from_black_alpha(160),
+        color: egui::Color32::from_black_alpha(70),
     };
-    visuals.override_text_color = Some(theme.text);
+    visuals.window_shadow = shadow;
+    visuals.popup_shadow = shadow;
+    visuals.menu_corner_radius = theme.radius_md;
+    visuals.override_text_color = Some(theme.title);
+    visuals.hyperlink_color = theme.control_selected_bg;
+    // The close cross and the line under a window's title.
+    visuals.widgets.noninteractive.bg_stroke =
+        egui::Stroke::new(theme.stroke_thin, theme.chassis_shadow.gamma_multiply(0.6));
+    for widget in [
+        &mut visuals.widgets.inactive,
+        &mut visuals.widgets.hovered,
+        &mut visuals.widgets.active,
+    ] {
+        widget.fg_stroke.color = theme.title;
+    }
     visuals.resize_corner_size = 14.0;
     ctx.set_visuals(visuals);
+}
+
+/// Show an editor window as a plate of the instrument.
+///
+/// The window gets the same textured front plate the panels are made of,
+/// reserved before its contents and filled in once egui knows how big the
+/// window came out. Its title is printed on the plate like a panel legend.
+pub(crate) fn plate_window<R>(
+    window: egui::Window<'_>,
+    ctx: &egui::Context,
+    contents: impl FnOnce(&mut Ui) -> R,
+) -> Option<R> {
+    let frame = Frame::window(&ctx.style())
+        .fill(Color32::TRANSPARENT)
+        .stroke(Stroke::NONE)
+        .inner_margin(Margin::same(THEME.spacing_lg as i8));
+    let shown = window.frame(frame).show(ctx, |ui| {
+        let background = ui.painter().add(Shape::Noop);
+        (background, contents(ui))
+    })?;
+    let (background, inner) = shown.inner?;
+    ctx.layer_painter(shown.response.layer_id)
+        .set(background, metal_panel(&textures(ctx), shown.response.rect));
+    Some(inner)
 }
 
 /// Draw the whole editor. Returns true when the user asked to import a file.
@@ -207,36 +252,47 @@ pub fn draw(ctx: &egui::Context, setter: &ParamSetter, state: &ViewState<'_>) ->
 fn header(ui: &mut Ui, state: &ViewState<'_>) {
     let background = ui.painter().add(Shape::Noop);
     let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 42.0), Sense::hover());
-    ui.painter().set(background, metal_panel(&THEME, rect));
+    ui.painter()
+        .set(background, metal_panel(&textures(ui.ctx()), rect));
     let painter = ui.painter();
+    let textures = textures(ui.ctx());
+    screw(painter, &textures, pos2(rect.min.x + 14.0, rect.center().y));
+    screw(painter, &textures, pos2(rect.max.x - 14.0, rect.center().y));
 
-    // The name plate: a dark block with the logo mark and the product name.
-    let plate = egui::Rect::from_min_size(
-        pos2(rect.min.x + 10.0, rect.min.y + 7.0),
-        vec2(190.0, rect.height() - 14.0),
+    // The name, printed large and heavy on the plate like a module's maker
+    // mark, and what it is beside it.
+    let name_at = pos2(rect.min.x + 30.0, rect.center().y);
+    let mut name_end = name_at.x;
+    for (offset, color) in [
+        (vec2(0.0, 1.0), THEME.chassis_top),
+        (vec2(0.0, 0.0), THEME.title),
+        (vec2(0.6, 0.0), THEME.title),
+    ] {
+        let drawn = painter.text(
+            name_at + offset,
+            Align2::LEFT_CENTER,
+            "SÄMPLER",
+            FontId::proportional(26.0),
+            color,
+        );
+        name_end = name_end.max(drawn.max.x);
+    }
+    let about_plate = egui::Rect::from_min_max(
+        pos2(name_at.x, rect.min.y + 4.0),
+        pos2(name_end, rect.max.y - 4.0),
     );
-    inset(painter, &THEME, plate, THEME.waveform_bg);
-    logo_mark(painter, pos2(plate.min.x + 16.0, plate.center().y));
-    let about_plate = plate;
     painter.text(
-        pos2(plate.min.x + 32.0, plate.center().y - 4.0),
-        Align2::LEFT_CENTER,
-        "SÄMPLER",
-        FontId::proportional(THEME.font_lg),
-        THEME.accent,
-    );
-    painter.text(
-        pos2(plate.min.x + 32.0, plate.max.y - 6.0),
+        pos2(name_end + THEME.spacing_lg, rect.center().y + 2.0),
         Align2::LEFT_CENTER,
         "SLICE & REMIX INSTRUMENT",
-        FontId::proportional(7.0),
-        THEME.text_dim,
+        FontId::proportional(THEME.font_sm),
+        THEME.label,
     );
 
-    // The tempo the engine is following, as a display cut into the metal.
+    // The tempo the engine is following, on a display set into the plate.
     let bpm = egui::Rect::from_min_size(
-        pos2(rect.max.x - 120.0, rect.min.y + 8.0),
-        vec2(110.0, rect.height() - 16.0),
+        pos2(rect.max.x - 146.0, rect.min.y + 7.0),
+        vec2(118.0, rect.height() - 14.0),
     );
     inset(painter, &THEME, bpm, THEME.waveform_bg);
     painter.text(
@@ -250,10 +306,11 @@ fn header(ui: &mut Ui, state: &ViewState<'_>) {
         pos2(bpm.max.x - 8.0, bpm.center().y),
         Align2::RIGHT_CENTER,
         format!("{:.2}", state.meters.tempo()),
-        FontId::monospace(THEME.font_md),
+        FontId::monospace(THEME.font_lg - 2.0),
         THEME.accent,
     );
 
+    // What is loaded, on a display of its own left of the tempo.
     let subtitle = match state.project.lock() {
         Ok(project) => match project.project.sample.as_ref() {
             Some(sample) => format!(
@@ -267,12 +324,23 @@ fn header(ui: &mut Ui, state: &ViewState<'_>) {
         },
         Err(_) => String::new(),
     };
+    let font = FontId::proportional(THEME.font_sm + 1.0);
+    let width = ui
+        .fonts(|fonts| fonts.layout_no_wrap(subtitle.clone(), font.clone(), THEME.text))
+        .size()
+        .x;
+    let info = egui::Rect::from_min_max(
+        pos2(bpm.min.x - THEME.spacing_md - width - 24.0, bpm.min.y),
+        pos2(bpm.min.x - THEME.spacing_md, bpm.max.y),
+    );
+    let painter = ui.painter();
+    inset(painter, &THEME, info, THEME.waveform_bg);
     painter.text(
-        pos2(bpm.min.x - THEME.spacing_lg, rect.center().y),
-        Align2::RIGHT_CENTER,
+        info.center(),
+        Align2::CENTER_CENTER,
         subtitle,
-        FontId::proportional(THEME.font_sm),
-        THEME.title,
+        font,
+        THEME.text,
     );
 
     if crate::screens::about::name_plate_clicked(ui, about_plate) {
@@ -303,7 +371,9 @@ fn footer_section(ui: &mut Ui, setter: &ParamSetter, state: &ViewState<'_>) {
         (left.max(right) >= 1.0).then_some(THEME.danger)
     };
     section(ui, "OUTPUT", clipping.or(Some(THEME.active)), |ui| {
+        ui.add_space(THEME.spacing_sm);
         ui.horizontal(|ui| {
+            ui.add_space(THEME.spacing_sm);
             knob(ui, &THEME, state.gain, setter, KNOB_DIAMETER);
             ui.add_space(THEME.spacing_lg);
 
@@ -419,6 +489,20 @@ pub(crate) fn region(ui: &mut Ui, rect: Rect, contents: impl FnOnce(&mut Ui)) {
     );
 }
 
+/// A row of controls of one height, each centred on the row's middle line,
+/// so knobs, switches and lists of different heights line up.
+pub(crate) fn row<R>(ui: &mut Ui, height: f32, contents: impl FnOnce(&mut Ui) -> R) -> R {
+    ui.allocate_ui_with_layout(
+        vec2(ui.available_width(), height),
+        egui::Layout::left_to_right(egui::Align::Center),
+        |ui| {
+            ui.set_min_height(height);
+            contents(ui)
+        },
+    )
+    .inner
+}
+
 /// A group of controls on a panel of brushed metal.
 ///
 /// `lit` is the colour of the panel's lamp, or `None` for a dark one. The
@@ -449,7 +533,9 @@ pub(crate) fn section_with(
         .inner_margin(Margin {
             left: THEME.spacing_lg as i8,
             right: THEME.spacing_lg as i8,
-            top: THEME.spacing_sm as i8,
+            // Room above the header for the milled edge, so the keys in
+            // the header row do not sit against it.
+            top: PANEL_TOP as i8,
             bottom: THEME.spacing_md as i8,
         })
         .show(ui, |ui| {
@@ -460,32 +546,45 @@ pub(crate) fn section_with(
             ui.set_min_height(ui.available_height());
 
             let (rect, _) = ui.allocate_exact_size(
-                vec2(ui.available_width(), HEADER_HEIGHT + 8.0),
+                vec2(ui.available_width(), HEADER_HEIGHT + 4.0),
                 Sense::hover(),
             );
-            panel_header(ui, &THEME, rect, title, lit);
+            let title_end = panel_header(ui, &THEME, rect, title);
 
             // Whatever the caller wants beside the legend, from where the
-            // title ends to the right edge.
-            let controls = egui::Rect::from_min_max(
-                pos2(
-                    rect.min.x + 34.0 + title.chars().count() as f32 * THEME.font_md * 0.72,
-                    rect.min.y,
-                ),
-                rect.max,
-            );
-            ui.scope_builder(
-                egui::UiBuilder::new()
-                    .max_rect(controls)
-                    .layout(egui::Layout::left_to_right(egui::Align::Center)),
-                header,
+            // title ends to the right edge; the engraved rule fills whatever
+            // the controls leave over.
+            let controls =
+                egui::Rect::from_min_max(pos2(title_end + THEME.spacing_lg, rect.min.y), rect.max);
+            let used = ui
+                .scope_builder(
+                    egui::UiBuilder::new()
+                        .max_rect(controls)
+                        .layout(egui::Layout::left_to_right(egui::Align::Center)),
+                    header,
+                )
+                .response
+                .rect;
+            let rule_from = if used.width() > 0.0 {
+                used.max.x
+            } else {
+                title_end
+            };
+            header_rule(
+                ui.painter(),
+                &THEME,
+                rect,
+                rule_from + THEME.spacing_lg,
+                lit,
             );
 
             contents(ui);
         });
 
-    ui.painter()
-        .set(background, metal_panel(&THEME, panel.response.rect));
+    ui.painter().set(
+        background,
+        metal_panel(&textures(ui.ctx()), panel.response.rect),
+    );
 }
 
 /// A dimmed line of explanatory text.
@@ -516,43 +615,52 @@ pub(crate) fn hint(ui: &mut Ui, text: &str) {
     );
 }
 
-/// A dimmed line of explanatory text on a dark surface.
-///
-/// The panels are light metal and [`hint`] is dark to suit them; inside the
-/// editor windows the surface is dark again and the same text would vanish.
-pub(crate) fn hint_light(ui: &mut Ui, text: &str) {
+/// A small heading printed on a plate: capitals, heavy.
+pub(crate) fn heading(ui: &mut Ui, text: &str) {
     let width = ui.fonts(|fonts| {
         fonts
             .layout_no_wrap(
-                text.to_owned(),
+                text.to_uppercase(),
                 FontId::proportional(THEME.font_sm),
-                THEME.text_dim,
+                THEME.label,
             )
             .size()
             .x
-    });
+    }) + 1.0;
     let (rect, _) = ui.allocate_exact_size(
         vec2(width.min(ui.available_width()), THEME.font_sm * 1.7),
         Sense::hover(),
     );
-    ui.painter().text(
+    legend(
+        ui.painter(),
+        &THEME,
         rect.left_center(),
         Align2::LEFT_CENTER,
         text,
-        FontId::proportional(THEME.font_sm),
-        THEME.text_dim,
     );
 }
 
 /// Text standing in for a page that has nothing to show yet.
-pub(crate) fn placeholder(ui: &mut Ui, text: &str) {
-    let (rect, _) = ui.allocate_exact_size(vec2(ui.available_width(), 72.0), Sense::hover());
-    inset(ui.painter(), &THEME, rect, THEME.waveform_bg);
-    ui.painter().text(
-        rect.center(),
+///
+/// Printed straight on the plate, centred over the room the contents would
+/// take: what is missing, and below it how to get it.
+pub(crate) fn placeholder(ui: &mut Ui, text: &str, detail: &str) {
+    ui.add_space(THEME.spacing_sm);
+    let size = vec2(ui.available_width(), ui.available_height().max(72.0));
+    let (rect, _) = ui.allocate_exact_size(size, Sense::hover());
+    let painter = ui.painter();
+    painter.text(
+        rect.center() - vec2(0.0, THEME.font_md * 0.6),
         Align2::CENTER_CENTER,
         text,
-        FontId::proportional(THEME.font_md),
-        THEME.text_dim,
+        FontId::proportional(THEME.font_md + 1.0),
+        THEME.title.gamma_multiply(0.7),
+    );
+    painter.text(
+        rect.center() + vec2(0.0, THEME.font_md * 0.7),
+        Align2::CENTER_CENTER,
+        detail,
+        FontId::proportional(THEME.font_sm),
+        THEME.title.gamma_multiply(0.5),
     );
 }

@@ -1,8 +1,8 @@
 use nih_plug::prelude::{Param, ParamSetter};
-use nih_plug_egui::egui::{vec2, Align2, FontId, Pos2, Response, Sense, Ui};
+use nih_plug_egui::egui::{pos2, vec2, Rect, Response, Sense, Ui};
 
 use crate::theme::Theme;
-use crate::widgets::dial::{dial, DialState};
+use crate::widgets::dial::{caption, dial, name_width, DialState};
 
 /// Normalized value change per dragged pixel.
 const DRAG_SENSITIVITY: f32 = 0.005;
@@ -21,12 +21,20 @@ pub fn knob<P: Param>(
     diameter: f32,
 ) -> Response {
     let label_height = theme.font_sm * 2.5;
+    // As wide as its caption: a name wider than the knob would otherwise run
+    // out past the room it was given.
     let (rect, response) = ui.allocate_exact_size(
-        vec2(diameter, diameter + label_height),
+        vec2(
+            diameter.max(name_width(ui, theme, param.name())),
+            diameter + label_height,
+        ),
         Sense::click_and_drag(),
     );
 
-    let dial_rect = rect.with_max_y(rect.min.y + diameter);
+    let dial_rect = Rect::from_center_size(
+        pos2(rect.center().x, rect.min.y + diameter * 0.5),
+        vec2(diameter, diameter),
+    );
     let center = dial_rect.center();
     let radius = diameter * 0.5 - theme.stroke_thick;
 
@@ -43,28 +51,17 @@ pub fn knob<P: Param>(
             modulated: None,
             hovered: response.hovered(),
             dragged: response.dragged(),
+            bipolar: false,
         },
     );
 
-    let painter = ui.painter();
-    let text_color = if response.hovered() {
-        theme.value
-    } else {
-        theme.label
-    };
-    painter.text(
-        Pos2::new(center.x, dial_rect.max.y + theme.spacing_sm * 0.5),
-        Align2::CENTER_TOP,
+    caption(
+        ui.painter(),
+        theme,
+        center.x,
+        dial_rect.max.y,
         param.name(),
-        FontId::proportional(theme.font_sm),
-        text_color,
-    );
-    painter.text(
-        Pos2::new(center.x, dial_rect.max.y + theme.font_sm + theme.spacing_sm),
-        Align2::CENTER_TOP,
-        param.to_string(),
-        FontId::proportional(theme.font_sm),
-        theme.value,
+        &param.to_string(),
     );
 
     response

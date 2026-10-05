@@ -1,6 +1,6 @@
 use nih_plug_egui::egui::{self, pos2, vec2, Align2, FontId, Id, Rect, Sense, Ui};
 
-use crate::screens::main::{hint_light, logo_mark, THEME};
+use crate::screens::main::{hint, logo_mark, plate_window, THEME};
 use crate::widgets::inset;
 
 /// Version of the running build, from the crate metadata.
@@ -41,17 +41,19 @@ pub fn window(ui: &Ui) {
         return;
     }
 
-    egui::Window::new("Über Sämpler")
-        .id(Id::new("about-window"))
-        .open(&mut open)
-        .collapsible(false)
-        .resizable(false)
-        .default_pos(pos2(420.0, 300.0))
-        .show(ui.ctx(), |ui| {
+    plate_window(
+        egui::Window::new("Über Sämpler")
+            .id(Id::new("about-window"))
+            .open(&mut open)
+            .collapsible(false)
+            .resizable(false)
+            .default_pos(pos2(420.0, 300.0)),
+        ui.ctx(),
+        |ui| {
             ui.spacing_mut().item_spacing = vec2(THEME.spacing_sm, THEME.spacing_sm);
-            ui.set_min_width(340.0);
+            ui.set_min_width(400.0);
 
-            let (rect, _) = ui.allocate_exact_size(vec2(324.0, 56.0), Sense::hover());
+            let (rect, _) = ui.allocate_exact_size(vec2(400.0, 56.0), Sense::hover());
             inset(ui.painter(), &THEME, rect, THEME.waveform_bg);
             logo_mark(ui.painter(), pos2(rect.min.x + 24.0, rect.center().y));
             ui.painter().text(
@@ -66,11 +68,11 @@ pub fn window(ui: &Ui) {
                 Align2::LEFT_CENTER,
                 format!("Version {VERSION}"),
                 FontId::monospace(THEME.font_sm),
-                THEME.label,
+                THEME.text_dim,
             );
 
             ui.add_space(THEME.spacing_sm);
-            hint_light(
+            hint(
                 ui,
                 "Slice- und Remix-Instrument für VST3, CLAP und standalone",
             );
@@ -81,15 +83,16 @@ pub fn window(ui: &Ui) {
             ui.hyperlink_to("♥  Entwicklung unterstützen", SPONSORS);
 
             ui.add_space(THEME.spacing_sm);
-            hint_light(
+            hint(
                 ui,
                 "Updates stehen auf der Projektseite. Diese Fassung prüft nichts im Netz.",
             );
-            hint_light(
+            hint(
                 ui,
                 "VST3 ist eine Marke der Steinberg Media Technologies GmbH.",
             );
-        });
+        },
+    );
 
     ui.memory_mut(|memory| memory.data.insert_temp(open_id(), open));
 }

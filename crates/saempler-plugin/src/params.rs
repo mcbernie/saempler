@@ -8,7 +8,7 @@ use saempler_audio::{
 use saempler_model::ProjectFile;
 
 /// Initial editor size in logical pixels.
-pub const EDITOR_SIZE: (u32, u32) = (1_240, 1_010);
+pub const EDITOR_SIZE: (u32, u32) = (1_240, 1_060);
 
 /// The host-automatable controls of one slice.
 ///

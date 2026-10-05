@@ -19,6 +19,10 @@ pub struct Theme {
     pub font_md: f32,
     pub font_lg: f32,
 
+    /// Height of a key, a list or a button, so a row of mixed controls lines
+    /// up.
+    pub control_height: f32,
+
     /// Window background, seen only at the very edge of the chassis.
     pub window_bg: Color32,
     /// Lit top of the brushed metal a panel is milled from.
@@ -126,6 +130,8 @@ impl Theme {
             font_md: 13.0,
             font_lg: 18.0,
 
+            control_height: 24.0,
+
             window_bg: Color32::from_rgb(0x07, 0x08, 0x0e),
             // Dark anodized metal. The gradient is what carries the shape, so
             // the span from top to bottom stays wide even though none of it
@@ -189,6 +195,89 @@ impl Theme {
         }
     }
 
+    /// The product's light theme: warm ivory Eurorack front plates.
+    ///
+    /// Plates are matte, finely textured metal lit from the top left. The
+    /// controls on them are dark - ribbed knobs, black keys - and the displays
+    /// are sunk in, dark green with a pale trace. Colour is kept for what the
+    /// instrument is doing and for telling the slices apart.
+    pub const fn ivory() -> Self {
+        Self {
+            spacing_sm: 4.0,
+            spacing_md: 8.0,
+            spacing_lg: 14.0,
+
+            radius_sm: CornerRadius::same(4),
+            radius_md: CornerRadius::same(8),
+
+            stroke_thin: 1.0,
+            stroke_thick: 2.0,
+
+            font_sm: 11.0,
+            font_md: 13.0,
+            font_lg: 18.0,
+
+            control_height: 24.0,
+
+            // A shade under the plates, so the gaps between them read as the
+            // rack the modules are screwed into.
+            window_bg: Color32::from_rgb(0xd6, 0xd0, 0xc4),
+            chassis_top: Color32::from_rgb(0xf5, 0xf1, 0xe8),
+            chassis_mid: Color32::from_rgb(0xe8, 0xe4, 0xda),
+            chassis_bottom: Color32::from_rgb(0xdd, 0xd8, 0xcd),
+            chassis_foot: Color32::from_rgb(0xe4, 0xdf, 0xd4),
+            chassis_edge: Color32::from_rgb(0xf5, 0xf1, 0xe8),
+            chassis_shadow: Color32::from_rgb(0x8c, 0x85, 0x78),
+            screw: Color32::from_rgb(0x9a, 0x94, 0x8a),
+            screw_highlight: Color32::from_rgb(0xf5, 0xf1, 0xe8),
+            title: Color32::from_rgb(0x30, 0x36, 0x33),
+            label: Color32::from_rgb(0x30, 0x36, 0x33),
+            value: Color32::from_rgb(0x4a, 0x50, 0x4d),
+            led_off: Color32::from_rgb(0x3a, 0x3f, 0x3d),
+            // The surface of the editor windows, which open over the plates
+            // like a separate dark display.
+            panel_bg: Color32::from_rgb(0x26, 0x2b, 0x29),
+            panel_top: Color32::from_rgb(0x30, 0x36, 0x33),
+            control_bg: Color32::from_rgb(0x29, 0x2d, 0x2c),
+            control_top: Color32::from_rgb(0x3c, 0x41, 0x3f),
+            control_hover_bg: Color32::from_rgb(0x30, 0x35, 0x33),
+            control_hover_top: Color32::from_rgb(0x48, 0x4e, 0x4b),
+            control_pressed_bg: Color32::from_rgb(0x1b, 0x1e, 0x1d),
+            control_selected_bg: Color32::from_rgb(0x2e, 0x74, 0x6c),
+            control_selected_top: Color32::from_rgb(0x3d, 0x91, 0x88),
+            control_highlight: Color32::from_rgb(0x55, 0x5b, 0x58),
+            outline: Color32::from_rgb(0x14, 0x16, 0x15),
+
+            // Text on the dark keys and displays; text on the plates is
+            // `title` and `label`.
+            text: Color32::from_rgb(0xe8, 0xe4, 0xda),
+            text_dim: Color32::from_rgb(0x8e, 0x99, 0x93),
+
+            accent: Color32::from_rgb(0x4f, 0xb8, 0xa8),
+            armed: Color32::from_rgb(0xc6, 0xa0, 0x4d),
+            active: Color32::from_rgb(0x5d, 0xd6, 0xa4),
+            danger: Color32::from_rgb(0xd4, 0x5a, 0x45),
+
+            waveform_bg: Color32::from_rgb(0x20, 0x2d, 0x2a),
+            waveform: Color32::from_rgb(0x9b, 0xc9, 0xb6),
+            waveform_axis: Color32::from_rgb(0x34, 0x45, 0x40),
+            marker: Color32::from_rgb(0x6d, 0x86, 0x7e),
+            playhead: Color32::from_rgb(0xe8, 0x84, 0x6c),
+            slice_fill: Color32::from_rgb(0x20, 0x2d, 0x2a),
+            slice_fill_alternate: Color32::from_rgb(0x24, 0x33, 0x2f),
+            slice_selected_fill: Color32::from_rgb(0x2b, 0x40, 0x3b),
+            // The four from the design, then two more of the same weight.
+            slice_palette: [
+                Color32::from_rgb(0x3d, 0x91, 0x88),
+                Color32::from_rgb(0xc9, 0x77, 0x63),
+                Color32::from_rgb(0xc6, 0xa0, 0x4d),
+                Color32::from_rgb(0x63, 0x8f, 0xa5),
+                Color32::from_rgb(0x8d, 0x7b, 0xa6),
+                Color32::from_rgb(0x7f, 0x9c, 0x5c),
+            ],
+        }
+    }
+
     /// Stroke around a recessed area cut into the metal.
     pub fn inset_stroke(&self) -> Stroke {
         Stroke::new(self.stroke_thin, self.chassis_shadow)
@@ -207,6 +296,6 @@ impl Theme {
 
 impl Default for Theme {
     fn default() -> Self {
-        Self::dark()
+        Self::ivory()
     }
 }

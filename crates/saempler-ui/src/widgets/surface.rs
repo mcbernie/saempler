@@ -1,7 +1,7 @@
 use nih_plug_egui::egui::{Color32, FontId, Rect, Stroke, StrokeKind, Ui, Vec2};
 
 use crate::theme::Theme;
-use crate::widgets::panel::{raised_body, vertical_gradient};
+use crate::widgets::texture::{self, KEY_CORNER};
 
 /// How a control looks right now.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -14,58 +14,53 @@ pub enum SurfaceState {
     Selected,
 }
 
-/// Horizontal padding around a control's label.
-pub const LABEL_PADDING: f32 = 14.0;
+/// Width of the bezel round a key's cap, in points.
+const KEY_BEZEL: f32 = 2.5;
 
-/// Draw a control surface: a two-tone fill, a lit top edge and a border.
+/// Horizontal padding around a control's label.
+pub const LABEL_PADDING: f32 = 10.0;
+
+/// Draw a control surface: a dark key in its bezel, cut from the render.
 ///
 /// Every interactive surface in the interface goes through this, so buttons,
-/// segments and pads share one physical look instead of each inventing one.
+/// lists and modifier keys share one physical look instead of each inventing
+/// one. Held down, the key sits deeper in its bezel; carrying the current
+/// value, its edge glows.
 pub fn control_surface(ui: &Ui, theme: &Theme, rect: Rect, state: SurfaceState) {
-    let painter = ui.painter();
-    let radius = theme.radius_sm;
-
-    let (base, top, border) = match state {
-        SurfaceState::Rest => (theme.control_bg, theme.control_top, Color32::BLACK),
-        SurfaceState::Hover => (
-            theme.control_hover_bg,
-            theme.control_hover_top,
-            Color32::BLACK,
-        ),
-        SurfaceState::Pressed => (
-            theme.control_pressed_bg,
-            theme.control_pressed_bg,
-            theme.accent,
-        ),
-        SurfaceState::Selected => (
-            theme.control_selected_bg,
-            theme.control_selected_top,
-            theme.accent,
-        ),
+    let textures = texture::textures(ui.ctx());
+    let key = match state {
+        SurfaceState::Pressed => &textures.key_pressed,
+        _ => &textures.key,
     };
-
-    if state == SurfaceState::Pressed {
-        // Pushed in: no shadow under it, a dark lip above and a light one
-        // below, which is the opposite of a raised key.
-        painter.rect_filled(rect, radius, base);
-        painter.add(vertical_gradient(
-            rect.shrink(1.0),
-            &[
-                (0.0, Color32::from_black_alpha(120)),
-                (0.5, Color32::TRANSPARENT),
-                (1.0, Color32::from_white_alpha(28)),
-            ],
-        ));
-    } else {
-        raised_body(painter, theme, rect, radius, base, top);
+    let painter = ui.painter();
+    painter.add(texture::nine_slice(key, rect, KEY_CORNER, Color32::WHITE));
+    match state {
+        SurfaceState::Hover => {
+            painter.rect_filled(
+                rect.shrink(2.0),
+                theme.radius_sm,
+                Color32::from_white_alpha(8),
+            );
+        }
+        // Engaged: a teal line round the cap, inside the bezel, with a
+        // faint glow off it.
+        SurfaceState::Selected => {
+            let cap = rect.shrink(KEY_BEZEL);
+            painter.rect_stroke(
+                cap.expand(1.0),
+                theme.radius_sm,
+                Stroke::new(2.0_f32, theme.accent.gamma_multiply(0.25)),
+                StrokeKind::Middle,
+            );
+            painter.rect_stroke(
+                cap,
+                theme.radius_sm,
+                Stroke::new(1.4_f32, theme.accent),
+                StrokeKind::Middle,
+            );
+        }
+        SurfaceState::Rest | SurfaceState::Pressed => {}
     }
-
-    painter.rect_stroke(
-        rect,
-        radius,
-        Stroke::new(theme.stroke_thin, border),
-        StrokeKind::Inside,
-    );
 }
 
 /// Text colour that belongs to a surface state.
@@ -73,7 +68,7 @@ pub fn label_color(theme: &Theme, state: SurfaceState) -> Color32 {
     match state {
         SurfaceState::Rest => theme.text,
         SurfaceState::Hover => theme.text,
-        SurfaceState::Pressed | SurfaceState::Selected => theme.accent,
+        SurfaceState::Pressed | SurfaceState::Selected => theme.text,
     }
 }
 
@@ -87,8 +82,5 @@ pub fn label_size(ui: &Ui, theme: &Theme, label: &str) -> Vec2 {
         )
     });
 
-    Vec2::new(
-        galley.size().x + LABEL_PADDING * 2.0,
-        theme.font_md + theme.spacing_md * 2.0,
-    )
+    Vec2::new(galley.size().x + LABEL_PADDING * 2.0, theme.control_height)
 }

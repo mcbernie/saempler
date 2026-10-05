@@ -20,6 +20,8 @@ const SCROLL_PER_NOTCH: f32 = 40.0;
 const ZOOM_PER_NOTCH: f32 = 0.85;
 /// Fraction of the visible range a shift+wheel notch pans by.
 const PAN_PER_NOTCH: f32 = 0.2;
+/// Columns of the graticule on an idle display.
+const IDLE_DIVISIONS: u32 = 10;
 /// Below this many frames per pixel the peak cache is too coarse and the
 /// widget reads the audio itself.
 const DETAIL_THRESHOLD: f64 = BASE_FRAMES_PER_PEAK as f64;
@@ -117,13 +119,7 @@ pub fn waveform(
     let total = source.peaks.frames();
     let view = source.view.clamped(total);
     if total == 0 || view.is_empty() || rect.width() < 1.0 {
-        ui.painter().text(
-            rect.center(),
-            Align2::CENTER_CENTER,
-            "Kein Sample geladen",
-            FontId::proportional(theme.font_md),
-            theme.text_dim,
-        );
+        idle_display(ui, theme, rect);
         outline(ui, theme, rect);
         return action;
     }
@@ -170,6 +166,42 @@ fn x_to_frame(rect: Rect, view: ViewRange, x: f32) -> u64 {
 }
 
 /// Shade the span of every slice so the divisions are readable at a glance.
+/// The display with nothing loaded: switched on, but idle.
+///
+/// A graticule and a flat trace, the way a scope looks before a signal
+/// arrives, rather than a black hole in the panel.
+fn idle_display(ui: &Ui, theme: &Theme, rect: Rect) {
+    let painter = ui.painter();
+    let grid = Stroke::new(1.0_f32, theme.waveform_axis.gamma_multiply(0.7));
+    for step in 1..IDLE_DIVISIONS {
+        let x = (rect.min.x + rect.width() * step as f32 / IDLE_DIVISIONS as f32).round() + 0.5;
+        painter.line_segment([pos2(x, rect.min.y), pos2(x, rect.max.y)], grid);
+    }
+    for share in [0.25, 0.75] {
+        let y = (rect.min.y + rect.height() * share).round() + 0.5;
+        painter.line_segment([pos2(rect.min.x, y), pos2(rect.max.x, y)], grid);
+    }
+    let centre = rect.center().y.round() + 0.5;
+    painter.line_segment(
+        [pos2(rect.min.x, centre), pos2(rect.max.x, centre)],
+        Stroke::new(1.0_f32, theme.waveform.gamma_multiply(0.35)),
+    );
+    painter.text(
+        rect.center() - vec2(0.0, rect.height() * 0.18),
+        Align2::CENTER_CENTER,
+        "Kein Sample geladen",
+        FontId::proportional(theme.font_md),
+        theme.waveform.gamma_multiply(0.8),
+    );
+    painter.text(
+        rect.center() + vec2(0.0, rect.height() * 0.2),
+        Align2::CENTER_CENTER,
+        "Mit der Ordner-Taste oben ein Sample laden",
+        FontId::proportional(theme.font_sm),
+        theme.text_dim,
+    );
+}
+
 fn draw_slice_backgrounds(
     ui: &Ui,
     theme: &Theme,
@@ -387,16 +419,8 @@ fn draw_slice_labels(
             Align2::CENTER_CENTER,
             label,
             FontId::proportional(theme.font_sm),
-            theme.title,
+            theme.chassis_top,
         );
-        if source.selected == Some(slice.id) {
-            painter.rect_stroke(
-                chip.expand(1.5),
-                theme.radius_sm,
-                Stroke::new(1.0_f32, Color32::WHITE),
-                StrokeKind::Outside,
-            );
-        }
     }
 }
 
